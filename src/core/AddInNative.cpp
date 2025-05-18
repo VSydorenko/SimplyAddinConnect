@@ -27,7 +27,7 @@
 
 #ifdef _WINDOWS
 
-HMODULE hModule = NULL;
+HMODULE hModule = nullptr;
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD  ul_reason_for_call, LPVOID lpReserved)
 {
@@ -113,7 +113,8 @@ void AddInNative::Done()
 
 bool AddInNative::RegisterExtensionAs(WCHAR_T** wsLanguageExt)
 {
-	return *wsLanguageExt = W(name.c_str());
+	*wsLanguageExt = W(this->name.c_str());
+	return *wsLanguageExt != nullptr;
 }
 
 long AddInNative::GetNProps()
@@ -428,12 +429,12 @@ void AddInNative::AddFunction(const std::u16string& nameEn, const std::u16string
 	methods.push_back({ { nameEn, nameRu }, handler, defs, true });
 }
 
-bool ADDIN_API AddInNative::AllocMemory(void** pMemory, unsigned long ulCountByte) const
+bool ADDIN_API AddInNative::AllocMemory(void** pMemory, unsigned long ulCountByte) const noexcept
 {
 	return m_iMemory ? m_iMemory->AllocMemory(pMemory, ulCountByte) : false;
 }
 
-void ADDIN_API AddInNative::FreeMemory(void** pMemory) const
+void ADDIN_API AddInNative::FreeMemory(void** pMemory) const noexcept
 {
 	if (m_iMemory) m_iMemory->FreeMemory(pMemory);
 }
@@ -485,32 +486,32 @@ std::wstring AddInNative::upper(std::wstring& str)
 	return str;
 }
 
-TYPEVAR AddInNative::VarinantHelper::type()
+TYPEVAR AddInNative::VariantHelper::type()
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
 	return pvar->vt;
 }
 
-uint32_t AddInNative::VarinantHelper::size()
+uint32_t AddInNative::VariantHelper::size()
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
-	if (pvar->vt != VTYPE_BLOB) throw error(VTYPE_BLOB);
+	if (pvar->vt != VTYPE_BLOB) throw this->error(VTYPE_BLOB);
 	return pvar->strLen;
 }
 
-char* AddInNative::VarinantHelper::data()
+char* AddInNative::VariantHelper::data()
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
-	if (pvar->vt != VTYPE_BLOB) throw error(VTYPE_BLOB);
+	if (pvar->vt != VTYPE_BLOB) throw this->error(VTYPE_BLOB);
 	return pvar->pstrVal;
 }
 
-AddInNative::VarinantHelper& AddInNative::VarinantHelper::operator=(const std::string& str)
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::string& str)
 {
 	return operator=(AddInNative::MB2WCHAR(str));
 }
 
-AddInNative::VarinantHelper& AddInNative::VarinantHelper::operator=(const std::wstring& str)
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::wstring& str)
 {
 	if (sizeof(wchar_t) == 2) {
 		return operator=(std::u16string(reinterpret_cast<const char16_t*>(str.data()), str.size()));
@@ -520,7 +521,7 @@ AddInNative::VarinantHelper& AddInNative::VarinantHelper::operator=(const std::w
 	}
 }
 
-void AddInNative::VarinantHelper::clear()
+void AddInNative::VariantHelper::clear()
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
 	switch (TV_VT(pvar)) {
@@ -532,7 +533,7 @@ void AddInNative::VarinantHelper::clear()
 	tVarInit(pvar);
 }
 
-AddInNative::VarinantHelper& AddInNative::VarinantHelper::operator=(int64_t value)
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(int64_t value)
 {
 	clear();
 	if (INT32_MIN <= value && value <= INT32_MAX) {
@@ -546,7 +547,7 @@ AddInNative::VarinantHelper& AddInNative::VarinantHelper::operator=(int64_t valu
 	return *this;
 }
 
-AddInNative::VarinantHelper& AddInNative::VarinantHelper::operator=(double value)
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(double value)
 {
 	clear();
 	TV_VT(pvar) = VTYPE_R8;
@@ -554,7 +555,7 @@ AddInNative::VarinantHelper& AddInNative::VarinantHelper::operator=(double value
 	return *this;
 }
 
-AddInNative::VarinantHelper& AddInNative::VarinantHelper::operator=(bool value)
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(bool value)
 {
 	clear();
 	TV_VT(pvar) = VTYPE_BOOL;
@@ -562,7 +563,7 @@ AddInNative::VarinantHelper& AddInNative::VarinantHelper::operator=(bool value)
 	return *this;
 }
 
-AddInNative::VarinantHelper& AddInNative::VarinantHelper::operator=(const std::u16string& str)
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::u16string& str)
 {
 	clear();
 	TV_VT(pvar) = VTYPE_PWSTR;
@@ -609,7 +610,7 @@ static std::u16string typeinfo(TYPEVAR vt, bool alias)
 	}
 }
 
-std::exception AddInNative::VarinantHelper::error(TYPEVAR vt) const
+std::exception AddInNative::VariantHelper::error(TYPEVAR vt) const
 {
 	std::basic_stringstream<char16_t, std::char_traits<char16_t>, std::allocator<char16_t>> ss;
 	if (addin && addin->alias) {
@@ -632,26 +633,26 @@ std::exception AddInNative::VarinantHelper::error(TYPEVAR vt) const
 	return std::bad_typeid();
 }
 
-AddInNative::VarinantHelper::operator std::string() const
+AddInNative::VariantHelper::operator std::string() const
 {
 	std::u16string str(*this);
 	return WCHAR2MB((WCHAR_T*)str.c_str());
 }
 
-AddInNative::VarinantHelper::operator std::wstring() const
+AddInNative::VariantHelper::operator std::wstring() const
 {
 	std::u16string str(*this);
 	return WCHAR2WC((WCHAR_T*)str.c_str());
 }
 
-AddInNative::VarinantHelper::operator std::u16string() const
+AddInNative::VariantHelper::operator std::u16string() const
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
 	if (pvar->vt != VTYPE_PWSTR) throw error(VTYPE_PWSTR);
 	return reinterpret_cast<char16_t*>(pvar->pwstrVal);
 }
 
-AddInNative::VarinantHelper::operator int64_t() const
+AddInNative::VariantHelper::operator int64_t() const
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
 	switch (TV_VT(pvar)) {
@@ -668,7 +669,7 @@ AddInNative::VarinantHelper::operator int64_t() const
 	}
 }
 
-AddInNative::VarinantHelper::operator int() const
+AddInNative::VariantHelper::operator int() const
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
 	switch (TV_VT(pvar)) {
@@ -685,7 +686,7 @@ AddInNative::VarinantHelper::operator int() const
 	}
 }
 
-AddInNative::VarinantHelper::operator double() const
+AddInNative::VariantHelper::operator double() const
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
 	switch (TV_VT(pvar)) {
@@ -702,7 +703,7 @@ AddInNative::VarinantHelper::operator double() const
 	}
 }
 
-AddInNative::VarinantHelper::operator bool() const
+AddInNative::VariantHelper::operator bool() const
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
 	switch (TV_VT(pvar)) {
@@ -718,7 +719,7 @@ AddInNative::VarinantHelper::operator bool() const
 	}
 }
 
-void AddInNative::VarinantHelper::AllocMemory(unsigned long size)
+void AddInNative::VariantHelper::AllocMemory(unsigned long size)
 {
 	clear();
 	if (!addin->AllocMemory((void**)&pvar->pstrVal, size)) throw std::bad_alloc();
