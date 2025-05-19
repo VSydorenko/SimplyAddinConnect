@@ -34,6 +34,12 @@ TestComponent::TestComponent()
 		u"SetText", u"УстановитьТекст", 
 		[&](VH par) { this->setTestString(par); }, 
 		{{0, u"default: "}});
+
+	// Добавление метода для генерации тестовой ошибки
+	AddProcedure(
+		u"GenerateTestError", u"СоздатьТестовуюОшибку", 
+		[&]() { this->GenerateTestError(); });
+
 	// Добавление метода для включения логирования
 	AddFunction(
 		u"EnableLogging", u"ИспользоватьЛогирование", 
@@ -119,5 +125,30 @@ void TestComponent::setTestString(const std::u16string &text)
 	}
 	catch (const std::exception& e) {
 		REPORT_ERROR("Ошибка при установке текста: " + std::string(e.what()));
+	}
+}
+
+void TestComponent::GenerateTestError()
+{
+	try {
+		// Логируем попытку генерации тестовой ошибки
+		REPORT_INFO("Запуск метода генерации тестовой ошибки");
+		
+		// Генерируем ошибку для проверки системы логирования
+		REPORT_ERROR("Спеціальна тестова помилка для перевірки");
+		
+		// // Также добавляем ошибку напрямую через метод AddError
+		// std::u16string errorMessage = MB2WCHAR("Спеціальна тестова помилка для перевірки напряму");
+		// this->AddError(errorMessage, 1001);
+		
+		// Логируем, что ошибка была сгенерирована
+		REPORT_INFO("Тестовая ошибка успешно создана и передана в 1С");
+		
+		// Можно также сгенерировать исключение для проверки перехвата
+		throw std::runtime_error("Тестовая ошибка для отладки механизма логирования");
+	}
+	catch (const std::exception& e) {
+		// Перехватываем и логируем исключение
+		REPORT_ERROR("Перехвачено исключение: " + std::string(e.what()));
 	}
 }

@@ -16,4 +16,5 @@ private:
     std::u16string getTestString();
     void setTestString(const std::u16string &text);
     bool EnableLogging(const std::string& logLevel, const std::string& logFilePath);
+    void GenerateTestError();
 };
