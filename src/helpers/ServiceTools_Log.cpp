@@ -31,12 +31,25 @@ static std::map<std::string, std::shared_ptr<spdlog::logger>> loggers;
  * @return LogLevel Соответствующее значение перечисления
  */
 LogLevel StringToLogLevel(const std::string& levelStr) {
-    if (levelStr == "trace") return LogLevel::Trace;
-    if (levelStr == "debug") return LogLevel::Debug;
-    if (levelStr == "info") return LogLevel::Info;
-    if (levelStr == "warn") return LogLevel::Warn;
-    if (levelStr == "error") return LogLevel::Error;
-    if (levelStr == "off") return LogLevel::Off;
+    // Преобразование входной строки к нижнему регистру для регистронезависимого сравнения
+    std::string lowerLevelStr = levelStr;
+    std::transform(lowerLevelStr.begin(), lowerLevelStr.end(), lowerLevelStr.begin(), 
+                   [](unsigned char c) { return std::tolower(c); });
+    
+    if (lowerLevelStr == "trace") return LogLevel::Trace;
+    if (lowerLevelStr == "debug") return LogLevel::Debug;
+    if (lowerLevelStr == "info") return LogLevel::Info;
+    if (lowerLevelStr == "warn" || lowerLevelStr == "warning") return LogLevel::Warn;
+    if (lowerLevelStr == "error" || lowerLevelStr == "err") return LogLevel::Error;
+    if (lowerLevelStr == "off" || lowerLevelStr == "none") return LogLevel::Off;
+    
+    // Проверяем числовые значения
+    if (lowerLevelStr == "5" || lowerLevelStr == "all") return LogLevel::Trace;  // 5 = Trace
+    if (lowerLevelStr == "4") return LogLevel::Debug;                           // 4 = Debug
+    if (lowerLevelStr == "3") return LogLevel::Info;                            // 3 = Info
+    if (lowerLevelStr == "2") return LogLevel::Warn;                            // 2 = Warn
+    if (lowerLevelStr == "1") return LogLevel::Error;                           // 1 = Error
+    if (lowerLevelStr == "0") return LogLevel::Off;                             // 0 = Off
     
     // По умолчанию возвращаем Info
     return LogLevel::Info;
@@ -101,6 +114,10 @@ bool InitLogging(const std::string& componentName, LogLevel level, const std::st
             ComponentLogSettings settings(filePath, level, true);
             componentLogSettings[componentName] = settings;
             
+            // Логируем информацию об обновлении уровня логирования
+            it->second->info("Уровень логирования обновлен для компонента {}, новый уровень: {}, путь: {}", 
+                          componentName, static_cast<int>(level), filePath);
+            
             return true;
         }
         
@@ -115,6 +132,9 @@ bool InitLogging(const std::string& componentName, LogLevel level, const std::st
         // Устанавливаем уровень логирования
         logger->set_level(ConvertLogLevel(level));
         
+        // Настраиваем форматирование сообщений
+        logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%n] [%l] %v");
+        
         // Сохраняем логгер в карту
         loggers[componentName] = logger;
         
@@ -124,7 +144,7 @@ bool InitLogging(const std::string& componentName, LogLevel level, const std::st
         
         // Логируем информацию об инициализации логирования
         logger->info("Логирование инициализировано для компонента {}, уровень: {}, путь: {}", 
-             componentName, static_cast<int>(level), filePath);
+                  componentName, static_cast<int>(level), filePath);
         
         return true;
     }
@@ -175,21 +195,31 @@ bool EnableComponentLogging(AddInNative* component, const std::string& logLevel,
         return false;
     }
     
-    // Определяем название компонента
-    std::string componentName = GetComponentName(component);
-    
-    // Преобразуем строковый уровень логирования в перечисление
-    LogLevel level = StringToLogLevel(logLevel);
-    
-    // Если уровень не Off, а путь к файлу пуст - это ошибка
-    if (level != LogLevel::Off && logFilePath.empty()) {
+    try {
+        // Определяем название компонента
+        std::string componentName = GetComponentName(component);
+        
+        // Преобразуем строковый уровень логирования в перечисление
+        LogLevel level = StringToLogLevel(logLevel);
+        
+        // Проверяем корректность настроек логирования
+        if (level != LogLevel::Off && logFilePath.empty()) {
+            // Если уровень не Off, а путь к файлу пуст - это ошибка
+            std::cerr << "Ошибка включения логирования: уровень не Off, но путь к файлу пуст" << std::endl;
+            return false;
+        }
+        
+        // Инициализируем логирование - метод сам заботится о блокировках
+        bool result = InitLogging(componentName, level, logFilePath);
+        
+        return result;
+    }
+    catch (const std::exception& ex) {
+        // Выводим информацию об ошибке без использования логирования
+        // чтобы избежать рекурсии в случае проблем с логированием
+        std::cerr << "Исключение при активации логирования: " << ex.what() << std::endl;
         return false;
     }
-    
-    // Инициализируем логирование
-    bool result = InitLogging(componentName, level, logFilePath);
-    
-    return result;
 }
 
 /**
@@ -226,21 +256,37 @@ bool IsComponentLoggingEnabled(AddInNative* component, const std::string& level)
         return false;
     }
     
+    // Получаем имя компонента без блокировки мьютекса
     std::string componentName = GetComponentName(component);
     
-    std::lock_guard<std::mutex> lock(loggersMutex);
+    // Создаем локальную копию настроек под блокировкой для минимизации времени блокировки
+    ComponentLogSettings settings;
+    bool hasSettings = false;
     
-    // Проверяем, есть ли настройки для данного компонента
-    auto it = componentLogSettings.find(componentName);
-    if (it == componentLogSettings.end() || !it->second.isEnabled) {
+    {
+        std::lock_guard<std::mutex> lock(loggersMutex);
+        
+        // Проверяем, есть ли настройки для данного компонента
+        auto it = componentLogSettings.find(componentName);
+        if (it != componentLogSettings.end()) {
+            settings = it->second;
+            hasSettings = true;
+        }
+    }
+    
+    if (!hasSettings || !settings.isEnabled) {
         return false;
     }
     
     // Преобразуем строковый уровень логирования в перечисление
+    // Эту операцию выполняем без блокировки
     LogLevel requestedLevel = StringToLogLevel(level);
+    LogLevel configuredLevel = settings.logLevel;
     
-    // Проверяем, позволяет ли текущий уровень логирования записывать сообщения данного уровня
-    return it->second.logLevel >= requestedLevel;
+    // Логика сравнения: 
+    // Trace(5) > Debug(4) > Info(3) > Warn(2) > Error(1) > Off(0)
+    // Если настроенный уровень >= запрашиваемого, то разрешаем логирование
+    return static_cast<int>(configuredLevel) >= static_cast<int>(requestedLevel);
 }
 
 /**
@@ -263,22 +309,28 @@ bool AddComponentLog(AddInNative* component, const std::string& level, const std
     // Получаем логгер для компонента
     auto logger = GetLogger(componentName);
     
+    // Преобразуем строковый уровень в нижний регистр для сравнения
+    std::string lowerLevel = level;
+    std::transform(lowerLevel.begin(), lowerLevel.end(), lowerLevel.begin(), 
+                  [](unsigned char c) { return std::tolower(c); });
+    
     // Форматируем сообщение с добавлением имени компонента в квадратных скобках
-    std::string formattedMsg = "[" + componentName + "] " + message;
+    std::string formattedMsg = message;
     
     // Записываем сообщение с соответствующим уровнем
-    if (level == "trace") {
+    if (lowerLevel == "trace") {
         logger->trace(formattedMsg);
-    } else if (level == "debug") {
+    } else if (lowerLevel == "debug") {
         logger->debug(formattedMsg);
-    } else if (level == "info") {
+    } else if (lowerLevel == "info") {
         logger->info(formattedMsg);
-    } else if (level == "warn") {
+    } else if (lowerLevel == "warn" || lowerLevel == "warning") {
         logger->warn(formattedMsg);
-    } else if (level == "error") {
+    } else if (lowerLevel == "error" || lowerLevel == "err") {
         logger->error(formattedMsg);
     } else {
-        // Неизвестный уровень
+        // Неизвестный уровень, используем info по умолчанию
+        logger->info(formattedMsg);
         return false;
     }
     

@@ -1,4 +1,6 @@
 ﻿#include "TestComponent.h"
+#include <iostream>
+#include <ctime>
 
 std::vector<std::u16string> TestComponent::names = {
 	AddComponent(u"AddInNative", []() { return new TestComponent; }),
@@ -32,7 +34,6 @@ TestComponent::TestComponent()
 		u"SetText", u"УстановитьТекст", 
 		[&](VH par) { this->setTestString(par); }, 
 		{{0, u"default: "}});
-	
 	// Добавление метода для включения логирования
 	AddFunction(
 		u"EnableLogging", u"ИспользоватьЛогирование", 
@@ -40,9 +41,25 @@ TestComponent::TestComponent()
 			try {
 				std::string level = logLevel;
 				std::string path = logFilePath;
-				REPORT_INFO("Включение логирования с уровнем: " + level + ", путь: " + path);
 				
-				return this->EnableLogging(level, path);
+				// Информация о попытке включения логирования
+				REPORT_INFO("Запрос на включение логирования с уровнем: " + level + ", путь: " + path);
+				
+				// Включаем логирование
+				bool result = this->EnableLogging(level, path);
+				
+				// После включения логирования можем использовать любые уровни лога
+				if (result) {
+					REPORT_INFO("Логирование успешно включено с уровнем: " + level);
+					REPORT_TRACE("Тестовое сообщение уровня TRACE после включения логирования");
+					REPORT_DEBUG("Тестовое сообщение уровня DEBUG после включения логирования");
+					REPORT_INFO("Тестовое сообщение уровня INFO после включения логирования");
+					REPORT_WARN("Тестовое сообщение уровня WARN после включения логирования");
+				} else {
+					REPORT_WARN("Не удалось включить логирование с уровнем: " + level);
+				}
+				
+				return result;
 			}
 			catch (const std::exception& e) {
 				REPORT_ERROR("Ошибка при включении логирования: " + std::string(e.what()));
@@ -59,12 +76,21 @@ TestComponent::~TestComponent()
 
 bool TestComponent::EnableLogging(const std::string& logLevel, const std::string& logFilePath)
 {
-	// Делегирование вызова к ServiceTools
-	return ServiceTools::EnableComponentLogging(this, logLevel, logFilePath);
+	// Здесь нельзя использовать макросы логирования, т.к. они еще не настроены
+	// поэтому используем std::cout для вывода отладочной информации
+	try {
+		// Вывод информации о параметрах
+		std::cout << "TestComponent: Включение логирования, уровень: '" << logLevel << "', путь: '" << logFilePath << "'" << std::endl;
+		
+		// Делегирование вызова к ServiceTools
+		return ServiceTools::EnableComponentLogging(this, logLevel, logFilePath);
+	}
+	catch (const std::exception& e) {
+		// В случае исключения тоже используем прямой вывод
+		std::cerr << "TestComponent: Исключение при включении логирования: " << e.what() << std::endl;
+		return false;
+	}
 }
-
-#include <iostream>
-#include <ctime>
 
 std::u16string TestComponent::getTestString()
 {

@@ -32,29 +32,48 @@ std::string GetComponentName(const AddInNative* component) {
         const std::type_info& ti = typeid(*component);
         std::string fullName = ti.name();
         
-        // Находим имя класса без пространства имен и декораторов
+        // Сначала удаляем все декораторы, которые могут быть добавлены компилятором
+        // Например, для MSVC типичным форматом является "class ИмяКласса" или "struct ИмяКласса"
+        static const std::string classPrefix = "class ";
+        static const std::string structPrefix = "struct ";
+        
+        // Удаляем префикс "class " если есть
+        if (fullName.find(classPrefix) == 0) {
+            fullName.erase(0, classPrefix.length());
+        }
+        
+        // Удаляем префикс "struct " если есть
+        if (fullName.find(structPrefix) == 0) {
+            fullName.erase(0, structPrefix.length());
+        }
+        
+        // Находим имя класса без пространства имен (после последнего ::)
         size_t colonPos = fullName.find_last_of(':');
         size_t startPos = (colonPos == std::string::npos) ? 0 : colonPos + 1;
-        
-        // Находим позицию пробела после имени класса (если есть)
+          // Находим позицию пробела после имени класса (если есть)
         size_t spacePos = fullName.find(' ', startPos);
         size_t endPos = (spacePos == std::string::npos) ? fullName.length() : spacePos;
         
         // Вырезаем имя класса
         std::string className = fullName.substr(startPos, endPos - startPos);
         
-        // Если имя начинается с "class " или "struct ", убираем это
-        if (className.find("class ") == 0) {
-            className = className.substr(6);
-        } else if (className.find("struct ") == 0) {
-            className = className.substr(7);
+        // Удаляем возможные шаблонные параметры и прочие декораторы
+        size_t templatePos = className.find('<');
+        if (templatePos != std::string::npos) {
+            className = className.substr(0, templatePos);
+        }
+        
+        // Если после всех преобразований имя пусто или содержит только пробелы,
+        // вернем информативное имя
+        if (className.empty() || className.find_first_not_of(" \t\n\r") == std::string::npos) {
+            return "Component_" + std::to_string(reinterpret_cast<uintptr_t>(component));
         }
         
         return className;
     }
     catch (...) {
-        // В случае ошибки возвращаем дефолтное имя
-        return "UnknownComponent";
+        // В случае ошибки возвращаем уникальный идентификатор на основе адреса компонента
+        return "UnknownComponent_" + std::to_string(reinterpret_cast<uintptr_t>(component));
     }
 }
 
@@ -71,6 +90,10 @@ void ReportComponentEvent(AddInNative* component, const std::string& level, cons
         return;
     }
     
+    // Получаем имя компонента
+    std::string componentName = GetComponentName(component);
+    
+    // Форматируем сообщение с добавлением имени метода
     std::string formattedMessage = "[" + methodName + "] " + message;
     
     // Для ошибок вызываем специальную обработку
@@ -80,9 +103,21 @@ void ReportComponentEvent(AddInNative* component, const std::string& level, cons
         return;
     }
     
-    // Для других уровней - проверяем, включен ли данный уровень логирования
+    // Быстрая проверка без блокировок мьютексов
     if (IsComponentLoggingEnabled(component, level)) {
-        AddComponentLog(component, level, formattedMessage);
+        // Используем напрямую функции логирования для записи сообщения с указанием пространства имен
+        if (level == "trace") {
+            ServiceTools::Trace(componentName, formattedMessage);
+        } else if (level == "debug") {
+            ServiceTools::Debug(componentName, formattedMessage);
+        } else if (level == "info") {
+            ServiceTools::Info(componentName, formattedMessage);
+        } else if (level == "warn") {
+            ServiceTools::Warn(componentName, formattedMessage);
+        } else {
+            // Неизвестный уровень, используем info
+            ServiceTools::Info(componentName, "Неизвестный уровень логирования '" + level + "': " + formattedMessage);
+        }
     }
 }
 
@@ -99,15 +134,15 @@ void NeutralReportImpl(const std::string& level, const std::string& method, cons
     std::string formattedMessage = "[" + tag + "::" + method + "] " + message;
     
     if (level == "trace") {
-        Trace(componentName, formattedMessage);
+        ServiceTools::Trace(componentName, formattedMessage);
     } else if (level == "debug") {
-        Debug(componentName, formattedMessage);
+        ServiceTools::Debug(componentName, formattedMessage);
     } else if (level == "info") {
-        Info(componentName, formattedMessage);
+        ServiceTools::Info(componentName, formattedMessage);
     } else if (level == "warn") {
-        Warn(componentName, formattedMessage);
+        ServiceTools::Warn(componentName, formattedMessage);
     } else if (level == "error") {
-        Error(componentName, formattedMessage);
+        ServiceTools::Error(componentName, formattedMessage);
     }
 }
 
