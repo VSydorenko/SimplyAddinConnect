@@ -11,9 +11,9 @@
 # Створюємо спільні налаштування для всіх таргетів
 target_include_directories(base_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
 target_include_directories(test_component PRIVATE include src ${SPDLOG_INCLUDE_DIR})
+target_include_directories(helpers_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
 
 # Следующие строки закомментированы, так как компоненты пока не существуют
-# target_include_directories(helpers_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
 # target_include_directories(mscomm_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
 # target_include_directories(mswinsock_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
 # target_include_directories(ecrcommx_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
@@ -39,11 +39,11 @@ set_target_properties(test_component PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
-# set_target_properties(helpers_component PROPERTIES
-#     POSITION_INDEPENDENT_CODE ON
-#     CXX_STANDARD 17
-#     CXX_STANDARD_REQUIRED ON
-# )
+set_target_properties(helpers_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
 
 # set_target_properties(mscomm_component PROPERTIES
 #     POSITION_INDEPENDENT_CODE ON
@@ -96,7 +96,7 @@ set_target_properties(test_component PROPERTIES
 # Додаємо потрібні визначення компілятора
 target_compile_definitions(base_component PRIVATE UNICODE _UNICODE)
 target_compile_definitions(test_component PRIVATE UNICODE _UNICODE)
-# target_compile_definitions(helpers_component PRIVATE UNICODE _UNICODE)
+target_compile_definitions(helpers_component PRIVATE UNICODE _UNICODE)
 # target_compile_definitions(mscomm_component PRIVATE UNICODE _UNICODE)
 # target_compile_definitions(mswinsock_component PRIVATE UNICODE _UNICODE)
 # target_compile_definitions(ecrcommx_component PRIVATE UNICODE _UNICODE)
@@ -112,8 +112,8 @@ if (NOT UNIX)
         _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
     target_compile_definitions(test_component PRIVATE _WINDOWS
         _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
-    # target_compile_definitions(helpers_component PRIVATE _WINDOWS
-    #     _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
+    target_compile_definitions(helpers_component PRIVATE _WINDOWS
+        _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
     # target_compile_definitions(mscomm_component PRIVATE _WINDOWS
     #     _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
     # target_compile_definitions(mswinsock_component PRIVATE _WINDOWS
@@ -142,7 +142,7 @@ if (NOT UNIX)
     endif()
       target_compile_options(base_component PRIVATE /utf-8)
     target_compile_options(test_component PRIVATE /utf-8)
-    # target_compile_options(helpers_component PRIVATE /utf-8)
+    target_compile_options(helpers_component PRIVATE /utf-8)
     # target_compile_options(mscomm_component PRIVATE /utf-8)
     # target_compile_options(mswinsock_component PRIVATE /utf-8)
     # target_compile_options(ecrcommx_component PRIVATE /utf-8)

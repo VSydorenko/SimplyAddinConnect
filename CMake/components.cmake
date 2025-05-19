@@ -21,12 +21,12 @@ set(HEADER_FILES
     src/core/stdafx.h
     src/core/AddInNative.h
     src/TestComponent.h
+    src/helpers/ServiceTools.h
     # Следующие файлы закомментированы, так как они еще не существуют
     # src/helpers/LoggerHelper.h
     # src/helpers/BPOS1Parser.h
     # src/helpers/UapkiHelper.h
     # src/helpers/ECRPrivatJSONHelper.h
-    # src/helpers/ServiceTools.h
     # src/transport/ComPortHelper.h
     # src/components/AddinMSComm.h
     # src/components/AddinMSWinsock.h
@@ -49,6 +49,10 @@ set(HEADER_FILES
 set(SOURCE_FILES
     src/core/AddInNative.cpp
     src/TestComponent.cpp
+    src/helpers/ServiceTools.cpp
+    src/helpers/ServiceTools_Conversion.cpp
+    src/helpers/ServiceTools_Errors.cpp
+    src/helpers/ServiceTools_Log.cpp
     # Следующие файлы закомментированы, так как они еще не существуют
     # src/helpers/LoggerHelper.cpp
     # src/helpers/BPOS1Parser.cpp
@@ -60,10 +64,6 @@ set(SOURCE_FILES
     # src/helpers/ECRPrivatJSONHelper_Service.cpp
     # src/helpers/ECRPrivatJSONHelper_Terminal.cpp
     # src/helpers/ECRPrivatJSONHelper_Utils.cpp
-    # src/helpers/ServiceTools.cpp
-    # src/helpers/ServiceTools_Conversion.cpp
-    # src/helpers/ServiceTools_Errors.cpp
-    # src/helpers/ServiceTools_Log.cpp
     # src/transport/ComPortHelper.cpp
     # src/components/AddinMSComm.cpp
     # src/components/AddinMSWinsock.cpp
@@ -115,19 +115,19 @@ add_library(test_component OBJECT
 ## @var helpers_component
 ## @brief Компонент с вспомогательными классами
 ## @details Содержит классы помощники для логирования и работы с COM-портами
-# add_library(helpers_component OBJECT
+add_library(helpers_component OBJECT
 #     src/helpers/LoggerHelper.h
 #     src/helpers/LoggerHelper.cpp
 #     src/helpers/BPOS1Parser.h
 #     src/helpers/BPOS1Parser.cpp
-#     src/helpers/ServiceTools.h
-#     src/helpers/ServiceTools.cpp
-#     src/helpers/ServiceTools_Conversion.cpp
-#     src/helpers/ServiceTools_Errors.cpp
-#     src/helpers/ServiceTools_Log.cpp
+    src/helpers/ServiceTools.h
+    src/helpers/ServiceTools.cpp
+    src/helpers/ServiceTools_Conversion.cpp
+    src/helpers/ServiceTools_Errors.cpp
+    src/helpers/ServiceTools_Log.cpp
 #     src/transport/ComPortHelper.h
 #     src/transport/ComPortHelper.cpp
-# )
+ )
 
 # add_library(mscomm_component OBJECT
 #     src/components/AddinMSComm.h
@@ -281,7 +281,7 @@ endif()
 
 # Встановлюємо явну залежність
 add_dependencies(test_component base_component spdlog)
-# add_dependencies(helpers_component base_component spdlog)
+add_dependencies(helpers_component base_component spdlog)
 # add_dependencies(mscomm_component base_component spdlog)
 # add_dependencies(mscomm_component helpers_component)
 # add_dependencies(mswinsock_component base_component spdlog)
@@ -337,7 +337,7 @@ add_library(${TARGET} SHARED
     ${RESOURCE_FILES}
     $<TARGET_OBJECTS:base_component>
     $<TARGET_OBJECTS:test_component>
-    # $<TARGET_OBJECTS:helpers_component>
+    $<TARGET_OBJECTS:helpers_component>
     # $<TARGET_OBJECTS:mscomm_component>
     # $<TARGET_OBJECTS:mswinsock_component>
     # $<TARGET_OBJECTS:ecrcommx_component>
