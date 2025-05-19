@@ -1,5 +1,4 @@
-#ifndef __ADDINNATIVE_H__
-#define __ADDINNATIVE_H__
+#pragma once
 
 #ifdef _WINDOWS
 #include <wtypes.h>
@@ -9,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <variant>
+#include <string_view>
 #include <functional>
 
 #include "ComponentBase.h"
@@ -48,7 +48,7 @@ private:
 	struct Prop;
 	struct Meth;
 protected:
-	class VarinantHelper {
+	class VariantHelper {
 	private:
 		tVariant* pvar = nullptr;
 		AddInNative* addin = nullptr;
@@ -59,18 +59,18 @@ protected:
 		std::exception error(TYPEVAR vt) const;
 	public:
 		void AllocMemory(unsigned long size);
-		VarinantHelper(const VarinantHelper& va) :pvar(va.pvar), addin(va.addin), prop(va.prop), meth(va.meth), number(va.number) {}
-		VarinantHelper(tVariant* pvar, AddInNative* addin) :pvar(pvar), addin(addin) {}
-		VarinantHelper(tVariant* pvar, AddInNative* addin, Prop* prop) :pvar(pvar), addin(addin), prop(prop) {}
-		VarinantHelper(tVariant* pvar, AddInNative* addin, Meth* meth, long number) :pvar(pvar), addin(addin), meth(meth), number(number) {}
-		VarinantHelper& operator<<(const VarinantHelper& va) { pvar = va.pvar; addin = va.addin; prop = va.prop, meth = va.meth, number = va.number; return *this; }
-		VarinantHelper& operator=(const VarinantHelper& va) = delete;
-		VarinantHelper& operator=(const std::string& str);
-		VarinantHelper& operator=(const std::wstring& str);
-		VarinantHelper& operator=(const std::u16string& str);
-		VarinantHelper& operator=(int64_t value);
-		VarinantHelper& operator=(double value);
-		VarinantHelper& operator=(bool value);
+		VariantHelper(const VariantHelper& va) :pvar(va.pvar), addin(va.addin), prop(va.prop), meth(va.meth), number(va.number) {}
+		VariantHelper(tVariant* pvar, AddInNative* addin) :pvar(pvar), addin(addin) {}
+		VariantHelper(tVariant* pvar, AddInNative* addin, Prop* prop) :pvar(pvar), addin(addin), prop(prop) {}
+		VariantHelper(tVariant* pvar, AddInNative* addin, Meth* meth, long number) :pvar(pvar), addin(addin), meth(meth), number(number) {}
+		VariantHelper& operator<<(const VariantHelper& va) { pvar = va.pvar; addin = va.addin; prop = va.prop; meth = va.meth; number = va.number; return *this; }
+		VariantHelper& operator=(const VariantHelper& va) = delete;
+		VariantHelper& operator=(const std::string& str);
+		VariantHelper& operator=(const std::wstring& str);
+		VariantHelper& operator=(const std::u16string& str);
+		VariantHelper& operator=(int64_t value);
+		VariantHelper& operator=(double value);
+		VariantHelper& operator=(bool value);
 		operator std::string() const;
 		operator std::wstring() const;
 		operator std::u16string() const;
@@ -84,7 +84,7 @@ protected:
 		void clear();
 	};
 
-	using VH = VarinantHelper;
+	using VH = VariantHelper;
 	using MethDefaults = std::map<long, DefaultHelper>;
 	using PropFunction = std::function<void(VH)>;
 	using MethFunction0 = std::function<void()>;
@@ -110,9 +110,10 @@ protected:
 	void AddProperty(const std::u16string& nameEn, const std::u16string& nameRu, const PropFunction &getter, const PropFunction &setter = nullptr);
 	void AddProcedure(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction &handler, const MethDefaults &defs = {});
 	void AddFunction(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction &handler, const MethDefaults &defs = {});
+public:
 	static std::u16string AddComponent(const std::u16string& name, CompFunction creator);
-	VarinantHelper result;
-
+	VariantHelper result;
+	static std::u16string getComponentNames();
 	static std::u16string upper(std::u16string& str);
 	static std::wstring upper(std::wstring& str);
 	static std::string WCHAR2MB(std::basic_string_view<WCHAR_T> src);
@@ -136,15 +137,13 @@ private:
 	};
 
 	bool CallMethod(MethFunction* function, tVariant* paParams, Meth* meth, const long lSizeArray);
-	VarinantHelper VA(tVariant* pvar) { return VarinantHelper(pvar, this); }
-	VarinantHelper VA(tVariant* pvar, Prop* prop) { return VarinantHelper(pvar, this, prop); }
-	VarinantHelper VA(tVariant* pvar, Meth* meth, long number) { return VarinantHelper(pvar + number, this, meth, number); }
-	bool ADDIN_API AllocMemory(void** pMemory, unsigned long ulCountByte) const;
-	void ADDIN_API FreeMemory(void** pMemory) const;
-	bool AddError(const std::u16string& descr, long scode = 0);
+	VariantHelper VA(tVariant* pvar) { return VariantHelper(pvar, this); }
+	VariantHelper VA(tVariant* pvar, Prop* prop) { return VariantHelper(pvar, this, prop); }
+	VariantHelper VA(tVariant* pvar, Meth* meth, long number) { return VariantHelper(pvar + number, this, meth, number); }
+	bool ADDIN_API AllocMemory(void** pMemory, unsigned long ulCountByte) const noexcept;
+	void ADDIN_API FreeMemory(void** pMemory) const noexcept;
 
 	friend const WCHAR_T* GetClassNames();
-	static std::u16string getComponentNames();
 	friend long GetClassObject(const WCHAR_T*, IComponentBase**);
 	static AddInNative* CreateObject(const std::u16string& name);
 
@@ -154,14 +153,20 @@ private:
 	std::u16string name;
 	bool alias = false;
 
+protected:
+	// Перемещаем метод AddError в protected секцию, чтобы он был доступен для наследников
+	bool AddError(const std::u16string& descr, long scode = 0);
+
 public:
 	AddInNative(void) ;
 	virtual ~AddInNative() {}
+
 	// IInitDoneBase
 	virtual bool ADDIN_API Init(void*) override final;
 	virtual bool ADDIN_API setMemManager(void* mem) override final;
 	virtual long ADDIN_API GetInfo() override final;
 	virtual void ADDIN_API Done() override final;
+
 	// ILanguageExtenderBase
 	virtual bool ADDIN_API RegisterExtensionAs(WCHAR_T** wsLanguageExt) override final;
 	virtual long ADDIN_API GetNProps() override final;
@@ -180,10 +185,11 @@ public:
 	virtual bool ADDIN_API CallAsProc(const long lMethodNum, tVariant* paParams, const long lSizeArray) override final;
 	virtual bool ADDIN_API CallAsFunc(const long lMethodNum, tVariant* pvarRetValue, tVariant* paParams, const long lSizeArray) override final;
 	operator IComponentBase* () { return (IComponentBase*)this; };
+	
 	// LocaleBase
 	virtual void ADDIN_API SetLocale(const WCHAR_T* loc) override final;
+
 private:
 	IMemoryManager* m_iMemory = nullptr;
 	IAddInDefBase* m_iConnect = nullptr;
 };
-#endif //__ADDINNATIVE_H__

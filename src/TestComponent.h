@@ -1,7 +1,6 @@
-#ifndef __TESTCOMPONENT_H__
-#define __TESTCOMPONENT_H__
+#pragma once
 
-#include "AddInNative.h"
+#include "core/AddInNative.h"
 
 class TestComponent:
     public AddInNative
@@ -15,4 +14,3 @@ private:
     std::u16string getTestString();
     void setTestString(const std::u16string &text);
 };
-#endif //__TESTCOMPONENT_H__

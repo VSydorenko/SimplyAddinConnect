@@ -1,19 +1,19 @@
-Param (
-    [string]$project,
-    [string]$version
-)
+# Читаємо назву проекту з файлу CMakeLists.txt
+$cmakeFile = Get-Content "$PSScriptRoot\CMakeLists.txt"
+$project = $cmakeFile | Select-String -Pattern 'project\((\w+)\)' | ForEach-Object { $_.Matches[0].Groups[1].Value }
 
-$postfix = '_' + $version -replace '\.','_'
-$v1,$v2,$v3,$v4 = $version.split('.')
-Set-Content 'version.h' "#define VER_FILENAME $project"
-Add-Content 'version.h' "#define VERSION_FULL $version"
-Add-Content 'version.h' "#define VERSION_MAJOR     $v1"
-Add-Content 'version.h' "#define VERSION_MINOR     $v2"
-Add-Content 'version.h' "#define VERSION_REVISION  $v3"
-Add-Content 'version.h' "#define VERSION_BUILD     $v4"
+# Формуємо шаблони імен файлів
+$fileTemplateWin32 = "${project}Win_x86.dll"
+$fileTemplateWin64 = "${project}Win_x64.dll"
 
+# Linux is not supported yet
+# $fileTemplateLin32 = "${project}Lin_x86.so"
+# $fileTemplateLin64 = "${project}Lin_x64.so"
+
+# Створюємо файл manifest.xml
+$manifestFile = "$PSScriptRoot\manifest.xml"
 $encoding = [System.Text.Encoding]::UTF8
-$writer = New-Object System.XMl.XmlTextWriter('./manifest.xml', $encoding)
+$writer = New-Object System.Xml.XmlTextWriter($manifestFile, $encoding)
 $writer.Formatting = 'Indented'
 $writer.Indentation = 1
 $writer.IndentChar = "`t"
@@ -25,29 +25,31 @@ $writer.WriteStartElement('component')
 $writer.WriteAttributeString('type', 'native')
 $writer.WriteAttributeString('os', 'Windows')
 $writer.WriteAttributeString('arch', 'i386')
-$writer.WriteAttributeString('path', "${project}Win32${postfix}.dll")
+$writer.WriteAttributeString('path', $fileTemplateWin32)
 $writer.WriteEndElement();
 
 $writer.WriteStartElement('component')
 $writer.WriteAttributeString('type', 'native')
 $writer.WriteAttributeString('os', 'Windows')
 $writer.WriteAttributeString('arch', 'x86_64')
-$writer.WriteAttributeString('path', "${project}Win64${postfix}.dll")
+$writer.WriteAttributeString('path', $fileTemplateWin64)
 $writer.WriteEndElement();
 
-$writer.WriteStartElement('component')
-$writer.WriteAttributeString('type', 'native')
-$writer.WriteAttributeString('os', 'Linux')
-$writer.WriteAttributeString('arch', 'i386')
-$writer.WriteAttributeString('path', "${project}Lin32${postfix}.so")
-$writer.WriteEndElement();
+# Linux is not supported yet
 
-$writer.WriteStartElement('component')
-$writer.WriteAttributeString('type', 'native')
-$writer.WriteAttributeString('os', 'Linux')
-$writer.WriteAttributeString('arch', 'x86_64')
-$writer.WriteAttributeString('path', "${project}Lin64${postfix}.so")
-$writer.WriteEndElement();
+# $writer.WriteStartElement('component')
+# $writer.WriteAttributeString('type', 'native')
+# $writer.WriteAttributeString('os', 'Linux')
+# $writer.WriteAttributeString('arch', 'i386')
+# $writer.WriteAttributeString('path', $fileTemplateLin32)
+# $writer.WriteEndElement();
+
+# $writer.WriteStartElement('component')
+# $writer.WriteAttributeString('type', 'native')
+# $writer.WriteAttributeString('os', 'Linux')
+# $writer.WriteAttributeString('arch', 'x86_64')
+# $writer.WriteAttributeString('path', $fileTemplateLin64)
+# $writer.WriteEndElement();
 
 $writer.WriteEndElement();
 $writer.WriteEndDocument()

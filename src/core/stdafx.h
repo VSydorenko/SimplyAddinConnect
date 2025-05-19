@@ -2,8 +2,7 @@
 // or project specific include files that are used frequently, but
 // are changed infrequently
 //
-#ifndef __STDAFX_H__
-#define __STDAFX_H__
+#pragma once
 
 #ifdef _WINDOWS
 #include <windows.h>
@@ -13,5 +12,3 @@
 
 std::wstring MB2WC(const std::string& source);
 std::string WC2MB(const std::wstring& source);
-
-#endif //__STDAFX_H__
