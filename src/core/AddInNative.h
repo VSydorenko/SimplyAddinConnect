@@ -153,13 +153,13 @@ private:
 	std::u16string name;
 	bool alias = false;
 
-protected:
-	// Перемещаем метод AddError в protected секцию, чтобы он был доступен для наследников
-	bool AddError(const std::u16string& descr, long scode = 0);
-
 public:
 	AddInNative(void) ;
 	virtual ~AddInNative() {}
+	
+	// Метод для добавления ошибок компонента
+	// Перенесено из private в public
+	bool AddError(const std::u16string& descr, long scode = 0);
 
 	// IInitDoneBase
 	virtual bool ADDIN_API Init(void*) override final;

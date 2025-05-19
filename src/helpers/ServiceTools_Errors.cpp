@@ -31,9 +31,9 @@ bool AddComponentError(AddInNative* component, const std::u16string& description
     std::string descriptionStr = SafeWCHAR2MB(description);
     Error(componentName, "[" + componentName + "] Ошибка компонента: " + descriptionStr + ", код: " + std::to_string(code));
     
-    // Если компонент не NULL, вызываем метод ReportError компонента
+    // Если компонент не NULL, вызываем метод AddError компонента
     if (component) {
-        return component->ReportError(description, code);
+        return component->AddError(description, code);
     }
     
     // Для nullptr (нейтрального логирования) возвращаем true, поскольку ошибка уже залогирована

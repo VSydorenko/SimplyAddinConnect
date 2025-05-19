@@ -38,8 +38,9 @@ TestComponent::TestComponent()
 		u"EnableLogging", u"ИспользоватьЛогирование", 
 		[&](VH logLevel, VH logFilePath) {
 			try {
-				std::string level = logLevel.toString();
-				std::string path = logFilePath.toString();
+				std::string level = logLevel;
+				std::string path = logFilePath;
+				REPORT_INFO("Включение логирования с уровнем: " + level + ", путь: " + path);
 				
 				return this->EnableLogging(level, path);
 			}
@@ -70,11 +71,12 @@ std::u16string TestComponent::getTestString()
 	REPORT_DEBUG("Получение текстового значения");
 	
 	time_t rawtime;
-	struct tm *timeinfo;
+	struct tm timeinfo;
 	char buffer[255];
 	time(&rawtime);
-	timeinfo = localtime(&rawtime);
-	strftime(buffer, sizeof(buffer), "%d-%m-%Y %H:%M:%S", timeinfo);
+	localtime_s(&timeinfo, &rawtime);
+	strftime(buffer, sizeof(buffer), "%d-%m-%Y %H:%M:%S", &timeinfo);
+    REPORT_DEBUG("getTestString() викликано: поточний час " + std::string(buffer));
 	
 	std::string timeStr = buffer;
 	REPORT_TRACE("Сформировано время: " + timeStr);
