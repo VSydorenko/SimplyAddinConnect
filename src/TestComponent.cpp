@@ -72,11 +72,60 @@ TestComponent::TestComponent()
 				return false;
 			}
 		});
+		
+	// Методы для работы с COM-портами
+	AddFunction(
+		u"GetAvailablePorts", u"ПолучитьДоступныеПорты",
+		[&]() { 
+			this->result = this->GetAvailablePorts();
+			return true;
+		});
+		
+	AddFunction(
+		u"CheckPortExists", u"ПроверитьСуществованиеПорта",
+		[&](VH portName) {
+			std::u16string port = portName;
+			return this->CheckPortExists(port);
+		});
+		
+	AddFunction(
+		u"IsPortAvailable", u"ДоступенПорт",
+		[&](VH portName) {
+			std::u16string port = portName;
+			return this->IsPortAvailable(port);
+		});
+		
+	AddFunction(
+		u"OpenPort", u"ОткрытьПорт",
+		[&](VH portName, VH baudRate) {
+			std::u16string port = portName;
+			std::u16string baud = baudRate;
+			return this->OpenPort(port, baud);
+		});
+		
+	AddFunction(
+		u"ClosePort", u"ЗакрытьПорт",
+		[&](VH portName) {
+			std::u16string port = portName;
+			return this->ClosePort(port);
+		});
+		
+	// Свойство состояния порта
+	AddProperty(
+		u"IsOpen", u"Открыт",
+		[&](VH var) { var = this->isPortOpen; });
 }
 
 TestComponent::~TestComponent()
 {
 	REPORT_INFO("Завершение работы компонента");
+	
+	// Закрываем COM-порт при завершении работы
+	if (comTransport && comTransport->isConnected()) {
+		REPORT_INFO("Закрытие COM-порта при завершении работы компонента");
+		comTransport->disconnect();
+	}
+	
 	ServiceTools::DisableComponentLogging(this);
 }
 
