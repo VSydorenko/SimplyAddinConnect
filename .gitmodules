@@ -4,9 +4,6 @@
 [submodule "extern/nlohmann_json"]
 	path = extern/nlohmann_json
 	url = https://github.com/nlohmann/json
-[submodule "extern/poco"]
-	path = extern/poco
-	url = https://github.com/pocoproject/poco.git
 [submodule "extern/uapki"]
 	path = extern/uapki
 	url = https://github.com/specinfo-ua/UAPKI
