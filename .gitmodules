@@ -7,3 +7,6 @@
 [submodule "extern/uapki"]
 	path = extern/uapki
 	url = https://github.com/specinfo-ua/UAPKI
+[submodule "extern/ixwebsocket"]
+	path = extern/ixwebsocket
+	url = https://github.com/machinezone/IXWebSocket.git
