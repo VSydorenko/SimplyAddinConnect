@@ -25,6 +25,11 @@ TransportCOM::~TransportCOM()
     Close();
 }
 
+std::string TransportCOM::GetPortName() const
+{
+    return m_portName;
+}
+
 bool TransportCOM::Open()
 {
     if (m_isOpen)

@@ -42,6 +42,12 @@ public:
     void SetDataReceivedCallback(DataReceivedCallback callback) override;
     void SetErrorCallback(ErrorCallback callback) override;
     void SetConnectionStateCallback(ConnectionStateCallback callback) override;
+
+    /**
+     * @brief Возвращает имя текущего COM-порта
+     * @return Имя COM-порта (например, "COM1")
+     */
+    std::string GetPortName() const { return m_portName; }
     
     /**
      * @brief Настроить параметры COM-порта
