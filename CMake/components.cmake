@@ -22,22 +22,21 @@ set(HEADER_FILES
     src/core/AddInNative.h
     src/TestComponent.h
     src/helpers/ServiceTools.h
+    src/transport/Transport.h
+    src/transport/Transport_COM.h
+    src/transport/Transport_TCP.h
+    src/transport/Transport_WSClient.h
+    src/transport/Transport_WSServer.h
+
     # Следующие файлы закомментированы, так как они еще не существуют
     # src/helpers/LoggerHelper.h
     # src/helpers/BPOS1Parser.h
     # src/helpers/UapkiHelper.h
     # src/helpers/ECRPrivatJSONHelper.h
-    # src/transport/ComPortHelper.h
-    # src/components/AddinMSComm.h
-    # src/components/AddinMSWinsock.h
     # src/components/AddinECRCommX.h
     # src/components/AddinPOSAPI.h
     # src/components/AddinUAPKI.h
     # src/components/AddinECRPrivatJSON.h
-    # src/interfaces/ConnectionInterface.h
-    # src/interfaces/NetworkInterface.h
-    # src/transport/SerialPortConnection.h
-    # src/transport/TCPConnection.h
     # src/transport/ECRPrivatJSONTransport.h
     # src/protocols/ECRPrivatJSON.h
     # src/protocols/ECRPrivatJSON_Types.h
@@ -49,10 +48,16 @@ set(HEADER_FILES
 set(SOURCE_FILES
     src/core/AddInNative.cpp
     src/TestComponent.cpp
+    src/TestComponent_COM.cpp
     src/helpers/ServiceTools.cpp
     src/helpers/ServiceTools_Conversion.cpp
     src/helpers/ServiceTools_Errors.cpp
     src/helpers/ServiceTools_Log.cpp
+    src/transport/Transport_COM.cpp
+    src/transport/Transport_TCP.cpp
+    src/transport/Transport_WSClient.cpp
+    src/transport/Transport_WSServer.cpp
+    
     # Следующие файлы закомментированы, так как они еще не существуют
     # src/helpers/LoggerHelper.cpp
     # src/helpers/BPOS1Parser.cpp
@@ -64,15 +69,10 @@ set(SOURCE_FILES
     # src/helpers/ECRPrivatJSONHelper_Service.cpp
     # src/helpers/ECRPrivatJSONHelper_Terminal.cpp
     # src/helpers/ECRPrivatJSONHelper_Utils.cpp
-    # src/transport/ComPortHelper.cpp
-    # src/components/AddinMSComm.cpp
-    # src/components/AddinMSWinsock.cpp
     # src/components/AddinECRCommX.cpp
     # src/components/AddinPOSAPI.cpp
     # src/components/AddinUAPKI.cpp
     # src/components/AddinECRPrivatJSON.cpp
-    # src/transport/SerialPortConnection.cpp
-    # src/transport/TCPConnection.cpp
     # src/transport/ECRPrivatJSONTransport.cpp
     # src/protocols/ECRPrivatJSON.cpp
     # src/protocols/ECRPrivatJSON_Connection.cpp
@@ -110,6 +110,7 @@ add_library(base_component OBJECT
 add_library(test_component OBJECT
     src/TestComponent.h
     src/TestComponent.cpp
+    src/TestComponent_COM.cpp
 )
 
 ## @var helpers_component
@@ -154,19 +155,19 @@ add_library(helpers_component OBJECT
 add_library(interfaces_component INTERFACE)
 target_include_directories(interfaces_component INTERFACE include)
 
-## @var serial_port_component
-## @brief Компонент для роботи з COM-портами через SerialPortConnection
-# add_library(serial_port_component OBJECT
-#     src/transport/SerialPortConnection.h
-#     src/transport/SerialPortConnection.cpp
-# )
-
-## @var tcp_connection_component
-## @brief Компонент для роботи з TCP-соединениями через TCPConnection
-# add_library(tcp_connection_component OBJECT
-#     src/transport/TCPConnection.h
-#     src/transport/TCPConnection.cpp
-# )
+## @var transport_component
+## @brief Компонент для транспортного контура
+add_library(transport_component OBJECT
+    src/transport/Transport.h
+    src/transport/Transport_COM.h
+    src/transport/Transport_COM.cpp
+    src/transport/Transport_TCP.h
+    src/transport/Transport_TCP.cpp
+    src/transport/Transport_WSClient.h
+    src/transport/Transport_WSClient.cpp
+    src/transport/Transport_WSServer.h
+    src/transport/Transport_WSServer.cpp
+)
 
 ## @var privat_json_helper_component
 ## @brief Компонент для работы с протоколом ПриватБанка на основе JSON
@@ -282,10 +283,8 @@ endif()
 # Встановлюємо явну залежність
 add_dependencies(test_component base_component spdlog)
 add_dependencies(helpers_component base_component spdlog)
-# add_dependencies(mscomm_component base_component spdlog)
-# add_dependencies(mscomm_component helpers_component)
-# add_dependencies(mswinsock_component base_component spdlog)
-# add_dependencies(mswinsock_component helpers_component)
+add_dependencies(transport_component base_component spdlog ixwebsocket)
+
 # add_dependencies(ecrcommx_component base_component spdlog)
 # add_dependencies(ecrcommx_component helpers_component)
 # add_dependencies(ecrcommx_component mscomm_component)
@@ -293,13 +292,6 @@ add_dependencies(helpers_component base_component spdlog)
 # add_dependencies(posapi_component base_component spdlog)
 # add_dependencies(posapi_component helpers_component)
 # add_dependencies(posapi_component test_component)
-# add_dependencies(serial_port_component base_component spdlog)
-# add_dependencies(serial_port_component helpers_component)
-# add_dependencies(tcp_connection_component base_component spdlog)
-# add_dependencies(tcp_connection_component helpers_component)
-# target_link_libraries(serial_port_component PRIVATE interfaces_component)
-# target_link_libraries(tcp_connection_component PRIVATE interfaces_component)
-# add_dependencies(mscomm_component serial_port_component)
 
 # Зависимости для компонентов UAPKI
 if(BUILD_WITH_UAPKI)
@@ -328,9 +320,23 @@ endif()
 # target_link_libraries(ecr_json_transport_component PRIVATE interfaces_component)
 # target_link_libraries(privat_json_helper_component PRIVATE interfaces_component)
 # target_link_libraries(ecr_privat_json_component PRIVATE interfaces_component)
-# target_include_directories(ecr_json_transport_component PRIVATE ${NLOHMANN_JSON_INCLUDE_DIR})
-# target_include_directories(privat_json_helper_component PRIVATE ${NLOHMANN_JSON_INCLUDE_DIR})
-# target_include_directories(ecr_privat_json_component PRIVATE ${NLOHMANN_JSON_INCLUDE_DIR})
+
+# Настраиваем свойства для транспортного компонента
+set_target_properties(transport_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+
+# Добавляем пути включения для транспортного компонента
+target_include_directories(transport_component PRIVATE
+    include
+    ${SPDLOG_INCLUDE_DIR}
+    ${IXWEBSOCKET_INCLUDE_DIR}
+)
+
+# Подключаем зависимости к транспортному компоненту
+target_link_libraries(transport_component PRIVATE interfaces_component spdlog::spdlog ixwebsocket)
 
 ## @brief Збірка DLL в правильному порядку
 add_library(${TARGET} SHARED
@@ -338,22 +344,43 @@ add_library(${TARGET} SHARED
     $<TARGET_OBJECTS:base_component>
     $<TARGET_OBJECTS:test_component>
     $<TARGET_OBJECTS:helpers_component>
-    # $<TARGET_OBJECTS:mscomm_component>
-    # $<TARGET_OBJECTS:mswinsock_component>
+    $<TARGET_OBJECTS:transport_component>
     # $<TARGET_OBJECTS:ecrcommx_component>
     # $<TARGET_OBJECTS:posapi_component>
-    # $<TARGET_OBJECTS:serial_port_component>
-    # $<TARGET_OBJECTS:tcp_connection_component>
     # $<TARGET_OBJECTS:ecr_json_transport_component>
     # $<TARGET_OBJECTS:privat_json_helper_component>
     # $<TARGET_OBJECTS:ecr_privat_json_component>
     # $<TARGET_OBJECTS:protocols_component>
+
     # Включаем компоненты UAPKI только если включена опция
     $<$<BOOL:${BUILD_WITH_UAPKI}>:$<TARGET_OBJECTS:uapki_helper_component>>
     $<$<BOOL:${BUILD_WITH_UAPKI}>:$<TARGET_OBJECTS:uapki_component>>
 )
 
 # Додаємо шляхи включення та визначення компілятора для фінальної DLL
-target_include_directories(${TARGET} PRIVATE include ${NLOHMANN_JSON_INCLUDE_DIR} ${SPDLOG_INCLUDE_DIR})
+target_include_directories(${TARGET} PRIVATE include ${NLOHMANN_JSON_INCLUDE_DIR} ${SPDLOG_INCLUDE_DIR} ${IXWEBSOCKET_INCLUDE_DIR})
 target_compile_definitions(${TARGET} PRIVATE UNICODE _UNICODE)
-target_link_libraries(${TARGET} PRIVATE nlohmann_json spdlog::spdlog)
+target_link_libraries(${TARGET} PRIVATE nlohmann_json spdlog::spdlog ixwebsocket)
+
+# Настройка транспортного компонента
+set_target_properties(transport_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+
+# Пути включения для транспортного компонента
+target_include_directories(transport_component PRIVATE 
+    include
+    ${CMAKE_SOURCE_DIR}
+    ${SPDLOG_INCLUDE_DIR}
+    ${IXWEBSOCKET_INCLUDE_DIR}
+)
+
+# Зависимости для транспортного компонента
+add_dependencies(transport_component base_component spdlog)
+add_dependencies(transport_component helpers_component)
+
+# Зависимость от библиотеки ixwebsocket
+add_dependencies(transport_component ixwebsocket)
+target_link_libraries(transport_component PRIVATE interfaces_component spdlog::spdlog ixwebsocket)
