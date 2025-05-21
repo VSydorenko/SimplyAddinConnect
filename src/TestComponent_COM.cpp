@@ -36,10 +36,8 @@ std::vector<std::u16string> TestComponent::GetAvailablePorts() {
             if (portHandle != INVALID_HANDLE_VALUE) {
                 // Порт существует, закрываем хендл
                 CloseHandle(portHandle);
-                
                 // Преобразуем имя порта в UTF-16
-                std::u16string portNameU16;
-                ServiceTools::SafeMB2WCHAR(portName, portNameU16);
+                std::u16string portNameU16 = ServiceTools::SafeMB2WCHAR(portName.c_str());
                 availablePorts.push_back(portNameU16);
                 
                 REPORT_DEBUG("Найден доступный порт: " + portName);
@@ -54,8 +52,7 @@ std::vector<std::u16string> TestComponent::GetAvailablePorts() {
 
 // Проверка существования порта с использованием транспортного контура
 bool TestComponent::CheckPortExists(const std::u16string &portName) {
-    std::string portNameMB;
-    ServiceTools::SafeWCHAR2MB(portName, portNameMB);
+    std::string portNameMB = ServiceTools::SafeWCHAR2MB(portName);
     
     std::string msg = "Проверка существования порта: " + portNameMB;
     REPORT_DEBUG(msg);
@@ -100,8 +97,7 @@ bool TestComponent::CheckPortExists(const std::u16string &portName) {
 
 // Проверка доступности порта с использованием транспортного контура
 bool TestComponent::IsPortAvailable(const std::u16string &portName) {
-    std::string portNameMB;
-    ServiceTools::SafeWCHAR2MB(portName, portNameMB);
+    std::string portNameMB = ServiceTools::SafeWCHAR2MB(portName);
     
     std::string msg = "Проверка доступности порта: " + portNameMB;
     REPORT_DEBUG(msg);
@@ -138,11 +134,9 @@ bool TestComponent::IsPortAvailable(const std::u16string &portName) {
 
 // Открытие COM-порта с использованием транспортного контура
 bool TestComponent::OpenPort(const std::u16string &portName, const std::u16string &baudRate) {
-    std::string portNameMB;
-    ServiceTools::SafeWCHAR2MB(portName, portNameMB);
+    std::string portNameMB = ServiceTools::SafeWCHAR2MB(portName);
     
-    std::string baudRateMB;
-    ServiceTools::SafeWCHAR2MB(baudRate, baudRateMB);
+    std::string baudRateMB = ServiceTools::SafeWCHAR2MB(baudRate);
     int baudRateInt = 9600; // значение по умолчанию
     
     try {
@@ -221,8 +215,7 @@ bool TestComponent::OpenPort(const std::u16string &portName, const std::u16strin
 
 // Закрытие COM-порта с использованием транспортного контура
 bool TestComponent::ClosePort(const std::u16string &portName) {
-    std::string portNameMB;
-    ServiceTools::SafeWCHAR2MB(portName, portNameMB);
+    std::string portNameMB = ServiceTools::SafeWCHAR2MB(portName);
     
     std::string msg = "Закрытие порта: " + portNameMB;
     REPORT_DEBUG(msg);

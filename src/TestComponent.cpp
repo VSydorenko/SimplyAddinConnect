@@ -77,7 +77,18 @@ TestComponent::TestComponent()
 	AddFunction(
 		u"GetAvailablePorts", u"ПолучитьДоступныеПорты",
 		[&]() { 
-			this->result = this->GetAvailablePorts();
+			// Преобразуем вектор портов в строку, разделенную запятыми
+			auto ports = this->GetAvailablePorts();
+			std::u16string portsStr;
+			
+			for (size_t i = 0; i < ports.size(); ++i) {
+				portsStr += ports[i];
+				if (i < ports.size() - 1) {
+					portsStr += u",";
+				}
+			}
+			
+			this->result = portsStr;
 			return true;
 		});
 		
@@ -121,9 +132,9 @@ TestComponent::~TestComponent()
 	REPORT_INFO("Завершение работы компонента");
 	
 	// Закрываем COM-порт при завершении работы
-	if (comTransport && comTransport->isConnected()) {
+	if (comTransport && comTransport->IsOpen()) {
 		REPORT_INFO("Закрытие COM-порта при завершении работы компонента");
-		comTransport->disconnect();
+		comTransport->Close();
 	}
 	
 	ServiceTools::DisableComponentLogging(this);
