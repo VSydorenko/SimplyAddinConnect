@@ -25,6 +25,25 @@ target_include_directories(helpers_component PRIVATE include src ${SPDLOG_INCLUD
 # target_include_directories(protocols_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
 # target_include_directories(protocols_component PRIVATE ${NLOHMANN_JSON_INCLUDE_DIR})
 
+##
+## @section precompiled_headers Налаштування предкомпільованих заголовків
+## @brief Додаємо підтримку передзаголовочного файлу для прискорення компіляції
+##
+
+# Налаштування предкомпільованих заголовків для всіх компонентів
+target_precompile_headers(base_component PRIVATE src/core/pch.h)
+target_precompile_headers(test_component PRIVATE src/core/pch.h)
+target_precompile_headers(helpers_component PRIVATE src/core/pch.h)
+target_precompile_headers(transport_component PRIVATE src/core/pch.h)
+
+# Закоментовані налаштування для компонентів, які ще не існують
+# target_precompile_headers(ecrcommx_component PRIVATE src/core/pch.h)
+# target_precompile_headers(posapi_component PRIVATE src/core/pch.h)
+# target_precompile_headers(privat_json_helper_component PRIVATE src/core/pch.h)
+# target_precompile_headers(ecr_json_transport_component PRIVATE src/core/pch.h)
+# target_precompile_headers(ecr_privat_json_component PRIVATE src/core/pch.h)
+# target_precompile_headers(protocols_component PRIVATE src/core/pch.h)
+
 ## @brief Налаштування властивостей об'єктних бібліотек
 ## @note При додаванні нового компоненту, скопіюйте ці налаштування для вашого компоненту
 set_target_properties(base_component PROPERTIES

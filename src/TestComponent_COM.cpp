@@ -1,4 +1,5 @@
 #include "core/pch.h"
+
 #include "TestComponent.h"
 #include "helpers/ServiceTools.h"
 #include "transport/Transport_COM.h"

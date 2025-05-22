@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Transport.h"
+#include <winsock2.h>
 #include <windows.h>
 #include <string>
 #include <thread>
