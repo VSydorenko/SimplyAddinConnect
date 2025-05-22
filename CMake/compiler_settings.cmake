@@ -11,7 +11,7 @@
 # Створюємо спільні налаштування для всіх таргетів
 target_include_directories(base_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
 target_include_directories(test_component PRIVATE include src ${SPDLOG_INCLUDE_DIR})
-target_include_directories(helpers_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
+target_include_directories(helpers_component PRIVATE include src ${SPDLOG_INCLUDE_DIR})
 
 # Следующие строки закомментированы, так как компоненты пока не существуют
 # target_include_directories(mscomm_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
@@ -45,18 +45,6 @@ set_target_properties(helpers_component PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
-# set_target_properties(mscomm_component PROPERTIES
-#     POSITION_INDEPENDENT_CODE ON
-#     CXX_STANDARD 17
-#     CXX_STANDARD_REQUIRED ON
-# )
-
-# set_target_properties(mswinsock_component PROPERTIES
-#     POSITION_INDEPENDENT_CODE ON
-#     CXX_STANDARD 17
-#     CXX_STANDARD_REQUIRED ON
-# )
-
 # set_target_properties(ecrcommx_component PROPERTIES
 #     POSITION_INDEPENDENT_CODE ON
 #     CXX_STANDARD 17
@@ -64,18 +52,6 @@ set_target_properties(helpers_component PROPERTIES
 # )
 
 # set_target_properties(posapi_component PROPERTIES
-#     POSITION_INDEPENDENT_CODE ON
-#     CXX_STANDARD 17
-#     CXX_STANDARD_REQUIRED ON
-# )
-
-# set_target_properties(serial_port_component PROPERTIES
-#     POSITION_INDEPENDENT_CODE ON
-#     CXX_STANDARD 17
-#     CXX_STANDARD_REQUIRED ON
-# )
-
-# set_target_properties(tcp_connection_component PROPERTIES
 #     POSITION_INDEPENDENT_CODE ON
 #     CXX_STANDARD 17
 #     CXX_STANDARD_REQUIRED ON
