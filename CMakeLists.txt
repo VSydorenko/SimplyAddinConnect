@@ -19,6 +19,7 @@ include(CMake/components.cmake)
 include(CMake/compiler_settings.cmake)
 include(CMake/output_settings.cmake)
 include(CMake/platform_settings.cmake)
+include(CMake/link_settings.cmake)
 
 # Подключаем файл настройки UAPKI только если включена опция
 if(BUILD_WITH_UAPKI)

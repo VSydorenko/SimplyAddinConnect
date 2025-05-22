@@ -350,7 +350,9 @@ add_library(${TARGET} SHARED
 # Додаємо шляхи включення та визначення компілятора для фінальної DLL
 target_include_directories(${TARGET} PRIVATE include ${NLOHMANN_JSON_INCLUDE_DIR} ${SPDLOG_INCLUDE_DIR} ${IXWEBSOCKET_INCLUDE_DIR})
 target_compile_definitions(${TARGET} PRIVATE UNICODE _UNICODE)
-target_link_libraries(${TARGET} PRIVATE nlohmann_json spdlog::spdlog ixwebsocket)
+target_link_libraries(${TARGET} PRIVATE nlohmann_json)
+target_link_libraries(${TARGET} PRIVATE spdlog::spdlog)
+target_link_libraries(${TARGET} PRIVATE ixwebsocket)
 
 # Настройка транспортного компонента
 set_target_properties(transport_component PROPERTIES
