@@ -1,6 +1,7 @@
+#include "../core/pch.h"
+
 #include "ServiceTools.h"
 #include "../core/AddInNative.h"
-#include <iostream>
 
 /**
  * @file ServiceTools.cpp

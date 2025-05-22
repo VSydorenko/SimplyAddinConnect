@@ -11,7 +11,7 @@
 # Створюємо спільні налаштування для всіх таргетів
 target_include_directories(base_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
 target_include_directories(test_component PRIVATE include src ${SPDLOG_INCLUDE_DIR})
-target_include_directories(helpers_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
+target_include_directories(helpers_component PRIVATE include src ${SPDLOG_INCLUDE_DIR})
 
 # Следующие строки закомментированы, так как компоненты пока не существуют
 # target_include_directories(mscomm_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
@@ -24,6 +24,25 @@ target_include_directories(helpers_component PRIVATE include ${SPDLOG_INCLUDE_DI
 # target_include_directories(ecr_privat_json_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
 # target_include_directories(protocols_component PRIVATE include ${SPDLOG_INCLUDE_DIR})
 # target_include_directories(protocols_component PRIVATE ${NLOHMANN_JSON_INCLUDE_DIR})
+
+##
+## @section precompiled_headers Налаштування предкомпільованих заголовків
+## @brief Додаємо підтримку передзаголовочного файлу для прискорення компіляції
+##
+
+# Налаштування предкомпільованих заголовків для всіх компонентів
+target_precompile_headers(base_component PRIVATE src/core/pch.h)
+target_precompile_headers(test_component PRIVATE src/core/pch.h)
+target_precompile_headers(helpers_component PRIVATE src/core/pch.h)
+target_precompile_headers(transport_component PRIVATE src/core/pch.h)
+
+# Закоментовані налаштування для компонентів, які ще не існують
+# target_precompile_headers(ecrcommx_component PRIVATE src/core/pch.h)
+# target_precompile_headers(posapi_component PRIVATE src/core/pch.h)
+# target_precompile_headers(privat_json_helper_component PRIVATE src/core/pch.h)
+# target_precompile_headers(ecr_json_transport_component PRIVATE src/core/pch.h)
+# target_precompile_headers(ecr_privat_json_component PRIVATE src/core/pch.h)
+# target_precompile_headers(protocols_component PRIVATE src/core/pch.h)
 
 ## @brief Налаштування властивостей об'єктних бібліотек
 ## @note При додаванні нового компоненту, скопіюйте ці налаштування для вашого компоненту
@@ -45,18 +64,6 @@ set_target_properties(helpers_component PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
-# set_target_properties(mscomm_component PROPERTIES
-#     POSITION_INDEPENDENT_CODE ON
-#     CXX_STANDARD 17
-#     CXX_STANDARD_REQUIRED ON
-# )
-
-# set_target_properties(mswinsock_component PROPERTIES
-#     POSITION_INDEPENDENT_CODE ON
-#     CXX_STANDARD 17
-#     CXX_STANDARD_REQUIRED ON
-# )
-
 # set_target_properties(ecrcommx_component PROPERTIES
 #     POSITION_INDEPENDENT_CODE ON
 #     CXX_STANDARD 17
@@ -64,18 +71,6 @@ set_target_properties(helpers_component PROPERTIES
 # )
 
 # set_target_properties(posapi_component PROPERTIES
-#     POSITION_INDEPENDENT_CODE ON
-#     CXX_STANDARD 17
-#     CXX_STANDARD_REQUIRED ON
-# )
-
-# set_target_properties(serial_port_component PROPERTIES
-#     POSITION_INDEPENDENT_CODE ON
-#     CXX_STANDARD 17
-#     CXX_STANDARD_REQUIRED ON
-# )
-
-# set_target_properties(tcp_connection_component PROPERTIES
 #     POSITION_INDEPENDENT_CODE ON
 #     CXX_STANDARD 17
 #     CXX_STANDARD_REQUIRED ON

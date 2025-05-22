@@ -1,10 +1,9 @@
+#include "../core/pch.h"
+
 #include "ServiceTools.h"
 #include "../core/AddInNative.h"
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/rotating_file_sink.h>
-#include <map>
-#include <mutex>
-#include <iostream>
 
 /**
  * @file ServiceTools_Log.cpp

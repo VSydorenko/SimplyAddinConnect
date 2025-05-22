@@ -5,7 +5,7 @@
 ## author SimplyAddinConnect Team
 ##
 
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.16)
 
 # Включаем модульный файл с опциями
 include(CMake/options.cmake)
@@ -19,6 +19,7 @@ include(CMake/components.cmake)
 include(CMake/compiler_settings.cmake)
 include(CMake/output_settings.cmake)
 include(CMake/platform_settings.cmake)
+include(CMake/link_settings.cmake)
 
 # Подключаем файл настройки UAPKI только если включена опция
 if(BUILD_WITH_UAPKI)

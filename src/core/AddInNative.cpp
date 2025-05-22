@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+﻿#include "pch.h"
 
 #include "../version.h"
 #define STRINGIZE2(s) #s
@@ -16,8 +16,6 @@
 
 #include <locale>
 #include <wchar.h>
-#include <string>
-#include <algorithm>
 #include <iterator>
 #include <codecvt>
 #include <cwctype>

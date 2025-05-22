@@ -24,5 +24,7 @@ else()
     target_compile_definitions(${TARGET} PRIVATE _WINDOWS
             _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
     target_compile_options(${TARGET} PRIVATE /utf-8)
-    target_link_libraries(${TARGET} PRIVATE ws2_32)
+    if(TARGET ${TARGET})
+        target_link_libraries(${TARGET} PRIVATE ws2_32)
+    endif()
 endif()

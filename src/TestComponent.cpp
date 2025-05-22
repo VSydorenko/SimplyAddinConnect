@@ -1,6 +1,6 @@
-﻿#include "TestComponent.h"
-#include <iostream>
-#include <ctime>
+﻿#include "core/pch.h"
+
+#include "TestComponent.h"
 
 std::vector<std::u16string> TestComponent::names = {
 	AddComponent(u"AddInNative", []() { return new TestComponent; }),
@@ -72,11 +72,71 @@ TestComponent::TestComponent()
 				return false;
 			}
 		});
+		
+	// Методы для работы с COM-портами
+	AddFunction(
+		u"GetAvailablePorts", u"ПолучитьДоступныеПорты",
+		[&]() { 
+			// Преобразуем вектор портов в строку, разделенную запятыми
+			auto ports = this->GetAvailablePorts();
+			std::u16string portsStr;
+			
+			for (size_t i = 0; i < ports.size(); ++i) {
+				portsStr += ports[i];
+				if (i < ports.size() - 1) {
+					portsStr += u",";
+				}
+			}
+			
+			this->result = portsStr;
+			return true;
+		});
+		
+	AddFunction(
+		u"CheckPortExists", u"ПроверитьСуществованиеПорта",
+		[&](VH portName) {
+			std::u16string port = portName;
+			return this->CheckPortExists(port);
+		});
+		
+	AddFunction(
+		u"IsPortAvailable", u"ДоступенПорт",
+		[&](VH portName) {
+			std::u16string port = portName;
+			return this->IsPortAvailable(port);
+		});
+		
+	AddFunction(
+		u"OpenPort", u"ОткрытьПорт",
+		[&](VH portName, VH baudRate) {
+			std::u16string port = portName;
+			std::u16string baud = baudRate;
+			return this->OpenPort(port, baud);
+		});
+		
+	AddFunction(
+		u"ClosePort", u"ЗакрытьПорт",
+		[&](VH portName) {
+			std::u16string port = portName;
+			return this->ClosePort(port);
+		});
+		
+	// Свойство состояния порта
+	AddProperty(
+		u"IsOpen", u"Открыт",
+		[&](VH var) { var = this->isPortOpen; });
 }
 
 TestComponent::~TestComponent()
 {
 	REPORT_INFO("Завершение работы компонента");
+	
+	// Закрываем COM-порт при завершении работы
+	if (comTransport && comTransport->IsOpen()) {
+		REPORT_INFO("Закрытие COM-порта при завершении работы компонента");
+		comTransport->Close();
+	}
+	
 	ServiceTools::DisableComponentLogging(this);
 }
 
