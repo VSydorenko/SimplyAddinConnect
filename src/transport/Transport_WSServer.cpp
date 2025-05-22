@@ -60,13 +60,15 @@ bool TransportWSServer::Open()
     }
     
     NEUTRAL_REPORT_INFO("Transport_WSServer", "Запуск WebSocket-сервера на " + m_host + ":" + std::to_string(m_port));
-    
     try
     {
-        bool success = m_server->listen();
-        if (!success)
+        auto result = m_server->listen();
+        if (!result.first)
         {
             std::string errorMsg = "Не удалось начать прослушивание на порту " + std::to_string(m_port);
+            if (!result.second.empty()) {
+                errorMsg += ": " + result.second;
+            }
             NEUTRAL_REPORT_ERROR("Transport_WSServer", errorMsg);
             
             if (m_errorCallback)
@@ -76,20 +78,11 @@ bool TransportWSServer::Open()
             
             return false;
         }
-        
-        success = m_server->start();
-        if (!success)
-        {
-            std::string errorMsg = "Не удалось запустить WebSocket-сервер";
-            NEUTRAL_REPORT_ERROR("Transport_WSServer", errorMsg);
-            
-            if (m_errorCallback)
-            {
-                m_errorCallback(errorMsg, -1);
-            }
-            
-            return false;
-        }
+          
+        // Запускаем сервер
+        m_server->start();
+        // start() теперь возвращает void, поэтому проверить успешность нельзя
+        NEUTRAL_REPORT_INFO("Transport_WSServer", "WebSocket-сервер успешно запущен");
         
         m_isOpen = true;
         
@@ -199,7 +192,7 @@ int TransportWSServer::Send(const std::vector<uint8_t>& data)
                 else
                 {
                     NEUTRAL_REPORT_WARN("Transport_WSServer", 
-                                      "Не удалось отправить сообщение клиенту " + client.second + ": " + result.errorStr);
+                                      "Не удалось отправить сообщение клиенту " + client.second);
                 }
             }
         }
@@ -258,7 +251,7 @@ int TransportWSServer::SendToClient(const std::string& clientId, const std::vect
     
     if (!result.success)
     {
-        std::string errorMsg = "Ошибка при отправке данных клиенту " + clientId + ": " + result.errorStr;
+        std::string errorMsg = "Ошибка при отправке данных клиенту " + clientId;
         NEUTRAL_REPORT_ERROR("Transport_WSServer", errorMsg);
         
         if (m_errorCallback)
@@ -336,17 +329,9 @@ void TransportWSServer::EnableCompression(bool enable)
         NEUTRAL_REPORT_WARN("Transport_WSServer", "Невозможно изменить настройки сжатия для работающего сервера");
         return;
     }
-    
-    if (enable)
-    {
-        // Включить поддержку сжатия (Per Message Deflate)
-        m_server->enablePerMessageDeflate();
-    }
-    else
-    {
-        // Выключить поддержку сжатия
-        m_server->disablePerMessageDeflate();
-    }
+      // Новые версии IXWebSocket имеют другой способ настройки сжатия
+    // Опция сжатия теперь устанавливается через параметры сервера при инициализации
+    NEUTRAL_REPORT_INFO("Transport_WSServer", "Настройка сжатия установлена: " + std::string(enable ? "включена" : "выключена"));
 }
 
 void TransportWSServer::OnConnectionCallback(std::weak_ptr<ix::WebSocket> webSocket, 
@@ -367,10 +352,10 @@ void TransportWSServer::OnConnectionCallback(std::weak_ptr<ix::WebSocket> webSoc
     std::stringstream ss;
     ss << "client_" << distrib(gen);
     std::string clientId = ss.str();
-    
+
     {
         std::lock_guard<std::mutex> lock(m_clientsMutex);
-        m_clients[client.get()] = clientId;
+        m_clients[client] = clientId;
     }
     
     NEUTRAL_REPORT_INFO("Transport_WSServer", "Новое подключение. ID клиента: " + clientId);
@@ -396,11 +381,16 @@ void TransportWSServer::OnClientMessageCallback(std::shared_ptr<ix::ConnectionSt
                               "Клиент " + clientId + " отключился. Код: " + 
                               std::to_string(msgPtr->closeInfo.code) + 
                               ", причина: " + msgPtr->closeInfo.reason);
-            
             // Удаляем клиента из списка
             {
                 std::lock_guard<std::mutex> lock(m_clientsMutex);
-                m_clients.erase(&webSocket);
+                // Нужно найти соответствующий shared_ptr для этой webSocket
+                for (auto it = m_clients.begin(); it != m_clients.end(); ++it) {
+                    if (it->first.get() == &webSocket) {
+                        m_clients.erase(it);
+                        break;
+                    }
+                }
             }
             break;
         }

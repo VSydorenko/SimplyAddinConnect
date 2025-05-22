@@ -152,7 +152,7 @@ int TransportWSClient::Send(const std::vector<uint8_t>& data)
         
         if (!result.success)
         {
-            std::string errorMsg = "Ошибка при отправке данных: " + result.errorStr;
+            std::string errorMsg = "Ошибка при отправке данных";
             NEUTRAL_REPORT_ERROR("Transport_WSClient", errorMsg);
             
             if (m_errorCallback)
