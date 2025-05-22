@@ -15,7 +15,7 @@ namespace { auto& _forceAddinECRPrivatJSONNames = AddinECRPrivatJSON::names; }
 // Конструктор
 AddinECRPrivatJSON::AddinECRPrivatJSON() {    
     // Создаем объект протокола
-    protocol_ = std::make_unique<SimplyConnect::ECRPrivatJSONProtocol>();
+    protocol_ = std::make_unique<ECRPrivatJSON::ECRPrivatJSONProtocol>();
     
     // Передаем указатель на компонент протоколу для организации логирования
     protocol_->SetParentComponent(this);
@@ -40,16 +40,16 @@ AddinECRPrivatJSON::~AddinECRPrivatJSON() {
 }
 
 // Получение структуры ответа последней операции
-SimplyConnect::TerminalResponse AddinECRPrivatJSON::GetLastTerminalResponse() const {
+ECRPrivatJSON::TerminalResponse AddinECRPrivatJSON::GetLastTerminalResponse() const {
     return lastTerminalResponse_;
 }
 
 // Проверка кода ответа
 bool AddinECRPrivatJSON::IsSuccessCode(const std::string& responseCode) const {
     return (
-        responseCode == SimplyConnect::ResponseCodes::SUCCESS ||
-        responseCode == SimplyConnect::ResponseCodes::SUCCESS_SHORT ||
-        responseCode == SimplyConnect::ResponseCodes::PARTIAL_APPROVAL
+        responseCode == ECRPrivatJSON::ResponseCodes::SUCCESS ||
+        responseCode == ECRPrivatJSON::ResponseCodes::SUCCESS_SHORT ||
+        responseCode == ECRPrivatJSON::ResponseCodes::PARTIAL_APPROVAL
     );
 }
 

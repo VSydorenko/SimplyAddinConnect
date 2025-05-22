@@ -23,7 +23,7 @@ public:
      * @brief Получение структуры ответа последней операции
      * @return Структура с данными ответа
      */
-    SimplyConnect::TerminalResponse GetLastTerminalResponse() const;
+    ECRPrivatJSON::TerminalResponse GetLastTerminalResponse() const;
 
     /**
      * @brief Проверяет успешность кода ответа терминала
@@ -57,8 +57,8 @@ private:
     void RegisterMethods();
     
     // Протокол ECR Privat JSON
-    std::unique_ptr<SimplyConnect::ECRPrivatJSONProtocol> protocol_;
+    std::unique_ptr<ECRPrivatJSON::ECRPrivatJSONProtocol> protocol_;
     
     // Последний ответ терминала в виде структуры
-    SimplyConnect::TerminalResponse lastTerminalResponse_;
+    ECRPrivatJSON::TerminalResponse lastTerminalResponse_;
 };
