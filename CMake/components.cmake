@@ -18,7 +18,7 @@ set(HEADER_FILES
     include/ComponentBase.h
     include/IMemoryManager.h
     include/types.h
-    src/core/stdafx.h
+    src/core/pch.h
     src/core/AddInNative.h
     src/TestComponent.h
     src/helpers/ServiceTools.h
@@ -99,7 +99,7 @@ set(RESOURCE_FILES
 ## @brief Базовий компонент, який містить базову функціональність AddInNative
 ## @note Цей компонент є основою для всіх інших компонентів
 add_library(base_component OBJECT
-    src/core/stdafx.h
+    src/core/pch.h
     src/core/AddInNative.h
     src/core/AddInNative.cpp
 )
@@ -126,19 +126,7 @@ add_library(helpers_component OBJECT
     src/helpers/ServiceTools_Conversion.cpp
     src/helpers/ServiceTools_Errors.cpp
     src/helpers/ServiceTools_Log.cpp
-#     src/transport/ComPortHelper.h
-#     src/transport/ComPortHelper.cpp
  )
-
-# add_library(mscomm_component OBJECT
-#     src/components/AddinMSComm.h
-#     src/components/AddinMSComm.cpp
-# )
-
-# add_library(mswinsock_component OBJECT
-#     src/components/AddinMSWinsock.h
-#     src/components/AddinMSWinsock.cpp
-# )
 
 # add_library(ecrcommx_component OBJECT
 #     src/components/AddinECRCommX.h
@@ -331,6 +319,8 @@ set_target_properties(transport_component PROPERTIES
 # Добавляем пути включения для транспортного компонента
 target_include_directories(transport_component PRIVATE
     include
+    ${CMAKE_SOURCE_DIR}
+    src
     ${SPDLOG_INCLUDE_DIR}
     ${IXWEBSOCKET_INCLUDE_DIR}
 )

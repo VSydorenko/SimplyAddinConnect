@@ -1,5 +1,6 @@
+#include "../core/pch.h"
 #include "Transport_COM.h"
-#include "helpers/ServiceTools.h"
+#include "../helpers/ServiceTools.h"
 
 TransportCOM::TransportCOM(
     const std::string& portName,
@@ -23,11 +24,6 @@ TransportCOM::~TransportCOM()
 {
     NEUTRAL_REPORT_DEBUG("TransportCOM", "Уничтожение объекта COM-порта: " + m_portName);
     Close();
-}
-
-std::string TransportCOM::GetPortName() const
-{
-    return m_portName;
 }
 
 bool TransportCOM::Open()

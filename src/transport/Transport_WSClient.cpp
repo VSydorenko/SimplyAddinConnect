@@ -1,5 +1,6 @@
+#include "../core/pch.h"
 #include "Transport_WSClient.h"
-#include "helpers/ServiceTools.h"
+#include "../helpers/ServiceTools.h"
 #include "extern/ixwebsocket/ixwebsocket/IXNetSystem.h"
 
 TransportWSClient::TransportWSClient(const std::string& url, const std::vector<std::string>& protocols)

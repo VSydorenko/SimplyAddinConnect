@@ -1,6 +1,6 @@
-﻿#include "TestComponent.h"
-#include <iostream>
-#include <ctime>
+﻿#include "core/pch.h"
+
+#include "TestComponent.h"
 
 std::vector<std::u16string> TestComponent::names = {
 	AddComponent(u"AddInNative", []() { return new TestComponent; }),

@@ -1,3 +1,9 @@
+// Определим WIN32_LEAN_AND_MEAN, чтобы избежать конфликтов с winsock2.h
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+// RC-файлы обрабатываются компилятором ресурсов, а не С/С++ компилятором,
+// поэтому порядок включения winsock2.h здесь не имеет значения
 #include <windows.h>
 #include "../version.h"
 

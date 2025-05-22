@@ -1,10 +1,7 @@
+#include "core/pch.h"
 #include "TestComponent.h"
 #include "helpers/ServiceTools.h"
 #include "transport/Transport_COM.h"
-#include <vector>
-#include <string>
-#include <memory>
-#include <windows.h>
 
 // Получение списка доступных COM-портов
 std::vector<std::u16string> TestComponent::GetAvailablePorts() {
@@ -12,10 +9,8 @@ std::vector<std::u16string> TestComponent::GetAvailablePorts() {
     std::vector<std::u16string> availablePorts;
     
     // Используем функцию Windows API для получения списка устройств
-    char targetPath[5000];
-    char deviceName[5000];
     
-    for (int i = 1; i <= 256; i++) {
+    for (int i = 1; i <= 25; i++) {
         std::string portName = "COM" + std::to_string(i);
         std::string fullPortName = "\\\\.\\" + portName;
         
