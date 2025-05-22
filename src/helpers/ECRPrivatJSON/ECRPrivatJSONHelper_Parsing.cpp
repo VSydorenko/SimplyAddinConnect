@@ -3,7 +3,7 @@
 #include "helpers/ServiceTools.h"
 #include <stdexcept>
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 // Парсинг JSON-строки в объект json
 json ECRPrivatJSONHelper::ParseJSON(const std::string& jsonString) {
@@ -219,4 +219,4 @@ bool ECRPrivatJSONHelper::ParseTerminalResponse(const std::string& jsonResponse,
     }
 }
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON

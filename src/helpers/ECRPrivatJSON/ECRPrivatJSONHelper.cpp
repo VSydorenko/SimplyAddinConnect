@@ -2,7 +2,7 @@
 #include "helpers/ECRPrivatJSON/ECRPrivatJSONHelper.h"
 #include "helpers/ServiceTools.h"
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 // ===========================
 // Конструктор и деструктор
@@ -504,4 +504,4 @@ void ECRPrivatJSONHelper::SetTransport(ITransport* transport) {
     transport_ = transport;
 }
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON

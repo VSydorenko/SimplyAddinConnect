@@ -2,7 +2,7 @@
 #include "helpers/ECRPrivatJSON/ECRPrivatJSONHelper.h"
 #include "helpers/ServiceTools.h"
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 // Формирование JSON-запроса
 std::string ECRPrivatJSONHelper::BuildRequest(const std::string& method, const std::map<std::string, std::string>& params) {
@@ -170,4 +170,4 @@ std::string ECRPrivatJSONHelper::ServiceMessageTypeToString(ServiceMessageType m
     }
 }
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON

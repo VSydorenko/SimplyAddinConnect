@@ -5,7 +5,7 @@
 #include <iomanip>
 #include <sstream>
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 // ===========================
 // Сервисные операции
@@ -347,4 +347,4 @@ TerminalResponse ECRPrivatJSONProtocol::GetLastResponse() const {
     return lastResponse_;
 }
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON

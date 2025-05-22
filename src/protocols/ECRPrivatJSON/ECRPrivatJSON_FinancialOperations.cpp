@@ -5,7 +5,7 @@
 #include <iomanip>
 #include <sstream>
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 // ===========================
 // Финансовые операции
@@ -457,4 +457,4 @@ bool ECRPrivatJSONProtocol::GetReceipt(const std::string& transactionId) {
     }
 }
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON

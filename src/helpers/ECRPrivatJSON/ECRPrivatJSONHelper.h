@@ -14,7 +14,7 @@
 // Алиас для упрощения использования nlohmann::json
 using json = nlohmann::json;
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 /**
  * @class ECRPrivatJSONHelper
@@ -172,4 +172,4 @@ private:
     std::string response_;
 };
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON

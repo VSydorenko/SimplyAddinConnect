@@ -4,7 +4,7 @@
 #include "helpers/ServiceTools.h"
 
 // Используем пространство имен для типов и констант
-using namespace SimplyConnect;
+using namespace ECRPrivatJSON;
 
 // Инициализация статического поля names для регистрации компонента
 std::vector<std::u16string> AddinECRPrivatJSON::names = {

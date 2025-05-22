@@ -2,7 +2,7 @@
 #include "helpers/ECRPrivatJSON/ECRPrivatJSONHelper.h"
 #include "helpers/ServiceTools.h"
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 // Обработка полученных данных
 void ECRPrivatJSONHelper::ProcessReceivedData(const std::vector<uint8_t>& data) {
@@ -71,4 +71,4 @@ void ECRPrivatJSONHelper::SetTransport(ITransport* transport) {
     transport_ = transport;
 }
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON

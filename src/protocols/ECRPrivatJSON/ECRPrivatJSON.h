@@ -13,11 +13,11 @@
 #include <condition_variable>
 
 // Предварительное объявление для избежания циклических зависимостей
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
     class ECRPrivatJSONHelper;
 }
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 /**
  * @class ECRPrivatJSONProtocol
@@ -213,4 +213,4 @@ private:
     std::string receivedResponse_;
 };
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON

@@ -10,7 +10,7 @@
 #include <thread>
 #include <chrono>
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 // ===========================
 // Конструктор и деструктор
@@ -571,4 +571,4 @@ std::unique_ptr<ITransport> ECRPrivatJSONProtocol::CreateTransport(const std::st
     return nullptr;
 }
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON

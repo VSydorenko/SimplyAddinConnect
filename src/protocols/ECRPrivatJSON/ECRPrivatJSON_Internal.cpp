@@ -7,7 +7,7 @@
 #include <thread>
 #include <chrono>
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 // ===========================
 // Обработчики событий и внутренние методы
@@ -318,4 +318,4 @@ bool ECRPrivatJSONProtocol::IdentifyTerminal(std::string& terminalInfo) {
     }
 }
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON

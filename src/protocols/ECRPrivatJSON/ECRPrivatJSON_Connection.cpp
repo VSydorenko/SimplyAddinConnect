@@ -10,7 +10,7 @@
 #include <thread>
 #include <chrono>
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 // ===========================
 // Методы подключения через COM-порт
@@ -588,4 +588,4 @@ bool ECRPrivatJSONProtocol::IsConnected() const {
     return connected_ && transport_ && transport_->IsOpen();
 }
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON

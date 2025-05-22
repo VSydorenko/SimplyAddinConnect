@@ -5,7 +5,7 @@
 #include <vector>
 #include <functional>
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 /**
  * @brief Константы кодов ответа для протокола ECR Privat JSON
@@ -149,4 +149,4 @@ struct TerminalResponse {
     }
 };
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON

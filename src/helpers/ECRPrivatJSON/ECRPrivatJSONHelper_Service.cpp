@@ -4,7 +4,7 @@
 #include <iomanip>
 #include <sstream>
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 // Форматирование денежной суммы
 std::string ECRPrivatJSONHelper::FormatAmount(double amount, int precision) const {
@@ -92,4 +92,4 @@ std::string ECRPrivatJSONHelper::ExtractValueByKey(const std::string& jsonRespon
 
 // Метод IsSuccess перемещен в ECRPrivatJSONHelper.cpp для унификации
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON

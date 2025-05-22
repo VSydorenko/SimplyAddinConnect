@@ -3,7 +3,7 @@
 #include "helpers/ECRPrivatJSON/ECRPrivatJSONHelper.h"
 #include "helpers/ServiceTools.h"
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 // ===========================
 // Методы для хендшейка и идентификации
@@ -442,4 +442,4 @@ TerminalResponse ECRPrivatJSONProtocol::GetLastResponse() const {
     return lastResponse_;
 }
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON

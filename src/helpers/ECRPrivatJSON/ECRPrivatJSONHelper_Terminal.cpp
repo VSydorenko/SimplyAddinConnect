@@ -2,7 +2,7 @@
 #include "helpers/ECRPrivatJSON/ECRPrivatJSONHelper.h"
 #include "helpers/ServiceTools.h"
 
-namespace SimplyConnect {
+namespace ECRPrivatJSON {
 
 // Terminal-specific функции для работы с терминалом ПриватБанка
 
@@ -156,4 +156,4 @@ bool ECRPrivatJSONHelper::CheckHandshakeResult(const std::string& jsonResponse) 
     }
 }
 
-} // namespace SimplyConnect
+} // namespace ECRPrivatJSON
