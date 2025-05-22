@@ -112,9 +112,8 @@ bool ECRPrivatJSONHelper::ParseTerminalResponse(const std::string& jsonResponse,
         // Сохранение исходной JSON-строки
         response.jsonResponse = normalizedJson;
         
-        // Определение успешности выполнения по наличию params.receiptText
-        bool hasReceiptText = (j.contains("params") && j["params"].contains("receiptText"));
-        response.success = hasReceiptText;
+        // Определение успешности операции с использованием унифицированного метода IsSuccess
+        response.success = IsSuccess(normalizedJson);
         
         // Заполнение основной информации
         if (j.contains("method")) {

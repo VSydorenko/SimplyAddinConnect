@@ -90,27 +90,6 @@ std::string ECRPrivatJSONHelper::ExtractValueByKey(const std::string& jsonRespon
     }
 }
 
-// Проверка успешности выполнения операции
-bool ECRPrivatJSONHelper::IsSuccess(const std::string& jsonResponse) const {
-    try {
-        json j = ParseJSON(jsonResponse);
-        
-        // Операция успешна, если в ответе есть receiptText
-        if (j.contains("params") && j["params"].is_object()) {
-            auto params = j["params"];
-            return params.contains("receiptText") && !params["receiptText"].get<std::string>().empty();
-        }
-        
-        return false;
-    }
-    catch (const json::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга JSON: " + std::string(e.what()));
-        return false;
-    }
-    catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при проверке успешности операции: " + std::string(e.what()));
-        return false;
-    }
-}
+// Метод IsSuccess перемещен в ECRPrivatJSONHelper.cpp для унификации
 
 } // namespace SimplyConnect

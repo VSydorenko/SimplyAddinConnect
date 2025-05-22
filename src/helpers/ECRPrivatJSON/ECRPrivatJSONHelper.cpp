@@ -23,15 +23,7 @@ ECRPrivatJSONHelper::~ECRPrivatJSONHelper() {
 // Методы парсинга и форматирования JSON
 // ===========================
 
-json ECRPrivatJSONHelper::ParseJSON(const std::string& jsonString) {
-    try {
-        return json::parse(jsonString);
-    }
-    catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга JSON: " + std::string(e.what()) + ", строка: " + jsonString);
-        return json::object();
-    }
-}
+// Метод ParseJSON перемещен в ECRPrivatJSONHelper_Parsing.cpp для унификации
 
 std::string ECRPrivatJSONHelper::BuildRequest(const std::string& method, const std::map<std::string, std::string>& params) {
     try {
@@ -344,33 +336,52 @@ std::string ECRPrivatJSONHelper::ExtractValueByKey(const std::string& jsonRespon
 
 bool ECRPrivatJSONHelper::IsSuccess(const std::string& jsonResponse) const {
     try {
-        json responseJson = json::parse(jsonResponse);
+        json j = ParseJSON(jsonResponse);
         
-        // Проверка поля error
-        if (responseJson.contains("error") && responseJson["error"].is_boolean()) {
-            if (responseJson["error"].get<bool>()) {
-                return false;
-            }
-        }
-        
-        // Проверка кода ответа
-        if (responseJson.contains("params") && responseJson["params"].is_object()) {
-            if (responseJson["params"].contains("responseCode")) {
-                std::string responseCode = responseJson["params"]["responseCode"].get<std::string>();
-                return (responseCode == "0000" || responseCode == "00" || responseCode == "0010");
-            }
+        // Проверка успешности на основе кода ответа
+        if (j.contains("params") && j["params"].is_object()) {
+            auto params = j["params"];
             
-            if (responseJson["params"].contains("code")) {
-                std::string code = responseJson["params"]["code"].get<std::string>();
-                return (code == "00" || code == "0000" || code == "0010");
+            if (params.contains("responseCode")) {
+                std::string responseCode = params["responseCode"].get<std::string>();
+                
+                // Успешными считаем коды из документации
+                bool isSuccess = (responseCode == ResponseCodes::SUCCESS || 
+                                 responseCode == ResponseCodes::SUCCESS_SHORT || 
+                                 responseCode == ResponseCodes::PARTIAL_APPROVAL);
+                
+                // Специальный случай для метода "GetReceiptInfo" и для частичного одобрения (10) 
+                // согласно документации: "Виключенням є RC=10, який може бути при Partial approval 
+                // або при відміні операції Cashback, але успішному проведені оплати"
+                if (!isSuccess && responseCode == "10") {
+                    // Для GetReceiptInfo код 10 считается успешным
+                    if (j.contains("method") && j["method"].get<std::string>() == "GetReceiptInfo") {
+                        isSuccess = true;
+                    }
+                    // Для других операций проверяем поле error
+                    else if (j.contains("error") && j["error"].is_boolean()) {
+                        isSuccess = !j["error"].get<bool>();
+                    }
+                }
+                
+                return isSuccess;
             }
         }
         
-        // Если нет явных признаков ошибки, считаем успешным
-        return !responseJson.contains("error") || !responseJson["error"].get<bool>();
+        // Если нет кода ответа, то проверяем поле error
+        if (j.contains("error") && j["error"].is_boolean()) {
+            return !j["error"].get<bool>();
+        }
+        
+        // По умолчанию считаем неуспешным, если не удалось однозначно определить
+        return false;
+    }
+    catch (const json::exception& e) {
+        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга JSON: " + std::string(e.what()));
+        return false;
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка проверки успешности ответа: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при проверке успешности операции: " + std::string(e.what()));
         return false;
     }
 }
@@ -475,9 +486,11 @@ bool ECRPrivatJSONHelper::ParseTerminalResponse(const std::string& jsonResponse,
                 response.transactionTime = params["transactionTime"].get<std::string>();
             }
         }
-        
-        // Определяем успешность операции
+          // Определяем успешность операции
         response.isSuccess = IsSuccess(jsonResponse);
+        
+        // Для совместимости с разными версиями структуры
+        response.success = response.isSuccess;
         
         return true;
     }
