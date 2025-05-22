@@ -1,0 +1,64 @@
+#pragma once
+
+#include "../core/AddInNative.h"
+#include "../protocols/ECRPrivatJSON/ECRPrivatJSON.h"
+#include "../protocols/ECRPrivatJSON/ECRPrivatJSON_Types.h"
+#include <string>
+#include <vector>
+#include <memory>
+
+/**
+ * @class AddinECRPrivatJSON
+ * @brief Компонент для работы с эквайринговыми терминалами по протоколу ПриватБанка (JSON based)
+ * 
+ * Класс обеспечивает интеграцию с терминалами по протоколу ECR PrivatBank JSON based v1.0.3.1
+ */
+class AddinECRPrivatJSON : public AddInNative {
+public:
+    static std::vector<std::u16string> names;
+    AddinECRPrivatJSON();
+    virtual ~AddinECRPrivatJSON();
+    
+    /**
+     * @brief Получение структуры ответа последней операции
+     * @return Структура с данными ответа
+     */
+    SimplyConnect::TerminalResponse GetLastTerminalResponse() const;
+
+    /**
+     * @brief Проверяет успешность кода ответа терминала
+     * 
+     * @param responseCode Код ответа терминала
+     * @return bool Результат проверки (true - успешный код)
+     */
+    bool IsSuccessCode(const std::string& responseCode) const;
+
+    /**
+     * @brief Включает логирование для компонента
+     * 
+     * @param logLevel Уровень логирования (error, warn, info, debug, trace, off)
+     * @param logFilePath Путь к файлу логов
+     * @return bool Результат операции
+     * 
+     * @details Включает и настраивает логирование для компонента с указанным уровнем детализации.
+     * Доступные уровни: off, error, warn, info, debug, trace.
+     */
+    bool EnableLogging(const std::string& logLevel, const std::string& logFilePath);
+    
+private:
+    /**
+     * @brief Определение типа транспорта на основе строки подключения
+     * @param connectionString Строка подключения (COM порт, TCP адрес, WebSocket URL)
+     * @return Тип транспорта
+     */
+    std::string DetermineTransportType(const std::string& connectionString) const;
+    
+    // Метод для регистрации методов компонента
+    void RegisterMethods();
+    
+    // Протокол ECR Privat JSON
+    std::unique_ptr<SimplyConnect::ECRPrivatJSONProtocol> protocol_;
+    
+    // Последний ответ терминала в виде структуры
+    SimplyConnect::TerminalResponse lastTerminalResponse_;
+};
