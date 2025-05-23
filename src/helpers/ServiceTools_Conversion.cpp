@@ -83,16 +83,16 @@ std::wstring U16StringToWString(const std::u16string& str) {
  * @details Каждый байт представляется двумя шестнадцатеричными цифрами.
  * Например, байт со значением 255 будет представлен как "ff".
  */
-std::string BinaryToHex(const std::vector<uint8_t>& data) {
-    std::ostringstream ss;
-    ss << std::hex << std::setfill('0');
+// std::string BinaryToHex(const std::vector<uint8_t>& data) {
+//     std::ostringstream ss;
+//     ss << std::hex << std::setfill('0');
     
-    for (const auto& byte : data) {
-        ss << std::setw(2) << static_cast<int>(byte);
-    }
+//     for (const auto& byte : data) {
+//         ss << std::setw(2) << static_cast<int>(byte);
+//     }
     
-    return ss.str();
-}
+//     return ss.str();
+// }
 
 /**
  * @brief Преобразует шестнадцатеричную строку в бинарные данные
@@ -104,24 +104,24 @@ std::string BinaryToHex(const std::vector<uint8_t>& data) {
  * Если входная строка имеет нечетное количество символов или содержит
  * недопустимые символы, возвращается пустой вектор.
  */
-std::vector<uint8_t> HexToBinary(const std::string& hexString) {
-    std::vector<uint8_t> result;
+// std::vector<uint8_t> HexToBinary(const std::string& hexString) {
+//     std::vector<uint8_t> result;
     
-    if (hexString.empty() || hexString.length() % 2 != 0) {
-        return result;
-    }
+//     if (hexString.empty() || hexString.length() % 2 != 0) {
+//         return result;
+//     }
     
-    try {
-        for (size_t i = 0; i < hexString.length(); i += 2) {
-            std::string byteString = hexString.substr(i, 2);
-            uint8_t byte = static_cast<uint8_t>(std::stoi(byteString, nullptr, 16));
-            result.push_back(byte);
-        }
-    }
-    catch (const std::exception&) {
-        result.clear();
-    }
-      return result;
-}
+//     try {
+//         for (size_t i = 0; i < hexString.length(); i += 2) {
+//             std::string byteString = hexString.substr(i, 2);
+//             uint8_t byte = static_cast<uint8_t>(std::stoi(byteString, nullptr, 16));
+//             result.push_back(byte);
+//         }
+//     }
+//     catch (const std::exception&) {
+//         result.clear();
+//     }
+//       return result;
+// }
 
 } // namespace ServiceTools

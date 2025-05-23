@@ -291,7 +291,7 @@ std::wstring U16StringToWString(const std::u16string& str);
  * @details Каждый байт представляется двумя шестнадцатеричными цифрами.
  * Например, байт со значением 255 будет представлен как "ff".
  */
-std::string BinaryToHex(const std::vector<uint8_t>& data);
+// std::string BinaryToHex(const std::vector<uint8_t>& data);
 
 /**
  * @brief Преобразует шестнадцатеричную строку в бинарные данные
@@ -303,7 +303,7 @@ std::string BinaryToHex(const std::vector<uint8_t>& data);
  * Если входная строка имеет нечетное количество символов или содержит
  * недопустимые символы, возвращается пустой вектор.
  */
-std::vector<uint8_t> HexToBinary(const std::string& hexString);
+// std::vector<uint8_t> HexToBinary(const std::string& hexString);
 
 //=================================================================================================
 // Validation
