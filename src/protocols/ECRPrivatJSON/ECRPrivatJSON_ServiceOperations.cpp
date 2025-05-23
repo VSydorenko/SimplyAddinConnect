@@ -45,13 +45,11 @@ bool ECRPrivatJSONProtocol::GetDailyReport(const std::string& merchantId) {
                 NEUTRAL_REPORT_INFO(componentName_, "Запрос дневного отчета для всех мерчантов");
             }
         }
-        
         // Формируем и отправляем запрос
         std::string request = helper_->BuildRequest(
             helper_->OperationTypeToString(OperationType::Verify), 
             params
         );
-        request = helper_->AddNullTerminator(request);
         std::string response = helper_->SendReceive(request);
         
         // Сохраняем полный ответ
@@ -142,13 +140,11 @@ bool ECRPrivatJSONProtocol::GetXReport(const std::string& merchantId) {
                 NEUTRAL_REPORT_INFO(componentName_, "Запрос X-отчета для всех мерчантов");
             }
         }
-        
         // Формируем и отправляем запрос
         std::string request = helper_->BuildRequest(
             helper_->OperationTypeToString(OperationType::XReport), 
             params
         );
-        request = helper_->AddNullTerminator(request);
         std::string response = helper_->SendReceive(request);
         
         // Сохраняем полный ответ
@@ -239,13 +235,11 @@ bool ECRPrivatJSONProtocol::GetZReport(const std::string& merchantId) {
                 NEUTRAL_REPORT_INFO(componentName_, "Запрос Z-отчета для всех мерчантов");
             }
         }
-        
         // Формируем и отправляем запрос
         std::string request = helper_->BuildRequest(
             helper_->OperationTypeToString(OperationType::ZReport), 
             params
         );
-        request = helper_->AddNullTerminator(request);
         std::string response = helper_->SendReceive(request);
         
         // Сохраняем полный ответ
