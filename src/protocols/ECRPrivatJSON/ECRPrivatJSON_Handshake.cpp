@@ -310,8 +310,4 @@ std::string ECRPrivatJSONProtocol::GetTerminalInfo() {
     }
 }
 
-TerminalResponse ECRPrivatJSONProtocol::GetLastResponse() const {
-    return lastResponse_;
-}
-
 } // namespace ECRPrivatJSON

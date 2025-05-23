@@ -302,47 +302,6 @@ bool ECRPrivatJSONProtocol::GetZReport(const std::string& merchantId) {
     }
 }
 
-std::string ECRPrivatJSONProtocol::GetTerminalInfo() {
-    if (!IsConnected()) {
-        if (parentComponent_) {
-            REPORT_ERROR("Терминал не подключен");
-        } else {
-            NEUTRAL_REPORT_ERROR(componentName_, "Терминал не подключен");
-        }
-        return "";
-    }
-    
-    try {
-        std::string terminalInfo;
-        if (!IdentifyTerminal(terminalInfo)) {
-            if (parentComponent_) {
-                REPORT_ERROR("Ошибка получения информации о терминале");
-            } else {
-                NEUTRAL_REPORT_ERROR(componentName_, "Ошибка получения информации о терминале");
-            }
-            return "";
-        }
-        
-        return terminalInfo;
-    }
-    catch (const std::exception& e) {
-        if (parentComponent_) {
-            REPORT_ERROR("Ошибка при получении информации о терминале: " + std::string(e.what()));
-        } else {
-            NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при получении информации о терминале: " + std::string(e.what()));
-        }
-        return "";
-    }
-    catch (...) {
-        if (parentComponent_) {
-            REPORT_ERROR("Неизвестная ошибка при получении информации о терминале");
-        } else {
-            NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при получении информации о терминале");
-        }
-        return "";
-    }
-}
-
 TerminalResponse ECRPrivatJSONProtocol::GetLastResponse() const {
     return lastResponse_;
 }
