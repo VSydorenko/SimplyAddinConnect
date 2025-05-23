@@ -1,7 +1,7 @@
-#include "core/pch.h"
+#include "../core/pch.h"
 #include "AddinECRPrivatJSON.h"
-#include "protocols/ECRPrivatJSON/ECRPrivatJSON_Types.h"
-#include "helpers/ServiceTools.h"
+#include "../protocols/ECRPrivatJSON/ECRPrivatJSON_Types.h"
+#include "../helpers/ServiceTools.h"
 
 // Используем пространство имен для типов и констант
 using namespace ECRPrivatJSON;
