@@ -44,6 +44,20 @@ public:
     json ParseJSON(const std::string& jsonString);
 
     /**
+     * @brief Проверка корректности формата JSON
+     * @param jsonString JSON-строка для проверки
+     * @return true, если JSON корректный
+     */
+    bool IsJsonValid(const std::string& jsonString) const;
+
+    /**
+     * @brief Нормализация JSON-ответа
+     * @param jsonResponse JSON-строка для нормализации
+     * @return Нормализованная JSON-строка
+     */
+    std::string NormalizeResponseJson(const std::string& jsonResponse) const;
+
+    /**
      * @brief Формирование JSON-запроса
      * @param method Название метода
      * @param params Карта параметров метода
@@ -143,6 +157,47 @@ public:
      * @param transport Указатель на транспортный объект
      */
     void SetTransport(ITransport* transport);
+
+    /**
+     * @brief Извлечение текста чека из ответа терминала
+     * @param jsonResponse JSON-строка с ответом
+     * @return Текст чека
+     */
+    std::string ExtractReceiptText(const std::string& jsonResponse) const;
+
+    /**
+     * @brief Извлечение кода ответа из JSON
+     * @param jsonResponse JSON-строка с ответом
+     * @return Код ответа
+     */
+    std::string ExtractResponseCode(const std::string& jsonResponse) const;
+
+    /**
+     * @brief Извлечение сообщения об ошибке из ответа
+     * @param jsonResponse JSON-строка с ответом
+     * @return Сообщение об ошибке
+     */
+    std::string ExtractErrorMessage(const std::string& jsonResponse) const;
+
+    /**
+     * @brief Извлечение идентификатора транзакции
+     * @param jsonResponse JSON-строка с ответом
+     * @return Идентификатор транзакции
+     */
+    std::string ExtractTransactionId(const std::string& jsonResponse) const;    /**
+     * @brief Получение информации о терминале
+     * @param jsonResponse JSON-строка с ответом
+     * @param vendor Строка для сохранения информации о производителе (вендоре) терминала
+     * @param model Строка для сохранения модели терминала
+     * @param serialNumber Строка для сохранения серийного номера терминала
+     * @param firmware Строка для сохранения информации о прошивке терминала
+     * @return true, если информация о терминале успешно извлечена
+     */
+    bool ExtractTerminalInfo(const std::string& jsonResponse, 
+                             std::string& vendor,
+                             std::string& model,
+                             std::string& serialNumber,
+                             std::string& firmware) const;
 
 private:
     /**

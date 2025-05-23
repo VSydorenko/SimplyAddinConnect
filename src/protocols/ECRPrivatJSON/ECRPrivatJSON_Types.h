@@ -119,6 +119,20 @@ struct TerminalResponse {
     std::string terminalID;             // Идентификатор терминала
     std::string merchantID;             // Идентификатор мерчанта
     std::string transactionID;          // Идентификатор транзакции
+    std::string jsonResponse;           // Исходный JSON ответ
+    std::string method;                 // Метод операции
+    std::string errorMessage;           // Сообщение об ошибке
+    std::string receiptText;            // Текст чека в форматированном виде
+    std::string operationStatus;        // Статус операции
+    std::string totalAmount;            // Общая сумма
+    std::string currency;               // Валюта операции
+    std::string cardHolder;             // Держатель карты
+    std::string aid;                    // Application Identifier
+    std::string paymentStatus;          // Статус платежа
+    std::string bankName;               // Название банка
+    std::string refundNDSPerc;          // Процент НДС для возврата
+    std::string refundNDSAmount;        // Сумма НДС для возврата
+    bool success;                       // Успех операции
     std::string transactionDate;        // Дата транзакции
     std::string transactionTime;        // Время транзакции
     std::string operationName;          // Название операции
@@ -126,7 +140,7 @@ struct TerminalResponse {
     
     // Конструктор по умолчанию
     TerminalResponse() : isSuccess(false) {}
-    
+
     // Очистка структуры
     void Clear() {
         responseCode.clear();
@@ -146,6 +160,20 @@ struct TerminalResponse {
         transactionTime.clear();
         operationName.clear();
         isSuccess = false;
+        jsonResponse.clear();
+        method.clear();
+        errorMessage.clear();
+        receiptText.clear();
+        operationStatus.clear();
+        totalAmount.clear();
+        currency.clear();
+        cardHolder.clear();
+        aid.clear();
+        paymentStatus.clear();
+        bankName.clear();
+        refundNDSPerc.clear();
+        refundNDSAmount.clear();
+        success = false;
     }
 };
 

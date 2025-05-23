@@ -21,8 +21,8 @@ std::string ECRPrivatJSONHelper::FormatAmount(double amount, int precision) cons
             NEUTRAL_REPORT_WARN(componentName_, "Слишком большая сумма: " + std::to_string(amount) + ", будет ограничена до 999999.99");
             amount = 999999.99;
         }
+        
       // Форматируем сумму с нужной точностью
-    try {
         std::ostringstream ss;
         ss << std::fixed << std::setprecision(precision) << amount;
         std::string result = ss.str();

@@ -14,6 +14,7 @@ json ECRPrivatJSONHelper::ParseJSON(const std::string& jsonString) {
         // Проверяем валидность JSON
         if (!IsJsonValid(normalizedJson)) {
             NEUTRAL_REPORT_ERROR(componentName_, "Невалидный JSON");
+            return json::object(); // Возвращаем пустой объект JSON
         }
         
         NEUTRAL_REPORT_DEBUG(componentName_, "Парсинг JSON строки");
@@ -22,12 +23,15 @@ json ECRPrivatJSONHelper::ParseJSON(const std::string& jsonString) {
     }
     catch (const json::exception& e) {
         NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга JSON: " + std::string(e.what()));
+        return json::object(); // Возвращаем пустой объект JSON в случае ошибки
     }
     catch (const std::exception& e) {
         NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при обработке JSON: " + std::string(e.what()));
+        return json::object(); // Возвращаем пустой объект JSON в случае ошибки
     }
     catch (...) {
         NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при парсинге JSON");
+        return json::object(); // Возвращаем пустой объект JSON в случае ошибки
     }
 }
 
