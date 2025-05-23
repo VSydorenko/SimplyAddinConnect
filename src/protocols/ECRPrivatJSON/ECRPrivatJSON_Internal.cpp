@@ -97,7 +97,6 @@ bool ECRPrivatJSONProtocol::PerformHandshake() {
     
     try {
         // Формирование запроса хендшейка с дополнительным нулевым байтом в начале
-        // согласно протоколу ПриватБанка
         std::string request = helper_->BuildRequest("PingDevice", {}, true); // true для обозначения хендшейка
         
         // Отправка с ожиданием ответа
@@ -207,8 +206,7 @@ bool ECRPrivatJSONProtocol::IdentifyTerminal(std::string& terminalInfo) {
     
     try {
         // Формирование запроса идентификации
-        std::string request = helper_->BuildRequest("GetTerminalInfo");
-        request = helper_->AddNullTerminator(request); // добавляем нулевой байт в конце
+        std::string request = helper_->BuildRequest("GetTerminalInfo", {}, false);
         
         // Отправка с ожиданием ответа
         waitingForResponse_ = true;
