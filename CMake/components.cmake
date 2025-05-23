@@ -27,19 +27,17 @@ set(HEADER_FILES
     src/transport/Transport_TCP.h
     src/transport/Transport_WSClient.h
     src/transport/Transport_WSServer.h
-
-    # Следующие файлы закомментированы, так как они еще не существуют
     # src/helpers/LoggerHelper.h
     # src/helpers/BPOS1Parser.h
     # src/helpers/UapkiHelper.h
-    # src/helpers/ECRPrivatJSONHelper.h
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper.h
     # src/components/AddinECRCommX.h
     # src/components/AddinPOSAPI.h
     # src/components/AddinUAPKI.h
-    # src/components/AddinECRPrivatJSON.h
+    src/components/AddinECRPrivatJSON.h
     # src/transport/ECRPrivatJSONTransport.h
-    # src/protocols/ECRPrivatJSON.h
-    # src/protocols/ECRPrivatJSON_Types.h
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON.h
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON_Types.h
 )
 
 ## @var SOURCE_FILES
@@ -57,29 +55,27 @@ set(SOURCE_FILES
     src/transport/Transport_TCP.cpp
     src/transport/Transport_WSClient.cpp
     src/transport/Transport_WSServer.cpp
-    
-    # Следующие файлы закомментированы, так как они еще не существуют
     # src/helpers/LoggerHelper.cpp
     # src/helpers/BPOS1Parser.cpp
     # src/helpers/UapkiHelper.cpp
-    # src/helpers/ECRPrivatJSONHelper.cpp
-    # src/helpers/ECRPrivatJSONHelper_Parsing.cpp
-    # src/helpers/ECRPrivatJSONHelper_Request.cpp
-    # src/helpers/ECRPrivatJSONHelper_Response.cpp
-    # src/helpers/ECRPrivatJSONHelper_Service.cpp
-    # src/helpers/ECRPrivatJSONHelper_Terminal.cpp
-    # src/helpers/ECRPrivatJSONHelper_Utils.cpp
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper.cpp
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper_Parsing.cpp
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper_Request.cpp
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper_Response.cpp
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper_Service.cpp
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper_Terminal.cpp
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper_Utils.cpp
     # src/components/AddinECRCommX.cpp
     # src/components/AddinPOSAPI.cpp
     # src/components/AddinUAPKI.cpp
-    # src/components/AddinECRPrivatJSON.cpp
+    src/components/AddinECRPrivatJSON.cpp
     # src/transport/ECRPrivatJSONTransport.cpp
-    # src/protocols/ECRPrivatJSON.cpp
-    # src/protocols/ECRPrivatJSON_Connection.cpp
-    # src/protocols/ECRPrivatJSON_Handshake.cpp
-    # src/protocols/ECRPrivatJSON_Internal.cpp
-    # src/protocols/ECRPrivatJSON_FinancialOperations.cpp
-    # src/protocols/ECRPrivatJSON_ServiceOperations.cpp
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON.cpp
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON_Connection.cpp
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON_Handshake.cpp
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON_Internal.cpp
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON_FinancialOperations.cpp
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON_ServiceOperations.cpp
 )
 
 ## @var RESOURCE_FILES
@@ -126,7 +122,7 @@ add_library(helpers_component OBJECT
     src/helpers/ServiceTools_Conversion.cpp
     src/helpers/ServiceTools_Errors.cpp
     src/helpers/ServiceTools_Log.cpp
- )
+)
 
 # add_library(ecrcommx_component OBJECT
 #     src/components/AddinECRCommX.h
@@ -159,30 +155,32 @@ add_library(transport_component OBJECT
 
 ## @var privat_json_helper_component
 ## @brief Компонент для работы с протоколом ПриватБанка на основе JSON
-# add_library(privat_json_helper_component OBJECT
-#     src/helpers/ECRPrivatJSONHelper.h
-#     src/helpers/ECRPrivatJSONHelper.cpp
-#     src/helpers/ECRPrivatJSONHelper_Parsing.cpp
-#     src/helpers/ECRPrivatJSONHelper_Request.cpp
-#     src/helpers/ECRPrivatJSONHelper_Response.cpp
-#     src/helpers/ECRPrivatJSONHelper_Service.cpp
-#     src/helpers/ECRPrivatJSONHelper_Terminal.cpp
-#     src/helpers/ECRPrivatJSONHelper_Utils.cpp
-# )
+add_library(privat_json_helper_component OBJECT
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper.h
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper.cpp
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper_Parsing.cpp
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper_Request.cpp
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper_Response.cpp
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper_Service.cpp
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper_Terminal.cpp
+    src/helpers/ECRPrivatJSON/ECRPrivatJSONHelper_Utils.cpp
+)
 
 # Устанавливаем свойства для компонента JSON-обработки
-# set_target_properties(privat_json_helper_component PROPERTIES
-#     POSITION_INDEPENDENT_CODE ON
-#     CXX_STANDARD 17
-#     CXX_STANDARD_REQUIRED ON
-# )
+set_target_properties(privat_json_helper_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
 
 # Добавляем пути включения для компонента JSON-обработки
-# target_include_directories(privat_json_helper_component PRIVATE 
-#     include
-#     ${SPDLOG_INCLUDE_DIR}
-#     ${NLOHMANN_JSON_INCLUDE_DIR}
-# )
+target_include_directories(privat_json_helper_component PRIVATE 
+    include
+    ${CMAKE_SOURCE_DIR}
+    src
+    ${SPDLOG_INCLUDE_DIR}
+    ${NLOHMANN_JSON_INCLUDE_DIR}
+)
 
 ## @var ecr_json_transport_component
 ## @brief Компонент для транспортного уровня JSON протокола
@@ -206,29 +204,54 @@ add_library(transport_component OBJECT
 
 ## @var ecr_privat_json_component
 ## @brief Компонент для работы с платежным терминалом ПриватБанка по JSON-протоколу
-# add_library(ecr_privat_json_component OBJECT
-#     src/components/AddinECRPrivatJSON.h
-#     src/components/AddinECRPrivatJSON.cpp
-# )
+add_library(ecr_privat_json_component OBJECT
+    src/components/AddinECRPrivatJSON.h
+    src/components/AddinECRPrivatJSON.cpp
+)
+
+# Устанавливаем свойства для компонента ECR Privat JSON
+set_target_properties(ecr_privat_json_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+
+# Добавляем пути включения для компонента ECR Privat JSON
+target_include_directories(ecr_privat_json_component PRIVATE 
+    include
+    ${CMAKE_SOURCE_DIR}
+    src
+    ${SPDLOG_INCLUDE_DIR}
+    ${NLOHMANN_JSON_INCLUDE_DIR}
+)
 
 ## @var protocols_component
 ## @brief Компонент с протоколами взаємодії з терміналами
-# add_library(protocols_component OBJECT
-#     src/protocols/ECRPrivatJSON.h
-#     src/protocols/ECRPrivatJSON_Types.h
-#     src/protocols/ECRPrivatJSON.cpp
-#     src/protocols/ECRPrivatJSON_Connection.cpp
-#     src/protocols/ECRPrivatJSON_Handshake.cpp
-#     src/protocols/ECRPrivatJSON_Internal.cpp
-#     src/protocols/ECRPrivatJSON_FinancialOperations.cpp
-#     src/protocols/ECRPrivatJSON_ServiceOperations.cpp
-# )
+add_library(protocols_component OBJECT
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON.h
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON_Types.h
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON.cpp
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON_Connection.cpp
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON_Handshake.cpp
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON_Internal.cpp
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON_FinancialOperations.cpp
+    src/protocols/ECRPrivatJSON/ECRPrivatJSON_ServiceOperations.cpp
+)
 
-# set_target_properties(protocols_component PROPERTIES
-#     POSITION_INDEPENDENT_CODE ON
-#     CXX_STANDARD 17
-#     CXX_STANDARD_REQUIRED ON
-# )
+set_target_properties(protocols_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+
+# Добавляем пути включения для компонента протоколов
+target_include_directories(protocols_component PRIVATE 
+    include
+    ${CMAKE_SOURCE_DIR}
+    src
+    ${SPDLOG_INCLUDE_DIR}
+    ${NLOHMANN_JSON_INCLUDE_DIR}
+)
 
 ## @var uapki_helper_component
 ## @brief Вспомогательный компонент для работы с библиотекой UAPKI
@@ -272,7 +295,6 @@ endif()
 add_dependencies(test_component base_component spdlog)
 add_dependencies(helpers_component base_component spdlog)
 add_dependencies(transport_component base_component spdlog ixwebsocket)
-
 # add_dependencies(ecrcommx_component base_component spdlog)
 # add_dependencies(ecrcommx_component helpers_component)
 # add_dependencies(ecrcommx_component mscomm_component)
@@ -298,16 +320,21 @@ endif()
 # Зависимости для компонентов Privat JSON
 # add_dependencies(ecr_json_transport_component base_component spdlog)
 # target_link_libraries(ecr_json_transport_component PRIVATE interfaces_component spdlog::spdlog)
-# add_dependencies(privat_json_helper_component base_component spdlog)
-# add_dependencies(privat_json_helper_component helpers_component)
+add_dependencies(privat_json_helper_component base_component spdlog)
+add_dependencies(privat_json_helper_component helpers_component)
 # add_dependencies(privat_json_helper_component ecr_json_transport_component)
-# add_dependencies(privat_json_helper_component nlohmann_json)
-# add_dependencies(ecr_privat_json_component base_component spdlog)
-# add_dependencies(ecr_privat_json_component helpers_component)
-# add_dependencies(ecr_privat_json_component privat_json_helper_component)
+add_dependencies(privat_json_helper_component nlohmann_json)
+add_dependencies(protocols_component base_component spdlog)
+add_dependencies(protocols_component helpers_component)
+add_dependencies(protocols_component privat_json_helper_component)
+add_dependencies(ecr_privat_json_component base_component spdlog)
+add_dependencies(ecr_privat_json_component helpers_component)
+add_dependencies(ecr_privat_json_component privat_json_helper_component)
+add_dependencies(ecr_privat_json_component protocols_component)
 # target_link_libraries(ecr_json_transport_component PRIVATE interfaces_component)
-# target_link_libraries(privat_json_helper_component PRIVATE interfaces_component)
-# target_link_libraries(ecr_privat_json_component PRIVATE interfaces_component)
+target_link_libraries(privat_json_helper_component PRIVATE interfaces_component spdlog::spdlog nlohmann_json)
+target_link_libraries(protocols_component PRIVATE interfaces_component spdlog::spdlog)
+target_link_libraries(ecr_privat_json_component PRIVATE interfaces_component spdlog::spdlog)
 
 # Настраиваем свойства для транспортного компонента
 set_target_properties(transport_component PROPERTIES
@@ -337,10 +364,9 @@ add_library(${TARGET} SHARED
     $<TARGET_OBJECTS:transport_component>
     # $<TARGET_OBJECTS:ecrcommx_component>
     # $<TARGET_OBJECTS:posapi_component>
-    # $<TARGET_OBJECTS:ecr_json_transport_component>
-    # $<TARGET_OBJECTS:privat_json_helper_component>
-    # $<TARGET_OBJECTS:ecr_privat_json_component>
-    # $<TARGET_OBJECTS:protocols_component>
+    $<TARGET_OBJECTS:privat_json_helper_component>
+    $<TARGET_OBJECTS:ecr_privat_json_component>
+    $<TARGET_OBJECTS:protocols_component>
 
     # Включаем компоненты UAPKI только если включена опция
     $<$<BOOL:${BUILD_WITH_UAPKI}>:$<TARGET_OBJECTS:uapki_helper_component>>
