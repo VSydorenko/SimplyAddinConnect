@@ -10,31 +10,26 @@ namespace ECRPrivatJSON {
 // ===========================
 
 bool ECRPrivatJSONProtocol::PerformHandshake() {
-    if (parentComponent_) {
-        REPORT_INFO("Выполнение хендшейка с терминалом");
-    } else {
-        NEUTRAL_REPORT_INFO(componentName_, "Выполнение хендшейка с терминалом");
-    }
+    NEUTRAL_REPORT_INFO(componentName_, "Выполнение хендшейка с терминалом");
     
     try {
         if (!transport_ || !transport_->IsOpen() || !helper_) {
-            if (parentComponent_) {
-                REPORT_ERROR("Транспортный слой не инициализирован или не открыт");
-            } else {
-                NEUTRAL_REPORT_ERROR(componentName_, "Транспортный слой не инициализирован или не открыт");
-            }
+            NEUTRAL_REPORT_ERROR(componentName_, "Транспортный слой не инициализирован или не открыт");
             return false;
         }
         
         // Формируем запрос PingDevice с использованием хелпера
         std::map<std::string, std::string> params;
-        std::string request = helper_->BuildRequest("PingDevice", params, true); // true для обозначения хендшейка
         
-        if (parentComponent_) {
-            REPORT_DEBUG("Отправка хендшейк-запроса");
-        } else {
-            NEUTRAL_REPORT_DEBUG(componentName_, "Отправка хендшейк-запроса");
+        std::string request;
+        try {
+            request = helper_->BuildRequest("PingDevice", params, true); // true для обозначения хендшейка
+        } catch (const std::exception& e) {
+            NEUTRAL_REPORT_ERROR(componentName_, "Ошибка формирования хендшейк-запроса: " + std::string(e.what()));
+            return false;
         }
+        
+        NEUTRAL_REPORT_DEBUG(componentName_, "Отправка хендшейк-запроса");
         
         // Преобразуем в вектор байтов для отправки
         std::vector<uint8_t> requestData(request.begin(), request.end());
@@ -44,119 +39,109 @@ bool ECRPrivatJSONProtocol::PerformHandshake() {
         responseReceived_ = false;
         
         // Отправляем запрос
-        if (transport_->Send(requestData) <= 0) {
-            if (parentComponent_) {
-                REPORT_ERROR("Ошибка отправки хендшейк-запроса");
-            } else {
+        try {
+            if (transport_->Send(requestData) <= 0) {
                 NEUTRAL_REPORT_ERROR(componentName_, "Ошибка отправки хендшейк-запроса");
+                return false;
             }
+        } catch (const std::exception& e) {
+            NEUTRAL_REPORT_ERROR(componentName_, "Исключение при отправке хендшейк-запроса: " + std::string(e.what()));
             return false;
         }
         
         // Ожидаем ответ от терминала
         if (helper_) {
-            if (!helper_->WaitForResponse(5000)) { // 5 секунд таймаут для хендшейка
-                if (parentComponent_) {
-                    REPORT_ERROR("Таймаут ожидания ответа на хендшейк-запрос");
-                } else {
+            try {
+                if (!helper_->WaitForResponse(5000)) { // 5 секунд таймаут для хендшейка
                     NEUTRAL_REPORT_ERROR(componentName_, "Таймаут ожидания ответа на хендшейк-запрос");
+                    return false;
                 }
+            } catch (const std::exception& e) {
+                NEUTRAL_REPORT_ERROR(componentName_, "Исключение при ожидании ответа на хендшейк: " + std::string(e.what()));
                 return false;
             }
             
             // Получаем ответ
             std::string response = helper_->GetResponse();
             
-            if (parentComponent_) {
-                REPORT_DEBUG("Получен ответ на хендшейк: " + response);
-            } else {
-                NEUTRAL_REPORT_DEBUG(componentName_, "Получен ответ на хендшейк: " + response);
-            }
+            NEUTRAL_REPORT_DEBUG(componentName_, "Получен ответ на хендшейк: " + response);
             
             // Парсим ответ и проверяем успешность
-            bool success = helper_->IsSuccess(response);
+            bool success;
+            try {
+                success = helper_->IsSuccess(response);
+            } catch (const std::exception& e) {
+                NEUTRAL_REPORT_ERROR(componentName_, "Ошибка проверки успешности хендшейка: " + std::string(e.what()));
+                return false;
+            }
             
             if (success) {
-                if (parentComponent_) {
-                    REPORT_INFO("Хендшейк успешно выполнен");
-                } else {
-                    NEUTRAL_REPORT_INFO(componentName_, "Хендшейк успешно выполнен");
-                }
+                NEUTRAL_REPORT_INFO(componentName_, "Хендшейк успешно выполнен");
             } else {
-                if (parentComponent_) {
-                    REPORT_ERROR("Ошибка выполнения хендшейка: неуспешный ответ");
-                } else {
-                    NEUTRAL_REPORT_ERROR(componentName_, "Ошибка выполнения хендшейка: неуспешный ответ");
-                }
+                NEUTRAL_REPORT_ERROR(componentName_, "Ошибка выполнения хендшейка: неуспешный ответ");
             }
             
             // Сбрасываем состояние ответа
-            helper_->ResetResponseState();
+            try {
+                helper_->ResetResponseState();
+            } catch (...) {
+                // Игнорируем ошибки при сбросе состояния
+            }
             
             return success;
         }
+        
+        return false;
     }
     catch (const std::exception& e) {
-        if (parentComponent_) {
-            REPORT_ERROR("Ошибка выполнения хендшейка: " + std::string(e.what()));
-        } else {
-            NEUTRAL_REPORT_ERROR(componentName_, "Ошибка выполнения хендшейка: " + std::string(e.what()));
-        }
+        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка выполнения хендшейка: " + std::string(e.what()));
         return false;
     }
     catch (...) {
-        if (parentComponent_) {
-            REPORT_ERROR("Неизвестная ошибка выполнения хендшейка");
-        } else {
-            NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка выполнения хендшейка");
-        }
+        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка выполнения хендшейка");
         return false;
     }
 }
 
 bool ECRPrivatJSONProtocol::IdentifyTerminal(std::string& terminalInfo) {
-    if (parentComponent_) {
-        REPORT_INFO("Идентификация терминала");
-    } else {
-        NEUTRAL_REPORT_INFO(componentName_, "Идентификация терминала");
-    }
+    NEUTRAL_REPORT_INFO(componentName_, "Идентификация терминала");
     
     try {
         if (!transport_ || !transport_->IsOpen() || !helper_) {
-            if (parentComponent_) {
-                REPORT_ERROR("Транспортный слой не инициализирован или не открыт");
-            } else {
-                NEUTRAL_REPORT_ERROR(componentName_, "Транспортный слой не инициализирован или не открыт");
-            }
+            NEUTRAL_REPORT_ERROR(componentName_, "Транспортный слой не инициализирован или не открыт");
             return false;
         }
+        
         // Формируем запрос ServiceMessage с типом identify
         std::map<std::string, std::string> params;
         params["msgType"] = "identify";
         
         // Использование хелпера для создания JSON запроса
-        std::string request = helper_->BuildRequest("ServiceMessage", params);
+        std::string request;
+        try {
+            request = helper_->BuildRequest("ServiceMessage", params);
+        } catch (const std::exception& e) {
+            NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при формировании запроса идентификации: " + std::string(e.what()));
+            return false;
+        }
         
         // Преобразуем в вектор байтов для отправки
         std::vector<uint8_t> requestData(request.begin(), request.end());
         
-        if (parentComponent_) {
-            REPORT_DEBUG("Отправка запроса идентификации: " + request);
-        } else {
-            NEUTRAL_REPORT_DEBUG(componentName_, "Отправка запроса идентификации: " + request);
-        }
+        NEUTRAL_REPORT_DEBUG(componentName_, "Отправка запроса идентификации: " + request);
         
         // Обнуляем флаги ожидания и получения ответа
         waitingForResponse_ = true;
         responseReceived_ = false;
         
         // Отправляем запрос
-        if (transport_->Send(requestData) <= 0) {
-            if (parentComponent_) {
-                REPORT_ERROR("Ошибка отправки запроса идентификации");
-            } else {
+        try {
+            if (transport_->Send(requestData) <= 0) {
                 NEUTRAL_REPORT_ERROR(componentName_, "Ошибка отправки запроса идентификации");
+                return false;
             }
+        } catch (const std::exception& e) {
+            NEUTRAL_REPORT_ERROR(componentName_, "Исключение при отправке запроса идентификации: " + std::string(e.what()));
             return false;
         }
         
@@ -164,23 +149,20 @@ bool ECRPrivatJSONProtocol::IdentifyTerminal(std::string& terminalInfo) {
         std::string response;
         
         if (helper_) {
-            if (!helper_->WaitForResponse(5000)) {
-                if (parentComponent_) {
-                    REPORT_ERROR("Таймаут ожидания ответа на запрос идентификации");
-                } else {
+            try {
+                if (!helper_->WaitForResponse(5000)) {
                     NEUTRAL_REPORT_ERROR(componentName_, "Таймаут ожидания ответа на запрос идентификации");
+                    return false;
                 }
+                
+                response = helper_->GetResponse();
+            } catch (const std::exception& e) {
+                NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при получении ответа на запрос идентификации: " + std::string(e.what()));
                 return false;
             }
-            
-            response = helper_->GetResponse();
         }
         
-        if (parentComponent_) {
-            REPORT_DEBUG("Получен ответ на запрос идентификации: " + response);
-        } else {
-            NEUTRAL_REPORT_DEBUG(componentName_, "Получен ответ на запрос идентификации: " + response);
-        }
+        NEUTRAL_REPORT_DEBUG(componentName_, "Получен ответ на запрос идентификации: " + response);
         
         // Парсим ответ и извлекаем информацию о терминале
         try {
@@ -205,15 +187,15 @@ bool ECRPrivatJSONProtocol::IdentifyTerminal(std::string& terminalInfo) {
                 terminalInfo = terminalName + " " + terminalSerialNum;
                 
                 if (!terminalInfo.empty()) {
-                    if (parentComponent_) {
-                        REPORT_INFO("Идентификация успешно выполнена, терминал: " + terminalInfo);
-                    } else {
-                        NEUTRAL_REPORT_INFO(componentName_, "Идентификация успешно выполнена, терминал: " + terminalInfo);
-                    }
+                    NEUTRAL_REPORT_INFO(componentName_, "Идентификация успешно выполнена, терминал: " + terminalInfo);
                     
                     // Сбрасываем состояние ответа в хелпере
                     if (helper_) {
-                        helper_->ResetResponseState();
+                        try {
+                            helper_->ResetResponseState();
+                        } catch (...) {
+                            // Игнорируем ошибки при сбросе состояния
+                        }
                     }
                     
                     return true;
@@ -221,66 +203,50 @@ bool ECRPrivatJSONProtocol::IdentifyTerminal(std::string& terminalInfo) {
             }
             
             // Если не удалось извлечь информацию
-            if (parentComponent_) {
-                REPORT_ERROR("Ошибка идентификации терминала: нет информации в ответе");
-            } else {
-                NEUTRAL_REPORT_ERROR(componentName_, "Ошибка идентификации терминала: нет информации в ответе");
-            }
+            NEUTRAL_REPORT_ERROR(componentName_, "Ошибка идентификации терминала: нет информации в ответе");
             
             // Сбрасываем состояние ответа в хелпере
             if (helper_) {
-                helper_->ResetResponseState();
+                try {
+                    helper_->ResetResponseState();
+                } catch (...) {
+                    // Игнорируем ошибки при сбросе состояния
+                }
             }
             
             return false;
         }
         catch (const std::exception& e) {
-            if (parentComponent_) {
-                REPORT_ERROR("Ошибка парсинга ответа на запрос идентификации: " + std::string(e.what()));
-            } else {
-                NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга ответа на запрос идентификации: " + std::string(e.what()));
-            }
+            NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга ответа на запрос идентификации: " + std::string(e.what()));
             
             // Сбрасываем состояние ответа в хелпере
             if (helper_) {
-                helper_->ResetResponseState();
+                try {
+                    helper_->ResetResponseState();
+                } catch (...) {
+                    // Игнорируем ошибки при сбросе состояния
+                }
             }
             
             return false;
         }
     }
     catch (const std::exception& e) {
-        if (parentComponent_) {
-            REPORT_ERROR("Ошибка идентификации терминала: " + std::string(e.what()));
-        } else {
-            NEUTRAL_REPORT_ERROR(componentName_, "Ошибка идентификации терминала: " + std::string(e.what()));
-        }
+        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка идентификации терминала: " + std::string(e.what()));
         return false;
     }
     catch (...) {
-        if (parentComponent_) {
-            REPORT_ERROR("Неизвестная ошибка идентификации терминала");
-        } else {
-            NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка идентификации терминала");
-        }
+        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка идентификации терминала");
         return false;
     }
 }
 
 std::string ECRPrivatJSONProtocol::GetTerminalInfo() {
-    if (parentComponent_) {
-        REPORT_INFO("Запрос информации о терминале");
-    } else {
-        NEUTRAL_REPORT_INFO(componentName_, "Запрос информации о терминале");
-    }
+    NEUTRAL_REPORT_INFO(componentName_, "Запрос информации о терминале");
     
     try {
         if (!IsConnected()) {
-            if (parentComponent_) {
-                REPORT_ERROR("Не установлено соединение с терминалом");
-            } else {
-                NEUTRAL_REPORT_ERROR(componentName_, "Не установлено соединение с терминалом");
-            }
+            NEUTRAL_REPORT_ERROR(componentName_, "Не установлено соединение с терминалом");
             return "";
         }
         
@@ -293,19 +259,11 @@ std::string ECRPrivatJSONProtocol::GetTerminalInfo() {
         }
     }
     catch (const std::exception& e) {
-        if (parentComponent_) {
-            REPORT_ERROR("Ошибка получения информации о терминале: " + std::string(e.what()));
-        } else {
-            NEUTRAL_REPORT_ERROR(componentName_, "Ошибка получения информации о терминале: " + std::string(e.what()));
-        }
+        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка получения информации о терминале: " + std::string(e.what()));
         return "";
     }
     catch (...) {
-        if (parentComponent_) {
-            REPORT_ERROR("Неизвестная ошибка получения информации о терминале");
-        } else {
-            NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка получения информации о терминале");
-        }
+        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка получения информации о терминале");
         return "";
     }
 }
