@@ -132,42 +132,4 @@ std::string ECRPrivatJSONHelper::SendReceive(const std::string& request, int tim
     }
 }
 
-// Преобразование типа операции в строку
-std::string ECRPrivatJSONHelper::OperationTypeToString(OperationType opType) const {
-    switch (opType) {
-        case OperationType::Payment:
-            return "Payment";
-        case OperationType::Refund:
-            return "Refund";
-        case OperationType::Verify:
-            return "Verify";
-        case OperationType::Settlement:
-            return "Settlement";
-        case OperationType::XReport:
-            return "XReport";
-        case OperationType::ZReport:
-            return "ZReport";
-        case OperationType::Copy:
-            return "Copy";
-        case OperationType::ServiceMenu:
-            return "ServiceMenu";
-        default:
-            return "Unknown";
-    }
-}
-
-// Преобразование типа служебного сообщения в строку
-std::string ECRPrivatJSONHelper::ServiceMessageTypeToString(ServiceMessageType msgType) const {
-    switch (msgType) {
-        case ServiceMessageType::GetTerminalInfo:
-            return "GetTerminalInfo";
-        case ServiceMessageType::PingDevice:
-            return "PingDevice";
-        case ServiceMessageType::RunCommand:
-            return "RunCommand";
-        default:
-            return "Unknown";
-    }
-}
-
 } // namespace ECRPrivatJSON
