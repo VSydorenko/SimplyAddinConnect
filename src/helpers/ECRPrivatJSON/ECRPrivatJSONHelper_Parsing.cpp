@@ -92,6 +92,7 @@ std::string ECRPrivatJSONHelper::NormalizeResponseJson(const std::string& jsonSt
     return result;
 }
 
+// Парсинг ответа терминала в структуру TerminalResponse - перемещен из основного файла
 bool ECRPrivatJSONHelper::ParseTerminalResponse(const std::string& jsonResponse, TerminalResponse& response) const {
     try {
         // Нормализация JSON-строки

@@ -90,6 +90,4 @@ std::string ECRPrivatJSONHelper::ExtractValueByKey(const std::string& jsonRespon
     }
 }
 
-// Метод IsSuccess перемещен в ECRPrivatJSONHelper.cpp для унификации
-
 } // namespace ECRPrivatJSON

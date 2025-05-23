@@ -11,64 +11,48 @@ void ECRPrivatJSONHelper::ProcessReceivedData(const std::vector<uint8_t>& data) 
     // Добавляем полученные данные в буфер
     dataBuffer_.insert(dataBuffer_.end(), data.begin(), data.end());
     
-    // Проверяем, есть ли нулевой терминатор
-    int terminatorPos = FindNullTerminator();
-    
-    if (terminatorPos >= 0) {
-        // Создаем строку с JSON-ответом
-        std::string jsonResponse(dataBuffer_.begin(), dataBuffer_.begin() + terminatorPos);
-        
-        // Нормализуем JSON-строку
-        std::string normalizedJson = NormalizeResponseJson(jsonResponse);
-        
-        // Сохраняем ответ
-        receivedResponse_ = normalizedJson;
+    // Проверяем наличие нулевого терминатора в буфере
+    int nullPos = FindNullTerminator();
+    if (nullPos >= 0) {
+        // Найден нулевой терминатор, извлекаем сообщение
+        response_ = std::string(dataBuffer_.begin(), dataBuffer_.begin() + nullPos);
         responseReceived_ = true;
         
-        // Удаляем обработанные данные из буфера (включая нулевой терминатор)
-        dataBuffer_.erase(dataBuffer_.begin(), dataBuffer_.begin() + terminatorPos + 1);
+        // Удаляем обработанные данные из буфера
+        dataBuffer_.erase(dataBuffer_.begin(), dataBuffer_.begin() + nullPos + 1);
         
-        // Уведомляем ожидающий поток
-        dataCondition_.notify_all();
+        // Уведомляем о получении ответа
+        dataCondition_.notify_one();
     }
 }
 
 // Ожидание получения ответа
 bool ECRPrivatJSONHelper::WaitForResponse(int timeout) {
     std::unique_lock<std::mutex> lock(bufferMutex_);
-    
-    // Ждем, пока не получим ответ или не истечет таймаут
-    return dataCondition_.wait_for(lock, std::chrono::milliseconds(timeout), [this] {
-        return responseReceived_;
-    });
+    return dataCondition_.wait_for(lock, std::chrono::milliseconds(timeout),
+        [this] { return responseReceived_; });
 }
 
 // Получение накопленного ответа
 std::string ECRPrivatJSONHelper::GetResponse() {
     std::lock_guard<std::mutex> lock(bufferMutex_);
-    return receivedResponse_;
+    return response_;
 }
 
 // Сброс состояния ожидания ответа
 void ECRPrivatJSONHelper::ResetResponseState() {
     std::lock_guard<std::mutex> lock(bufferMutex_);
     responseReceived_ = false;
-    receivedResponse_.clear();
+    response_.clear();
 }
 
 // Поиск нулевого терминатора в буфере
 int ECRPrivatJSONHelper::FindNullTerminator() const {
-    for (size_t i = 0; i < dataBuffer_.size(); i++) {
-        if (dataBuffer_[i] == 0) {
-            return static_cast<int>(i);
-        }
+    auto it = std::find(dataBuffer_.begin(), dataBuffer_.end(), 0);
+    if (it != dataBuffer_.end()) {
+        return static_cast<int>(std::distance(dataBuffer_.begin(), it));
     }
     return -1;
-}
-
-// Установка транспортного объекта
-void ECRPrivatJSONHelper::SetTransport(ITransport* transport) {
-    transport_ = transport;
 }
 
 } // namespace ECRPrivatJSON
