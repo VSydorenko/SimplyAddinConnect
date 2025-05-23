@@ -41,7 +41,7 @@ public:
      * @param jsonString JSON-строка для парсинга
      * @return Объект json с распарсенными данными
      */
-    json ParseJSON(const std::string& jsonString);
+    json ParseJSON(const std::string& jsonString) const;
 
     /**
      * @brief Проверка корректности формата JSON
@@ -184,7 +184,9 @@ public:
      * @param jsonResponse JSON-строка с ответом
      * @return Идентификатор транзакции
      */
-    std::string ExtractTransactionId(const std::string& jsonResponse) const;    /**
+    std::string ExtractTransactionId(const std::string& jsonResponse) const;
+
+    /**
      * @brief Получение информации о терминале
      * @param jsonResponse JSON-строка с ответом
      * @param vendor Строка для сохранения информации о производителе (вендоре) терминала
@@ -198,6 +200,13 @@ public:
                              std::string& model,
                              std::string& serialNumber,
                              std::string& firmware) const;
+
+    /**
+     * @brief Проверка результата хендшейка
+     * @param jsonResponse JSON-строка с ответом
+     * @return true, если хендшейк успешен
+     */
+    bool CheckHandshakeResult(const std::string& jsonResponse) const;
 
 private:
     /**

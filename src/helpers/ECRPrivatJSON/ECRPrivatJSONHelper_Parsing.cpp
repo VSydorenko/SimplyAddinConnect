@@ -6,7 +6,7 @@
 namespace ECRPrivatJSON {
 
 // Парсинг JSON-строки в объект json
-json ECRPrivatJSONHelper::ParseJSON(const std::string& jsonString) {
+json ECRPrivatJSONHelper::ParseJSON(const std::string& jsonString) const {
     try {
         // Нормализуем JSON-строку перед обработкой
         std::string normalizedJson = NormalizeResponseJson(jsonString);
@@ -193,7 +193,7 @@ bool ECRPrivatJSONHelper::ParseTerminalResponse(const std::string& jsonResponse,
             if (params.contains("currency")) {
                 response.currency = params["currency"].get<std::string>();
             }
-            
+
             if (params.contains("transactionId")) {
                 response.transactionID = params["transactionId"].get<std::string>();
             }
