@@ -5,16 +5,17 @@
 namespace ECRPrivatJSON {
 
 // Формирование JSON-запроса
-std::string ECRPrivatJSONHelper::BuildRequest(const std::string& method, const std::map<std::string, std::string>& params) {
+std::string ECRPrivatJSONHelper::BuildRequest(const std::string& method, const std::map<std::string, std::string>& params, bool isHandshake) {
     // Создаём JSON объект с использованием nlohmann/json
-    NEUTRAL_REPORT_DEBUG(componentName_, "Формирование JSON-запроса для метода: " + method);
+    NEUTRAL_REPORT_DEBUG(componentName_, "Формирование JSON-запроса для метода: " + method +
+                       (isHandshake ? " (хендшейк)" : ""));
     
     try {
-        json j;
+        json requestJson;
         
         // Добавляем основные поля
-        j["method"] = method;
-        j["step"] = 0;
+        requestJson["method"] = method;
+        requestJson["step"] = 0;
     
         // Если есть параметры, добавляем их в объект params
         if (!params.empty()) {
@@ -27,10 +28,14 @@ std::string ECRPrivatJSONHelper::BuildRequest(const std::string& method, const s
             }
             
             // Добавляем объект params в корневой объект
-            j["params"] = params_obj;
-        }    
+            requestJson["params"] = params_obj;
+        }
+        
         // Сериализуем JSON в строку
-        return j.dump();
+        std::string jsonString = requestJson.dump();
+        
+        // Добавляем нулевые терминаторы в соответствии с протоколом
+        return AddNullTerminator(jsonString, isHandshake);
     }
     catch (const json::exception& e) {
         NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга JSON: " + std::string(e.what()));
@@ -43,24 +48,26 @@ std::string ECRPrivatJSONHelper::BuildRequest(const std::string& method, const s
 }
 
 // Добавление нулевых разделителей к JSON согласно протоколу
-std::string ECRPrivatJSONHelper::AddNullTerminator(const std::string& json, bool addLeadingNull) {
+std::string ECRPrivatJSONHelper::AddNullTerminator(const std::string& json, bool isHandshake) {
     try {
-        NEUTRAL_REPORT_DEBUG(componentName_, "Добавление нулевых разделителей к JSON");
+        NEUTRAL_REPORT_DEBUG(componentName_, "Добавление нулевых разделителей к JSON" + 
+                           (isHandshake ? " (для хендшейка)" : ""));
         
-        std::string result;
+        // Создаем вектор для результата
+        std::vector<uint8_t> result;
         
-        // Добавляем начальный нулевой байт, если требуется (для хендшейка)
-        if (addLeadingNull) {
-            result.push_back('\0');
+        // Для хендшейка добавляем начальный нулевой байт
+        if (isHandshake) {
+            result.push_back(0);
         }
         
-        // Добавляем JSON-строку
-        result.append(json);
+        // Добавляем JSON-данные
+        result.insert(result.end(), json.begin(), json.end());
         
-        // Добавляем конечный нулевой байт
-        result.push_back('\0');
+        // Добавляем завершающий нулевой байт
+        result.push_back(0);
         
-        return result;
+        return std::string(result.begin(), result.end());
     }
     catch (const std::exception& e) {
         NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при добавлении нулевых разделителей: " + std::string(e.what()));

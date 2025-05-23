@@ -26,39 +26,18 @@ bool ECRPrivatJSONProtocol::PerformHandshake() {
             return false;
         }
         
-        // Формируем запрос PingDevice
+        // Формируем запрос PingDevice с использованием хелпера
         std::map<std::string, std::string> params;
-        std::string methodName = "PingDevice";
-        
-        // Создаем JSON запрос
-        json requestJson;
-        requestJson["method"] = methodName;
-        requestJson["step"] = 0;
-        
-        // Добавляем параметры, если они есть
-        if (!params.empty()) {
-            json paramsJson;
-            for (const auto& param : params) {
-                paramsJson[param.first] = param.second;
-            }
-            requestJson["params"] = paramsJson;
-        }
-        
-        // Преобразуем JSON в строку
-        std::string request = requestJson.dump();
-        
-        // Добавляем нулевые терминаторы согласно протоколу
-        // Для хендшейка нужен дополнительный нулевой терминатор в начале
-        std::vector<uint8_t> requestData;
-        requestData.push_back(0); // Начальный нулевой терминатор для хендшейка
-        requestData.insert(requestData.end(), request.begin(), request.end());
-        requestData.push_back(0); // Конечный нулевой терминатор
+        std::string request = helper_->BuildRequest("PingDevice", params, true); // true для обозначения хендшейка
         
         if (parentComponent_) {
-            REPORT_DEBUG("Отправка хендшейк-запроса: " + request);
+            REPORT_DEBUG("Отправка хендшейк-запроса");
         } else {
-            NEUTRAL_REPORT_DEBUG(componentName_, "Отправка хендшейк-запроса: " + request);
+            NEUTRAL_REPORT_DEBUG(componentName_, "Отправка хендшейк-запроса");
         }
+        
+        // Преобразуем в вектор байтов для отправки
+        std::vector<uint8_t> requestData(request.begin(), request.end());
         
         // Обнуляем флаги ожидания и получения ответа
         waitingForResponse_ = true;
@@ -116,78 +95,6 @@ bool ECRPrivatJSONProtocol::PerformHandshake() {
             
             return success;
         }
-        else {
-            // Если хелпер не инициализирован, ожидаем ответ самостоятельно
-            std::unique_lock<std::mutex> lock(bufferMutex_);
-            bool result = dataCondition_.wait_for(lock, std::chrono::milliseconds(5000),
-                [this] { return responseReceived_; });
-            
-            if (!result) {
-                if (parentComponent_) {
-                    REPORT_ERROR("Таймаут ожидания ответа на хендшейк-запрос");
-                } else {
-                    NEUTRAL_REPORT_ERROR(componentName_, "Таймаут ожидания ответа на хендшейк-запрос");
-                }
-                waitingForResponse_ = false;
-                return false;
-            }
-            
-            // Проверяем ответ
-            if (parentComponent_) {
-                REPORT_DEBUG("Получен ответ на хендшейк: " + receivedResponse_);
-            } else {
-                NEUTRAL_REPORT_DEBUG(componentName_, "Получен ответ на хендшейк: " + receivedResponse_);
-            }
-            
-            // Анализируем полученный ответ
-            try {
-                json responseJson = json::parse(receivedResponse_);
-                bool success = false;
-                
-                // Проверяем наличие полей в ответе
-                if (responseJson.contains("error")) {
-                    success = !responseJson["error"].get<bool>();
-                }
-                
-                if (responseJson.contains("params") && responseJson["params"].is_object() &&
-                    responseJson["params"].contains("responseCode")) {
-                    std::string responseCode = responseJson["params"]["responseCode"];
-                    success = (responseCode == "0000" || responseCode == "00");
-                }
-                
-                // Сбрасываем состояние ответа
-                waitingForResponse_ = false;
-                responseReceived_ = false;
-                receivedResponse_.clear();
-                
-                if (success) {
-                    if (parentComponent_) {
-                        REPORT_INFO("Хендшейк успешно выполнен");
-                    } else {
-                        NEUTRAL_REPORT_INFO(componentName_, "Хендшейк успешно выполнен");
-                    }
-                } else {
-                    if (parentComponent_) {
-                        REPORT_ERROR("Ошибка выполнения хендшейка: неуспешный ответ");
-                    } else {
-                        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка выполнения хендшейка: неуспешный ответ");
-                    }
-                }
-                
-                return success;
-            }
-            catch (const std::exception& e) {
-                if (parentComponent_) {
-                    REPORT_ERROR("Ошибка парсинга ответа на хендшейк: " + std::string(e.what()));
-                } else {
-                    NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга ответа на хендшейк: " + std::string(e.what()));
-                }
-                waitingForResponse_ = false;
-                responseReceived_ = false;
-                receivedResponse_.clear();
-                return false;
-            }
-        }
     }
     catch (const std::exception& e) {
         if (parentComponent_) {
@@ -223,29 +130,15 @@ bool ECRPrivatJSONProtocol::IdentifyTerminal(std::string& terminalInfo) {
             }
             return false;
         }
-        
         // Формируем запрос ServiceMessage с типом identify
         std::map<std::string, std::string> params;
         params["msgType"] = "identify";
         
-        // Создаем JSON запрос
-        json requestJson;
-        requestJson["method"] = "ServiceMessage";
-        requestJson["step"] = 0;
+        // Использование хелпера для создания JSON запроса
+        std::string request = helper_->BuildRequest("ServiceMessage", params);
         
-        // Добавляем параметры
-        json paramsJson;
-        for (const auto& param : params) {
-            paramsJson[param.first] = param.second;
-        }
-        requestJson["params"] = paramsJson;
-        
-        // Преобразуем JSON в строку
-        std::string request = requestJson.dump();
-        
-        // Добавляем нулевой терминатор в конец
+        // Преобразуем в вектор байтов для отправки
         std::vector<uint8_t> requestData(request.begin(), request.end());
-        requestData.push_back(0);
         
         if (parentComponent_) {
             REPORT_DEBUG("Отправка запроса идентификации: " + request);
@@ -281,27 +174,6 @@ bool ECRPrivatJSONProtocol::IdentifyTerminal(std::string& terminalInfo) {
             }
             
             response = helper_->GetResponse();
-        }
-        else {
-            // Если хелпер не инициализирован, ожидаем ответ самостоятельно
-            std::unique_lock<std::mutex> lock(bufferMutex_);
-            bool result = dataCondition_.wait_for(lock, std::chrono::milliseconds(5000),
-                [this] { return responseReceived_; });
-            
-            if (!result) {
-                if (parentComponent_) {
-                    REPORT_ERROR("Таймаут ожидания ответа на запрос идентификации");
-                } else {
-                    NEUTRAL_REPORT_ERROR(componentName_, "Таймаут ожидания ответа на запрос идентификации");
-                }
-                waitingForResponse_ = false;
-                return false;
-            }
-            
-            response = receivedResponse_;
-            waitingForResponse_ = false;
-            responseReceived_ = false;
-            receivedResponse_.clear();
         }
         
         if (parentComponent_) {

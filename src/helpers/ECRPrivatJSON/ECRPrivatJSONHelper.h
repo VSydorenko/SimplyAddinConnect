@@ -30,7 +30,7 @@ public:
      * @param componentName Имя компонента для логирования
      */
     explicit ECRPrivatJSONHelper(ITransport* transport, const std::string& componentName);
-    
+
     /**
      * @brief Деструктор
      */
@@ -47,10 +47,11 @@ public:
      * @brief Формирование JSON-запроса
      * @param method Название метода
      * @param params Карта параметров метода
-     * @return Строка с JSON-запросом
+     * @param isHandshake Флаг указывающий, что запрос является частью хендшейка (требует нулевой байт в начале)
+     * @return Строка с JSON-запросом с добавленными нулевыми терминаторами
      */
-    std::string BuildRequest(const std::string& method, const std::map<std::string, std::string>& params = {});
-    
+    std::string BuildRequest(const std::string& method, const std::map<std::string, std::string>& params = {}, bool isHandshake = false);
+
     /**
      * @brief Отправка запроса и получение ответа
      * @param request Строка с запросом
@@ -58,34 +59,34 @@ public:
      * @return Ответ от терминала
      */
     std::string SendReceive(const std::string& request, int timeout = 30000);
-    
+
     /**
-     * @brief Добавление нулевого терминатора к JSON
-     * @param json Строка с JSON
-     * @param addLeadingNull Добавлять ли начальный нулевой терминатор (для хендшейка)
-     * @return Строка с добавленным нулевым терминатором
+     * @brief Добавляет нулевые терминаторы к JSON строке согласно протоколу
+     * @param json Исходная JSON строка
+     * @param isHandshake Флаг указывающий, что запрос является частью хендшейка (требует нулевой байт в начале)
+     * @return Строка с добавленными нулевыми терминаторами
      */
-    std::string AddNullTerminator(const std::string& json, bool addLeadingNull = false);
-    
+    std::string AddNullTerminator(const std::string& json, bool isHandshake = false);
+
     /**
      * @brief Обработка полученных данных
      * @param data Полученные данные
      */
     void ProcessReceivedData(const std::vector<uint8_t>& data);
-    
+
     /**
      * @brief Ожидание получения ответа
      * @param timeout Таймаут ожидания в миллисекундах
      * @return true, если ответ получен до истечения таймаута
      */
     bool WaitForResponse(int timeout);
-    
+
     /**
      * @brief Получение накопленного ответа
      * @return Строка с ответом
      */
     std::string GetResponse();
-    
+
     /**
      * @brief Сброс состояния ожидания ответа
      */
