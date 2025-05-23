@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../protocols/ECRPrivatJSON/ECRPrivatJSON_Types.h"
-#include "../transport/Transport.h"
+#include "../../protocols/ECRPrivatJSON/ECRPrivatJSON_Types.h"
+#include "../../transport/Transport.h"
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>

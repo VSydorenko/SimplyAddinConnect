@@ -1,6 +1,6 @@
-#include "core/pch.h"
-#include "helpers/ECRPrivatJSON/ECRPrivatJSONHelper.h"
-#include "helpers/ServiceTools.h"
+#include "../../core/pch.h"
+#include "ECRPrivatJSONHelper.h"
+#include "../ServiceTools.h"
 #include <stdexcept>
 
 namespace ECRPrivatJSON {

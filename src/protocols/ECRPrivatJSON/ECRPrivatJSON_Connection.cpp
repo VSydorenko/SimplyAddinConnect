@@ -1,14 +1,12 @@
-#include "core/pch.h"
-#include "protocols/ECRPrivatJSON/ECRPrivatJSON.h"
-#include "helpers/ECRPrivatJSON/ECRPrivatJSONHelper.h"
-#include "transport/Transport_COM.h"
-#include "transport/Transport_TCP.h"
-#include "transport/Transport_WSClient.h"
-#include "helpers/ServiceTools.h"
+#include "../../core/pch.h"
+#include "ECRPrivatJSON.h"
+#include "../../helpers/ECRPrivatJSON/ECRPrivatJSONHelper.h"
+#include "../../transport/Transport_COM.h"
+#include "../../transport/Transport_TCP.h"
+#include "../../transport/Transport_WSClient.h"
+#include "../../helpers/ServiceTools.h"
 #include <iomanip>
 #include <sstream>
-#include <thread>
-#include <chrono>
 
 namespace ECRPrivatJSON {
 

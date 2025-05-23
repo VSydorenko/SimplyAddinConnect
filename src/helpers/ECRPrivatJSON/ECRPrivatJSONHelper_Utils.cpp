@@ -1,8 +1,6 @@
-#include "core/pch.h"
-#include "helpers/ECRPrivatJSON/ECRPrivatJSONHelper.h"
-#include "helpers/ServiceTools.h"
-#include <algorithm>
-#include <vector>
+#include "../../core/pch.h"
+#include "ECRPrivatJSONHelper.h"
+#include "../ServiceTools.h"
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
