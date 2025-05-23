@@ -97,7 +97,6 @@ std::string ECRPrivatJSONHelper::AddNullTerminator(const std::string& json, bool
         return json;
     }
 }
-}
 
 // Отправка запроса и получение ответа
 std::string ECRPrivatJSONHelper::SendReceive(const std::string& request, int timeout) {

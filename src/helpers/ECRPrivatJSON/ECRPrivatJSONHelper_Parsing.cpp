@@ -195,11 +195,11 @@ bool ECRPrivatJSONHelper::ParseTerminalResponse(const std::string& jsonResponse,
             }
             
             if (params.contains("transactionId")) {
-                response.transactionId = params["transactionId"].get<std::string>();
+                response.transactionID = params["transactionId"].get<std::string>();
             }
             
             if (params.contains("terminalId")) {
-                response.terminalId = params["terminalId"].get<std::string>();
+                response.terminalID = params["terminalId"].get<std::string>();
             }
             
             if (params.contains("approvalCode")) {
@@ -221,9 +221,9 @@ bool ECRPrivatJSONHelper::ParseTerminalResponse(const std::string& jsonResponse,
             if (params.contains("cardHolder")) {
                 response.cardHolder = params["cardHolder"].get<std::string>();
             }
-            
+
             if (params.contains("merchantId")) {
-                response.merchantId = params["merchantId"].get<std::string>();
+                response.merchantID = params["merchantId"].get<std::string>();
             }
             
             if (params.contains("AID")) {
