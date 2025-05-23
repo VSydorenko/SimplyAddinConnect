@@ -7,8 +7,9 @@ namespace ECRPrivatJSON {
 // Формирование JSON-запроса
 std::string ECRPrivatJSONHelper::BuildRequest(const std::string& method, const std::map<std::string, std::string>& params, bool isHandshake) {
     // Создаём JSON объект с использованием nlohmann/json
-    NEUTRAL_REPORT_DEBUG(componentName_, "Формирование JSON-запроса для метода: " + method +
-                       (isHandshake ? " (хендшейк)" : ""));
+    NEUTRAL_REPORT_DEBUG(componentName_, isHandshake ? 
+        "Формирование JSON-запроса для метода: " + method + " (хендшейк)" : 
+        "Формирование JSON-запроса для метода: " + method);
     
     try {
         json requestJson;
@@ -25,14 +26,18 @@ std::string ECRPrivatJSONHelper::BuildRequest(const std::string& method, const s
             // Добавляем все параметры
             for (const auto& param : params) {
                 params_obj[param.first] = param.second;
+                NEUTRAL_REPORT_TRACE(componentName_, "Добавлен параметр: " + param.first);
             }
             
             // Добавляем объект params в корневой объект
             requestJson["params"] = params_obj;
+        } else {
+            NEUTRAL_REPORT_TRACE(componentName_, "Запрос без дополнительных параметров");
         }
         
         // Сериализуем JSON в строку
         std::string jsonString = requestJson.dump();
+        NEUTRAL_REPORT_TRACE(componentName_, "JSON сформирован, размер: " + std::to_string(jsonString.length()) + " байт");
         
         // Добавляем нулевые терминаторы в соответствии с протоколом
         return AddNullTerminator(jsonString, isHandshake);
@@ -45,13 +50,23 @@ std::string ECRPrivatJSONHelper::BuildRequest(const std::string& method, const s
         NEUTRAL_REPORT_ERROR(componentName_, "Ошибка формирования JSON-запроса: " + std::string(e.what()));
         return "";
     }
+    catch (...) {
+        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при формировании JSON-запроса");
+        return "";
+    }
 }
 
 // Добавление нулевых разделителей к JSON согласно протоколу
 std::string ECRPrivatJSONHelper::AddNullTerminator(const std::string& json, bool isHandshake) {
     try {
-        NEUTRAL_REPORT_DEBUG(componentName_, "Добавление нулевых разделителей к JSON" + 
-                           (isHandshake ? " (для хендшейка)" : ""));
+        NEUTRAL_REPORT_DEBUG(componentName_, isHandshake ? 
+            "Добавление нулевых разделителей к JSON (для хендшейка)" : 
+            "Добавление нулевых разделителей к JSON");
+        
+        if (json.empty()) {
+            NEUTRAL_REPORT_WARN(componentName_, "Получена пустая JSON строка для обработки");
+            return json;
+        }
         
         // Создаем вектор для результата
         std::vector<uint8_t> result;
@@ -59,6 +74,7 @@ std::string ECRPrivatJSONHelper::AddNullTerminator(const std::string& json, bool
         // Для хендшейка добавляем начальный нулевой байт
         if (isHandshake) {
             result.push_back(0);
+            NEUTRAL_REPORT_TRACE(componentName_, "Добавлен начальный нулевой байт для хендшейка");
         }
         
         // Добавляем JSON-данные
@@ -67,6 +83,8 @@ std::string ECRPrivatJSONHelper::AddNullTerminator(const std::string& json, bool
         // Добавляем завершающий нулевой байт
         result.push_back(0);
         
+        NEUTRAL_REPORT_TRACE(componentName_, "Завершающий нулевой байт добавлен");
+        
         return std::string(result.begin(), result.end());
     }
     catch (const std::exception& e) {
@@ -74,20 +92,26 @@ std::string ECRPrivatJSONHelper::AddNullTerminator(const std::string& json, bool
         // Возвращаем исходную строку в случае ошибки
         return json;
     }
+    catch (...) {
+        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при добавлении нулевых разделителей");
+        return json;
+    }
+}
 }
 
 // Отправка запроса и получение ответа
 std::string ECRPrivatJSONHelper::SendReceive(const std::string& request, int timeout) {
     if (!transport_) {
         NEUTRAL_REPORT_ERROR(componentName_, "Не установлен транспортный объект");
-        throw std::runtime_error("Транспортный объект не установлен");
+        return "";
     }
     
     if (!transport_->IsOpen()) {
         NEUTRAL_REPORT_ERROR(componentName_, "Транспортное соединение не открыто");
-        throw std::runtime_error("Транспортное соединение не открыто");
+        return "";
     }
     
+    NEUTRAL_REPORT_INFO(componentName_, "Начинается отправка запроса (размер: " + std::to_string(request.length()) + " байт)");
     NEUTRAL_REPORT_DEBUG(componentName_, "Отправка запроса: " + request);
     
     try {
@@ -100,42 +124,47 @@ std::string ECRPrivatJSONHelper::SendReceive(const std::string& request, int tim
             dataBuffer_.clear();
             responseReceived_ = false;
         }
-        
         // Отправляем запрос
         int bytesSent = transport_->Send(requestData);
         
         if (bytesSent <= 0) {
-            NEUTRAL_REPORT_ERROR(componentName_, "Ошибка отправки данных");
-            throw std::runtime_error("Ошибка отправки данных");
+            NEUTRAL_REPORT_ERROR(componentName_, "Ошибка отправки данных (отправлено байт: " + std::to_string(bytesSent) + ")");
+            return "";
         }
         
-        NEUTRAL_REPORT_DEBUG(componentName_, "Запрос отправлен, ожидание ответа (таймаут: " + std::to_string(timeout) + " мс)");
+        NEUTRAL_REPORT_DEBUG(componentName_, "Запрос отправлен успешно (" + std::to_string(bytesSent) + " байт), ожидание ответа (таймаут: " + std::to_string(timeout) + " мс)");
         
         // Ждем ответа
         bool received = WaitForResponse(timeout);
         
         if (!received) {
-            NEUTRAL_REPORT_ERROR(componentName_, "Таймаут ожидания ответа");
-            throw std::runtime_error("Таймаут ожидания ответа");
+            NEUTRAL_REPORT_ERROR(componentName_, "Таймаут ожидания ответа (истекло " + std::to_string(timeout) + " мс)");
+            return "";
         }
         
-        // Получаем накопленный ответ
+        NEUTRAL_REPORT_INFO(componentName_, "Ответ получен вовремя");
+          // Получаем накопленный ответ
         std::string response = GetResponse();
+        
+        if (response.empty()) {
+            NEUTRAL_REPORT_WARN(componentName_, "Получен пустой ответ");
+        }
         
         // Сбрасываем состояние ожидания ответа
         ResetResponseState();
         
         NEUTRAL_REPORT_DEBUG(componentName_, "Получен ответ: " + response);
+        NEUTRAL_REPORT_INFO(componentName_, "Запрос-ответ завершён успешно");
         
         return response;
     }
     catch (const std::exception& e) {
         NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при выполнении запроса: " + std::string(e.what()));
-        throw;
+        return "";
     }
     catch (...) {
         NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при выполнении запроса");
-        throw std::runtime_error("Неизвестная ошибка при выполнении запроса");
+        return "";
     }
 }
 
