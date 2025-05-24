@@ -39,12 +39,6 @@ public:
      */
     ~ECRPrivatJSONProtocol();
     
-    /**
-     * @brief Установка родительского компонента для организации логирования
-     * @param component Указатель на родительский компонент
-     */
-    void SetParentComponent(AddInNative* component);
-    
     //
     // Методы подключения
     //
@@ -178,9 +172,6 @@ private:
 
     // Указатель на транспортный слой
     std::unique_ptr<ITransport> transport_;
-    
-    // Указатель на родительский компонент для логирования
-    AddInNative* parentComponent_;
     
     // Указатель на вспомогательный класс для работы с протоколом
     std::unique_ptr<ECRPrivatJSONHelper> helper_;

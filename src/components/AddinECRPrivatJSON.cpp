@@ -17,9 +17,6 @@ AddinECRPrivatJSON::AddinECRPrivatJSON() {
     // Создаем объект протокола
     protocol_ = std::make_unique<ECRPrivatJSON::ECRPrivatJSONProtocol>();
     
-    // Передаем указатель на компонент протоколу для организации логирования
-    protocol_->SetParentComponent(this);
-    
     // Регистрация методов
     RegisterMethods();
     
