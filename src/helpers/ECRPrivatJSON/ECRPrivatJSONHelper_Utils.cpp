@@ -10,7 +10,7 @@ namespace ECRPrivatJSON {
 
 std::string ECRPrivatJSONHelper::OperationTypeToString(OperationType opType) const {
     try {
-        NEUTRAL_REPORT_DEBUG(componentName_, "Преобразование типа операции в строку");
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Преобразование типа операции в строку");
         
         std::string result;
         switch (opType) {
@@ -159,27 +159,27 @@ std::string ECRPrivatJSONHelper::OperationTypeToString(OperationType opType) con
                 result = "GetReceiptInfo";
                 break;
             default:
-                NEUTRAL_REPORT_WARN(componentName_, "Неизвестный тип операции: " + std::to_string(static_cast<int>(opType)));
+                NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Неизвестный тип операции: " + std::to_string(static_cast<int>(opType)));
                 result = "Unknown";
                 break;
         }
         
-        NEUTRAL_REPORT_TRACE(componentName_, "Тип операции преобразован в строку: " + result);
+        NEUTRAL_REPORT_TRACE("ECRPrivatJSONHelper", "Тип операции преобразован в строку: " + result);
         return result;
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при преобразовании типа операции в строку: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка при преобразовании типа операции в строку: " + std::string(e.what()));
         return "Unknown";
     }
     catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при преобразовании типа операции в строку");
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Неизвестная ошибка при преобразовании типа операции в строку");
         return "Unknown";
     }
 }
 
 std::string ECRPrivatJSONHelper::ServiceMessageTypeToString(ServiceMessageType msgType) const {
     try {
-        NEUTRAL_REPORT_DEBUG(componentName_, "Преобразование типа сервисного сообщения в строку");
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Преобразование типа сервисного сообщения в строку");
         
         std::string result;
         switch (msgType) {
@@ -238,20 +238,20 @@ std::string ECRPrivatJSONHelper::ServiceMessageTypeToString(ServiceMessageType m
                 result = "getVersion";
                 break;
             default:
-                NEUTRAL_REPORT_WARN(componentName_, "Неизвестный тип сервисного сообщения: " + std::to_string(static_cast<int>(msgType)));
+                NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Неизвестный тип сервисного сообщения: " + std::to_string(static_cast<int>(msgType)));
                 result = "unknown";
                 break;
         }
         
-        NEUTRAL_REPORT_TRACE(componentName_, "Тип сервисного сообщения преобразован в строку: " + result);
+        NEUTRAL_REPORT_TRACE("ECRPrivatJSONHelper", "Тип сервисного сообщения преобразован в строку: " + result);
         return result;
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при преобразовании типа сервисного сообщения в строку: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка при преобразовании типа сервисного сообщения в строку: " + std::string(e.what()));
         return "unknown";
     }
     catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при преобразовании типа сервисного сообщения в строку");
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Неизвестная ошибка при преобразовании типа сервисного сообщения в строку");
         return "unknown";
     }
 }

@@ -218,9 +218,6 @@ private:
     // Указатель на транспортный слой
     ITransport* transport_;
     
-    // Имя компонента для логирования
-    std::string componentName_;
-    
     // Буфер для накопления данных
     std::vector<uint8_t> dataBuffer_;
     

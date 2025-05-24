@@ -13,24 +13,24 @@ json ECRPrivatJSONHelper::ParseJSON(const std::string& jsonString) const {
         
         // Проверяем валидность JSON
         if (!IsJsonValid(normalizedJson)) {
-            NEUTRAL_REPORT_ERROR(componentName_, "Невалидный JSON");
+            NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Невалидный JSON");
             return json::object(); // Возвращаем пустой объект JSON
         }
         
-        NEUTRAL_REPORT_DEBUG(componentName_, "Парсинг JSON строки");
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Парсинг JSON строки");
         // Используем nlohmann/json для парсинга
         return json::parse(normalizedJson);
     }
     catch (const json::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга JSON: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка парсинга JSON: " + std::string(e.what()));
         return json::object(); // Возвращаем пустой объект JSON в случае ошибки
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при обработке JSON: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка при обработке JSON: " + std::string(e.what()));
         return json::object(); // Возвращаем пустой объект JSON в случае ошибки
     }
     catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при парсинге JSON");
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Неизвестная ошибка при парсинге JSON");
         return json::object(); // Возвращаем пустой объект JSON в случае ошибки
     }
 }
@@ -38,7 +38,7 @@ json ECRPrivatJSONHelper::ParseJSON(const std::string& jsonString) const {
 // Проверка корректности формата JSON
 bool ECRPrivatJSONHelper::IsJsonValid(const std::string& jsonString) const {
     if (jsonString.empty()) {
-        NEUTRAL_REPORT_DEBUG(componentName_, "Пустая JSON-строка");
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Пустая JSON-строка");
         return false;
     }
     
@@ -48,11 +48,11 @@ bool ECRPrivatJSONHelper::IsJsonValid(const std::string& jsonString) const {
         return j.is_object();
     }
     catch (const json::exception& e) {
-        NEUTRAL_REPORT_DEBUG(componentName_, "JSON не валиден: " + std::string(e.what()));
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "JSON не валиден: " + std::string(e.what()));
         return false;
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_DEBUG(componentName_, "Ошибка при проверке JSON: " + std::string(e.what()));
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Ошибка при проверке JSON: " + std::string(e.what()));
         return false;
     }
 }
@@ -61,11 +61,11 @@ bool ECRPrivatJSONHelper::IsJsonValid(const std::string& jsonString) const {
 std::string ECRPrivatJSONHelper::NormalizeResponseJson(const std::string& jsonString) const {
     try {
         if (jsonString.empty()) {
-            NEUTRAL_REPORT_DEBUG(componentName_, "Нормализация: получена пустая строка");
+            NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Нормализация: получена пустая строка");
             return jsonString;
         }
         
-        NEUTRAL_REPORT_TRACE(componentName_, "Нормализация JSON-ответа");
+        NEUTRAL_REPORT_TRACE("ECRPrivatJSONHelper", "Нормализация JSON-ответа");
         
         // Удаляем непечатаемые символы и нулевые байты с конца
         std::string result = jsonString;
@@ -77,7 +77,7 @@ std::string ECRPrivatJSONHelper::NormalizeResponseJson(const std::string& jsonSt
         }
         
         if (startPos > 0) {
-            NEUTRAL_REPORT_DEBUG(componentName_, "Удалены нулевые байты в начале: " + std::to_string(startPos));
+            NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Удалены нулевые байты в начале: " + std::to_string(startPos));
             result = result.substr(startPos);
         }
         
@@ -88,7 +88,7 @@ std::string ECRPrivatJSONHelper::NormalizeResponseJson(const std::string& jsonSt
         }
         
         if (endPos < result.length()) {
-            NEUTRAL_REPORT_DEBUG(componentName_, "Удалены непечатаемые символы в конце: " + std::to_string(result.length() - endPos));
+            NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Удалены непечатаемые символы в конце: " + std::to_string(result.length() - endPos));
             result = result.substr(0, endPos);
         }
         
@@ -103,17 +103,17 @@ std::string ECRPrivatJSONHelper::NormalizeResponseJson(const std::string& jsonSt
         }
         
         if (replacedChars > 0) {
-            NEUTRAL_REPORT_DEBUG(componentName_, "Заменены внутренние нулевые байты: " + std::to_string(replacedChars));
+            NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Заменены внутренние нулевые байты: " + std::to_string(replacedChars));
         }
         
         return result;
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при нормализации JSON: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка при нормализации JSON: " + std::string(e.what()));
         return jsonString; // В случае ошибки возвращаем исходную строку
     }
     catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при нормализации JSON");
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Неизвестная ошибка при нормализации JSON");
         return jsonString;
     }
 }
@@ -121,19 +121,19 @@ std::string ECRPrivatJSONHelper::NormalizeResponseJson(const std::string& jsonSt
 // Парсинг ответа терминала в структуру TerminalResponse
 bool ECRPrivatJSONHelper::ParseTerminalResponse(const std::string& jsonResponse, TerminalResponse& response) const {
     try {
-        NEUTRAL_REPORT_INFO(componentName_, "Начало парсинга ответа терминала");
+        NEUTRAL_REPORT_INFO("ECRPrivatJSONHelper", "Начало парсинга ответа терминала");
         
         // Нормализация JSON-строки
         std::string normalizedJson = NormalizeResponseJson(jsonResponse);
         
         // Проверка валидности JSON
         if (!IsJsonValid(normalizedJson)) {
-            NEUTRAL_REPORT_ERROR(componentName_, "Невалидный JSON-ответ от терминала");
+            NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Невалидный JSON-ответ от терминала");
             return false;
         }
         
         // Парсинг JSON
-        NEUTRAL_REPORT_DEBUG(componentName_, "Парсинг нормализованного JSON");
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Парсинг нормализованного JSON");
         json j = json::parse(normalizedJson);
         
         // Очистка существующей информации в структуре ответа
@@ -145,13 +145,13 @@ bool ECRPrivatJSONHelper::ParseTerminalResponse(const std::string& jsonResponse,
         // Определение успешности операции с использованием унифицированного метода IsSuccess
         response.success = IsSuccess(normalizedJson);
           // Заполнение основной информации
-        NEUTRAL_REPORT_DEBUG(componentName_, "Заполнение полей структуры TerminalResponse");
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Заполнение полей структуры TerminalResponse");
         
         if (j.contains("method")) {
             response.method = j["method"].get<std::string>();
-            NEUTRAL_REPORT_DEBUG(componentName_, "Метод: " + response.method);
+            NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Метод: " + response.method);
         } else {
-            NEUTRAL_REPORT_DEBUG(componentName_, "Поле 'method' отсутствует в ответе");
+            NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Поле 'method' отсутствует в ответе");
         }
         
         if (j.contains("params")) {
@@ -159,14 +159,14 @@ bool ECRPrivatJSONHelper::ParseTerminalResponse(const std::string& jsonResponse,
             
             if (params.contains("responseCode")) {
                 response.responseCode = params["responseCode"].get<std::string>();
-                NEUTRAL_REPORT_DEBUG(componentName_, "Код ответа: " + response.responseCode);
+                NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Код ответа: " + response.responseCode);
             }
             
             if (params.contains("errorMessage")) {
                 response.errorMessage = params["errorMessage"].get<std::string>();
                 // Если есть сообщение об ошибке, операция не успешна
                 response.success = false;
-                NEUTRAL_REPORT_WARN(componentName_, "Сообщение об ошибке: " + response.errorMessage);
+                NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Сообщение об ошибке: " + response.errorMessage);
             }
             
             if (params.contains("receiptText")) {
@@ -180,13 +180,13 @@ bool ECRPrivatJSONHelper::ParseTerminalResponse(const std::string& jsonResponse,
                 try {
                     std::string amountStr = params["totalAmount"].get<std::string>();
                     response.totalAmount = std::stod(amountStr);
-                    NEUTRAL_REPORT_DEBUG(componentName_, "Сумма: " + amountStr);
+                    NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Сумма: " + amountStr);
                 }
                 catch (const std::invalid_argument& e) {
-                    NEUTRAL_REPORT_ERROR(componentName_, "Ошибка преобразования суммы: " + std::string(e.what()));
+                    NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка преобразования суммы: " + std::string(e.what()));
                 }
                 catch (const std::out_of_range& e) {
-                    NEUTRAL_REPORT_ERROR(componentName_, "Сумма вне допустимого диапазона: " + std::string(e.what()));
+                    NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Сумма вне допустимого диапазона: " + std::string(e.what()));
                 }
             }
             
@@ -246,19 +246,19 @@ bool ECRPrivatJSONHelper::ParseTerminalResponse(const std::string& jsonResponse,
                 response.refundNDSAmount = params["refundNDSAmount"].get<std::string>();
             }
         }
-          NEUTRAL_REPORT_INFO(componentName_, "Парсинг ответа терминала успешно завершен");
+          NEUTRAL_REPORT_INFO("ECRPrivatJSONHelper", "Парсинг ответа терминала успешно завершен");
         return true;
     }
     catch (const json::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга JSON: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка парсинга JSON: " + std::string(e.what()));
         return false;
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при обработке ответа терминала: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка при обработке ответа терминала: " + std::string(e.what()));
         return false;
     }
     catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при обработке ответа терминала");
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Неизвестная ошибка при обработке ответа терминала");
         return false;
     }
 }

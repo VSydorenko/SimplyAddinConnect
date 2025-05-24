@@ -39,7 +39,7 @@ void ECRPrivatJSONProtocol::OnDataReceived(const std::vector<uint8_t>& data) {
                 dataCondition_.notify_all();
             } else {
                 // Неожиданное сообщение (возможно, инициатива от терминала)
-                NEUTRAL_REPORT_INFO(componentName_, "Получено неожиданное сообщение от терминала: " + jsonResponse);
+                NEUTRAL_REPORT_INFO("ECRPrivatJSONProtocol", "Получено неожиданное сообщение от терминала: " + jsonResponse);
                 
                 // TODO: Обработка инициативных сообщений терминала
             }
@@ -51,14 +51,14 @@ void ECRPrivatJSONProtocol::OnDataReceived(const std::vector<uint8_t>& data) {
             nullTerminator = std::find(dataBuffer_.begin(), dataBuffer_.end(), 0);
         }
     } catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Исключение при обработке полученных данных: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONProtocol", "Исключение при обработке полученных данных: " + std::string(e.what()));
     } catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестное исключение при обработке полученных данных");
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONProtocol", "Неизвестное исключение при обработке полученных данных");
     }
 }
 
 void ECRPrivatJSONProtocol::OnError(const std::string& errorMessage, int errorCode) {
-    NEUTRAL_REPORT_ERROR(componentName_, "Ошибка транспортного уровня: " + errorMessage + " (код: " + std::to_string(errorCode) + ")");
+    NEUTRAL_REPORT_ERROR("ECRPrivatJSONProtocol", "Ошибка транспортного уровня: " + errorMessage + " (код: " + std::to_string(errorCode) + ")");
 }
 
 void ECRPrivatJSONProtocol::OnConnectionStateChanged(bool connected) {
@@ -67,15 +67,15 @@ void ECRPrivatJSONProtocol::OnConnectionStateChanged(bool connected) {
             connected_ = connected;
             
             if (connected) {
-                NEUTRAL_REPORT_INFO(componentName_, "Соединение с терминалом установлено");
+                NEUTRAL_REPORT_INFO("ECRPrivatJSONProtocol", "Соединение с терминалом установлено");
             } else {
-                NEUTRAL_REPORT_INFO(componentName_, "Соединение с терминалом разорвано");
+                NEUTRAL_REPORT_INFO("ECRPrivatJSONProtocol", "Соединение с терминалом разорвано");
             }
         }
     } catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Исключение при обработке изменения состояния соединения: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONProtocol", "Исключение при обработке изменения состояния соединения: " + std::string(e.what()));
     } catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестное исключение при обработке изменения состояния соединения");
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONProtocol", "Неизвестное исключение при обработке изменения состояния соединения");
     }
 }
 

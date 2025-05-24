@@ -188,9 +188,6 @@ private:
     // Последний ответ терминала
     TerminalResponse lastResponse_;
     
-    // Имя компонента для нейтральных сообщений логирования
-    std::string componentName_;
-    
     // Буфер для накопления данных
     std::vector<uint8_t> dataBuffer_;
     

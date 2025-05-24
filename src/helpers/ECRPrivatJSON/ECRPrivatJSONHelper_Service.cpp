@@ -9,16 +9,16 @@ namespace ECRPrivatJSON {
 // Форматирование денежной суммы
 std::string ECRPrivatJSONHelper::FormatAmount(double amount, int precision) const {
     try {
-        NEUTRAL_REPORT_DEBUG(componentName_, "Начало форматирования суммы " + std::to_string(amount) + " с точностью " + std::to_string(precision));
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Начало форматирования суммы " + std::to_string(amount) + " с точностью " + std::to_string(precision));
         
         // Проверка диапазона суммы
         if (amount < 0) {
-            NEUTRAL_REPORT_WARN(componentName_, "Отрицательная сумма: " + std::to_string(amount) + ", будет заменена на 0");
+            NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Отрицательная сумма: " + std::to_string(amount) + ", будет заменена на 0");
             amount = 0;
         }
         
         if (amount > 999999.99) {
-            NEUTRAL_REPORT_WARN(componentName_, "Слишком большая сумма: " + std::to_string(amount) + ", будет ограничена до 999999.99");
+            NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Слишком большая сумма: " + std::to_string(amount) + ", будет ограничена до 999999.99");
             amount = 999999.99;
         }
         
@@ -29,7 +29,7 @@ std::string ECRPrivatJSONHelper::FormatAmount(double amount, int precision) cons
         
         // Проверяем, не получилось ли представление в научной нотации
         if (result.find('e') != std::string::npos || result.find('E') != std::string::npos) {
-            NEUTRAL_REPORT_DEBUG(componentName_, "Обнаружена научная нотация, применяется ручное форматирование");
+            NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Обнаружена научная нотация, применяется ручное форматирование");
             
             // Если да, то форматируем вручную
             int64_t intPart = static_cast<int64_t>(amount);
@@ -51,15 +51,15 @@ std::string ECRPrivatJSONHelper::FormatAmount(double amount, int precision) cons
             result += fracStr.substr(0, precision);
         }
         
-        NEUTRAL_REPORT_DEBUG(componentName_, "Результат форматирования: " + result);
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Результат форматирования: " + result);
         return result;
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при форматировании суммы: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка при форматировании суммы: " + std::string(e.what()));
         return std::to_string(amount); // Возвращаем простое представление суммы в случае ошибки
     }
     catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при форматировании суммы");
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Неизвестная ошибка при форматировании суммы");
         return std::to_string(amount);
     }
 }
@@ -69,10 +69,10 @@ std::string ECRPrivatJSONHelper::ExtractValueByKey(const std::string& jsonRespon
                                                   const std::string& key, 
                                                   const std::string& defaultValue) const {
     try {
-        NEUTRAL_REPORT_DEBUG(componentName_, "Извлечение значения по ключу: " + key);
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Извлечение значения по ключу: " + key);
         
         if (jsonResponse.empty()) {
-            NEUTRAL_REPORT_WARN(componentName_, "Пустой JSON-ответ при извлечении ключа: " + key);
+            NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Пустой JSON-ответ при извлечении ключа: " + key);
             return defaultValue;
         }
         
@@ -81,10 +81,10 @@ std::string ECRPrivatJSONHelper::ExtractValueByKey(const std::string& jsonRespon
         // Прямой доступ к корневым полям
         if (j.contains(key)) {
             if (j[key].is_string()) {
-                NEUTRAL_REPORT_DEBUG(componentName_, "Найдено строковое значение в корневом объекте");
+                NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Найдено строковое значение в корневом объекте");
                 return j[key].get<std::string>();
             } else {
-                NEUTRAL_REPORT_DEBUG(componentName_, "Найдено нестроковое значение в корневом объекте, преобразование в строку");
+                NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Найдено нестроковое значение в корневом объекте, преобразование в строку");
                 return j[key].dump();
             }
         }
@@ -94,29 +94,29 @@ std::string ECRPrivatJSONHelper::ExtractValueByKey(const std::string& jsonRespon
             auto params = j["params"];
             if (params.contains(key)) {
                 if (params[key].is_string()) {
-                    NEUTRAL_REPORT_DEBUG(componentName_, "Найдено строковое значение в params");
+                    NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Найдено строковое значение в params");
                     return params[key].get<std::string>();
                 } else {
-                    NEUTRAL_REPORT_DEBUG(componentName_, "Найдено нестроковое значение в params, преобразование в строку");
+                    NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Найдено нестроковое значение в params, преобразование в строку");
                     return params[key].dump();
                 }
             }
         }
         
         // Если не найдено, возвращаем значение по умолчанию
-        NEUTRAL_REPORT_WARN(componentName_, "Ключ " + key + " не найден, возвращаем значение по умолчанию");
+        NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Ключ " + key + " не найден, возвращаем значение по умолчанию");
         return defaultValue;
     }
     catch (const json::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга JSON при извлечении ключа " + key + ": " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка парсинга JSON при извлечении ключа " + key + ": " + std::string(e.what()));
         return defaultValue;
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при извлечении значения по ключу " + key + ": " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка при извлечении значения по ключу " + key + ": " + std::string(e.what()));
         return defaultValue;
     }
     catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при извлечении значения по ключу " + key);
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Неизвестная ошибка при извлечении значения по ключу " + key);
         return defaultValue;
     }
 }

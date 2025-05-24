@@ -9,10 +9,10 @@ namespace ECRPrivatJSON {
 // Извлечение текста чека из JSON-ответа
 std::string ECRPrivatJSONHelper::ExtractReceiptText(const std::string& jsonResponse) const {
     try {
-        NEUTRAL_REPORT_DEBUG(componentName_, "Начало извлечения текста чека из ответа");
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Начало извлечения текста чека из ответа");
         
         if (jsonResponse.empty()) {
-            NEUTRAL_REPORT_WARN(componentName_, "Получена пустая строка JSON для извлечения текста чека");
+            NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Получена пустая строка JSON для извлечения текста чека");
             return "";
         }
         
@@ -22,24 +22,24 @@ std::string ECRPrivatJSONHelper::ExtractReceiptText(const std::string& jsonRespo
             auto params = j["params"];
             if (params.contains("receiptText") && params["receiptText"].is_string()) {
                 std::string receiptText = params["receiptText"].get<std::string>();
-                NEUTRAL_REPORT_DEBUG(componentName_, "Успешно извлечен текст чека");
+                NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Успешно извлечен текст чека");
                 return receiptText;
             }
         }
         
-        NEUTRAL_REPORT_WARN(componentName_, "Текст чека не найден в ответе терминала");
+        NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Текст чека не найден в ответе терминала");
         return "";
     }
     catch (const json::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга JSON при извлечении текста чека: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка парсинга JSON при извлечении текста чека: " + std::string(e.what()));
         return "";
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при извлечении текста чека: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка при извлечении текста чека: " + std::string(e.what()));
         return "";
     }
     catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при извлечении текста чека");
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Неизвестная ошибка при извлечении текста чека");
         return "";
     }
 }
@@ -47,10 +47,10 @@ std::string ECRPrivatJSONHelper::ExtractReceiptText(const std::string& jsonRespo
 // Извлечение кода ответа из JSON-ответа
 std::string ECRPrivatJSONHelper::ExtractResponseCode(const std::string& jsonResponse) const {
     try {
-        NEUTRAL_REPORT_DEBUG(componentName_, "Начало извлечения кода ответа");
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Начало извлечения кода ответа");
         
         if (jsonResponse.empty()) {
-            NEUTRAL_REPORT_WARN(componentName_, "Получена пустая строка JSON для извлечения кода ответа");
+            NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Получена пустая строка JSON для извлечения кода ответа");
             return "";
         }
         
@@ -60,24 +60,24 @@ std::string ECRPrivatJSONHelper::ExtractResponseCode(const std::string& jsonResp
             auto params = j["params"];
             if (params.contains("responseCode") && params["responseCode"].is_string()) {
                 std::string responseCode = params["responseCode"].get<std::string>();
-                NEUTRAL_REPORT_DEBUG(componentName_, "Извлечен код ответа: " + responseCode);
+                NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Извлечен код ответа: " + responseCode);
                 return responseCode;
             }
         }
         
-        NEUTRAL_REPORT_WARN(componentName_, "Код ответа не найден в ответе терминала");
+        NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Код ответа не найден в ответе терминала");
         return "";
     }
     catch (const json::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга JSON при извлечении кода ответа: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка парсинга JSON при извлечении кода ответа: " + std::string(e.what()));
         return "";
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при извлечении кода ответа: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка при извлечении кода ответа: " + std::string(e.what()));
         return "";
     }
     catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при извлечении кода ответа");
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Неизвестная ошибка при извлечении кода ответа");
         return "";
     }
 }
@@ -85,10 +85,10 @@ std::string ECRPrivatJSONHelper::ExtractResponseCode(const std::string& jsonResp
 // Извлечение сообщения об ошибке из JSON-ответа
 std::string ECRPrivatJSONHelper::ExtractErrorMessage(const std::string& jsonResponse) const {
     try {
-        NEUTRAL_REPORT_DEBUG(componentName_, "Начало извлечения сообщения об ошибке");
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Начало извлечения сообщения об ошибке");
         
         if (jsonResponse.empty()) {
-            NEUTRAL_REPORT_TRACE(componentName_, "Получена пустая строка JSON при извлечении сообщения об ошибке");
+            NEUTRAL_REPORT_TRACE("ECRPrivatJSONHelper", "Получена пустая строка JSON при извлечении сообщения об ошибке");
             return "";
         }
         
@@ -99,25 +99,25 @@ std::string ECRPrivatJSONHelper::ExtractErrorMessage(const std::string& jsonResp
             if (params.contains("errorMessage") && params["errorMessage"].is_string()) {
                 std::string errorMessage = params["errorMessage"].get<std::string>();
                 if (!errorMessage.empty()) {
-                    NEUTRAL_REPORT_DEBUG(componentName_, "Извлечено сообщение об ошибке: " + errorMessage);
+                    NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Извлечено сообщение об ошибке: " + errorMessage);
                 }
                 return errorMessage;
             }
         }
         
-        NEUTRAL_REPORT_TRACE(componentName_, "Сообщение об ошибке не найдено в ответе");
+        NEUTRAL_REPORT_TRACE("ECRPrivatJSONHelper", "Сообщение об ошибке не найдено в ответе");
         return "";
     }
     catch (const json::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга JSON при извлечении сообщения об ошибке: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка парсинга JSON при извлечении сообщения об ошибке: " + std::string(e.what()));
         return "";
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при извлечении сообщения об ошибке: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка при извлечении сообщения об ошибке: " + std::string(e.what()));
         return "";
     }
     catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при извлечении сообщения об ошибке");
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Неизвестная ошибка при извлечении сообщения об ошибке");
         return "";
     }
 }
@@ -125,10 +125,10 @@ std::string ECRPrivatJSONHelper::ExtractErrorMessage(const std::string& jsonResp
 // Извлечение идентификатора транзакции из JSON-ответа
 std::string ECRPrivatJSONHelper::ExtractTransactionId(const std::string& jsonResponse) const {
     try {
-        NEUTRAL_REPORT_DEBUG(componentName_, "Начало извлечения идентификатора транзакции");
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Начало извлечения идентификатора транзакции");
         
         if (jsonResponse.empty()) {
-            NEUTRAL_REPORT_WARN(componentName_, "Получена пустая строка JSON для извлечения идентификатора транзакции");
+            NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Получена пустая строка JSON для извлечения идентификатора транзакции");
             return "";
         }
         
@@ -138,24 +138,24 @@ std::string ECRPrivatJSONHelper::ExtractTransactionId(const std::string& jsonRes
             auto params = j["params"];
             if (params.contains("transactionId") && params["transactionId"].is_string()) {
                 std::string transactionId = params["transactionId"].get<std::string>();
-                NEUTRAL_REPORT_DEBUG(componentName_, "Извлечен идентификатор транзакции: " + transactionId);
+                NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Извлечен идентификатор транзакции: " + transactionId);
                 return transactionId;
             }
         }
         
-        NEUTRAL_REPORT_WARN(componentName_, "Идентификатор транзакции не найден в ответе терминала");
+        NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Идентификатор транзакции не найден в ответе терминала");
         return "";
     }
     catch (const json::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга JSON при извлечении идентификатора транзакции: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка парсинга JSON при извлечении идентификатора транзакции: " + std::string(e.what()));
         return "";
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при извлечении идентификатора транзакции: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка при извлечении идентификатора транзакции: " + std::string(e.what()));
         return "";
     }
     catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при извлечении идентификатора транзакции");
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Неизвестная ошибка при извлечении идентификатора транзакции");
         return "";
     }
 }
@@ -167,10 +167,10 @@ bool ECRPrivatJSONHelper::ExtractTerminalInfo(const std::string& jsonResponse,
                                             std::string& serialNumber,
                                             std::string& firmware) const {
     try {
-        NEUTRAL_REPORT_DEBUG(componentName_, "Начало извлечения информации о терминале");
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Начало извлечения информации о терминале");
         
         if (jsonResponse.empty()) {
-            NEUTRAL_REPORT_WARN(componentName_, "Получена пустая строка JSON для извлечения информации о терминале");
+            NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Получена пустая строка JSON для извлечения информации о терминале");
             return false;
         }
         
@@ -185,26 +185,26 @@ bool ECRPrivatJSONHelper::ExtractTerminalInfo(const std::string& jsonResponse,
             serialNumber = params.value("serialNumber", "Unknown");
             firmware = params.value("firmware", "Unknown");
             
-            NEUTRAL_REPORT_INFO(componentName_, "Извлечена информация о терминале: вендор=" + vendor + 
+            NEUTRAL_REPORT_INFO("ECRPrivatJSONHelper", "Извлечена информация о терминале: вендор=" + vendor + 
                               ", модель=" + model + ", серийный номер=" + serialNumber);
-            NEUTRAL_REPORT_DEBUG(componentName_, "Версия прошивки терминала: " + firmware);
+            NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Версия прошивки терминала: " + firmware);
             
             return true;
         }
         
-        NEUTRAL_REPORT_WARN(componentName_, "Информация о терминале не найдена в ответе");
+        NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Информация о терминале не найдена в ответе");
         return false;
     }
     catch (const json::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга JSON при извлечении информации о терминале: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка парсинга JSON при извлечении информации о терминале: " + std::string(e.what()));
         return false;
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при извлечении информации о терминале: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка при извлечении информации о терминале: " + std::string(e.what()));
         return false;
     }
     catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при извлечении информации о терминале");
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Неизвестная ошибка при извлечении информации о терминале");
         return false;
     }
 }
@@ -212,10 +212,10 @@ bool ECRPrivatJSONHelper::ExtractTerminalInfo(const std::string& jsonResponse,
 // Проверка результата хендшейка
 bool ECRPrivatJSONHelper::CheckHandshakeResult(const std::string& jsonResponse) const {
     try {
-        NEUTRAL_REPORT_DEBUG(componentName_, "Начало проверки результата хендшейка");
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSONHelper", "Начало проверки результата хендшейка");
         
         if (jsonResponse.empty()) {
-            NEUTRAL_REPORT_WARN(componentName_, "Получена пустая строка JSON при проверке хендшейка");
+            NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Получена пустая строка JSON при проверке хендшейка");
             return false;
         }
         
@@ -224,27 +224,27 @@ bool ECRPrivatJSONHelper::CheckHandshakeResult(const std::string& jsonResponse) 
         bool result = (j.contains("method") && j["method"] == "PingDevice");
         
         if (result) {
-            NEUTRAL_REPORT_INFO(componentName_, "Хендшейк успешен, получен корректный ответ PingDevice");
+            NEUTRAL_REPORT_INFO("ECRPrivatJSONHelper", "Хендшейк успешен, получен корректный ответ PingDevice");
         } else {
             if (j.contains("method")) {
-                NEUTRAL_REPORT_WARN(componentName_, "Хендшейк не удался: неверный метод " + j["method"].get<std::string>());
+                NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Хендшейк не удался: неверный метод " + j["method"].get<std::string>());
             } else {
-                NEUTRAL_REPORT_WARN(componentName_, "Хендшейк не удался: отсутствует поле method");
+                NEUTRAL_REPORT_WARN("ECRPrivatJSONHelper", "Хендшейк не удался: отсутствует поле method");
             }
         }
         
         return result;
     }
     catch (const json::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка парсинга JSON при проверке результата хендшейка: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка парсинга JSON при проверке результата хендшейка: " + std::string(e.what()));
         return false;
     }
     catch (const std::exception& e) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Ошибка при проверке результата хендшейка: " + std::string(e.what()));
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Ошибка при проверке результата хендшейка: " + std::string(e.what()));
         return false;
     }
     catch (...) {
-        NEUTRAL_REPORT_ERROR(componentName_, "Неизвестная ошибка при проверке результата хендшейка");
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONHelper", "Неизвестная ошибка при проверке результата хендшейка");
         return false;
     }
 }

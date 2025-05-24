@@ -38,10 +38,16 @@ namespace ResponseCodes {
  */
 enum class OperationType {
     Purchase,                   // Оплата
+    Payment,                    // Оплата (альтернативное название)
     Refund,                     // Возврат
     Withdrawal,                 // Отмена
     WithdrawalPartly,           // Частичная отмена
     Verify,                     // Сверка итогов (дневной отчет)
+    Settlement,                 // Сверка итогов (альтернативное название)
+    XReport,                    // X-отчет
+    ZReport,                    // Z-отчет
+    Copy,                       // Копия чека
+    ServiceMenu,                // Сервисное меню
     CheckConnection,            // Проверка соединения
     PrintReceiptNum,            // Печать чека
     ServiceMessage,             // Служебное сообщение
@@ -85,6 +91,9 @@ enum class OperationType {
  * @brief Типы служебных сообщений протокола ECR Privat JSON
  */
 enum class ServiceMessageType {
+    GetTerminalInfo,            // Получение информации о терминале
+    PingDevice,                 // Пинг устройства
+    RunCommand,                 // Запуск команды
     Identify,                   // Идентификация терминала
     DeviceBusy,                 // Устройство занято
     Interrupt,                  // Прерывание операции
