@@ -129,6 +129,31 @@ public:
      * @return Структура с данными последнего ответа
      */
     TerminalResponse GetLastResponse() const;
+    
+    //
+    // Сервисные операции
+    //
+    
+    /**
+     * @brief Запрос дневного отчета
+     * @param merchantId Идентификатор мерчанта (необязательно)
+     * @return true, если операция успешна
+     */
+    bool GetDailyReport(const std::string& merchantId = "0");
+    
+    /**
+     * @brief Запрос X-отчета
+     * @param merchantId Идентификатор мерчанта (необязательно)
+     * @return true, если операция успешна
+     */
+    bool GetXReport(const std::string& merchantId = "0");
+    
+    /**
+     * @brief Запрос Z-отчета
+     * @param merchantId Идентификатор мерчанта (необязательно)
+     * @return true, если операция успешна
+     */
+    bool GetZReport(const std::string& merchantId = "0");
 
 private:
     /**

@@ -208,7 +208,7 @@ void AddinECRPrivatJSON::RegisterMethods() {
             
             if (transportType == "COM") {
                 // Для COM-порта извлекаем имя порта и скорость
-                std::u16string portName = ServiceTools::SafeMB2WCHAR(connStr);
+                std::u16string portName = ServiceTools::SafeMB2WCHAR(connStr.c_str());
                 int baudRate = 115200;
                 
                 // Если указана скорость через двоеточие, извлекаем её
