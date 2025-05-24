@@ -19,28 +19,23 @@ bool ECRPrivatJSONProtocol::ConnectCOM(const std::u16string& portName, int baudR
     try {
         portNameStr = ServiceTools::SafeWCHAR2MB(portName);
     } catch (const std::exception& e) {
-        std::string errorMsg = "Ошибка конвертации имени порта: " + std::string(e.what());
-        NEUTRAL_REPORT_WARN("ECRPrivatJSONProtocol", errorMsg);
+        NEUTRAL_REPORT_WARN("ECRPrivatJSONProtocol", "Ошибка конвертации имени порта: " + std::string(e.what()));
         portNameStr = "COM порт";
     } catch (...) {
         NEUTRAL_REPORT_WARN("ECRPrivatJSONProtocol", "Неизвестная ошибка при конвертации имени порта");
         portNameStr = "COM порт";
     }
     
-    std::string connectionInfo = "Подключение к терминалу через COM, параметры: порт=" + portNameStr + 
-                               ", скорость=" + std::to_string(baudRate);
-    NEUTRAL_REPORT_INFO("ECRPrivatJSONProtocol", connectionInfo);
+    NEUTRAL_REPORT_INFO("ECRPrivatJSONProtocol", "Подключение к терминалу через COM, параметры: порт=" + portNameStr + ", скорость=" + std::to_string(baudRate));
     
     try {
         // Проверка корректности параметров
         if (portName.find(u"COM") == std::u16string::npos) {
-            std::string errorMsg = "Неверный формат имени COM-порта: " + portNameStr;
-            NEUTRAL_REPORT_ERROR("ECRPrivatJSONProtocol", errorMsg);
+            NEUTRAL_REPORT_ERROR("ECRPrivatJSONProtocol", "Неверный формат имени COM-порта: " + portNameStr);
             return false;
         }
         if (baudRate <= 0) {
-            std::string errorMsg = "Некорректная скорость порта: " + std::to_string(baudRate);
-            NEUTRAL_REPORT_ERROR("ECRPrivatJSONProtocol", errorMsg);
+            NEUTRAL_REPORT_ERROR("ECRPrivatJSONProtocol", "Некорректная скорость порта: " + std::to_string(baudRate));
             return false;
         }
         
@@ -189,9 +184,7 @@ bool ECRPrivatJSONProtocol::ConnectCOM(const std::u16string& portName, int baudR
 // ===========================
 
 bool ECRPrivatJSONProtocol::ConnectTCP(const std::string& address, int port) {
-    std::string connectionInfo = "Подключение к терминалу через TCP, параметры: адрес=" + address + 
-                              ", порт=" + std::to_string(port);
-    NEUTRAL_REPORT_INFO("ECRPrivatJSONProtocol", connectionInfo);
+    NEUTRAL_REPORT_INFO("ECRPrivatJSONProtocol", "Подключение к терминалу через TCP, параметры: адрес=" + address + ", порт=" + std::to_string(port));
     
     try {
         // Проверка корректности параметров
@@ -277,8 +270,7 @@ bool ECRPrivatJSONProtocol::ConnectTCP(const std::string& address, int port) {
             try {
                 if (PerformHandshake()) {
                     handshakeSuccess = true;
-                    std::string successMsg = "Хендшейк успешен на попытке #" + std::to_string(attempt);
-                    NEUTRAL_REPORT_INFO("ECRPrivatJSONProtocol", successMsg);
+                    NEUTRAL_REPORT_INFO("ECRPrivatJSONProtocol", "Хендшейк успешен на попытке #" + std::to_string(attempt));
                 } else {
                     NEUTRAL_REPORT_WARN("ECRPrivatJSONProtocol", "Ошибка выполнения хендшейка (попытка #" + std::to_string(attempt) + "), пауза и повтор");
                     std::this_thread::sleep_for(std::chrono::milliseconds(500 * attempt)); // Увеличиваем время пауз с каждой попыткой
@@ -435,8 +427,7 @@ bool ECRPrivatJSONProtocol::ConnectWebSocket(const std::string& url) {
         return true;
     }
     catch (const std::exception& e) {
-        std::string errorMsg = "Ошибка при подключении к терминалу: " + std::string(e.what());
-        NEUTRAL_REPORT_ERROR("ECRPrivatJSONProtocol", errorMsg);
+        NEUTRAL_REPORT_ERROR("ECRPrivatJSONProtocol", "Ошибка при подключении к терминалу: " + std::string(e.what()));
         return false;
     }
     catch (...) {
