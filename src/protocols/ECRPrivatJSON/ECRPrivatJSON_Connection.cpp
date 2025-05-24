@@ -42,24 +42,25 @@ bool ECRPrivatJSONProtocol::ConnectCOM(const std::u16string& portName, int baudR
         // Закрываем предыдущее соединение, если оно было
         Disconnect();
         
-        // Создаем объект COM-порта
-        auto comTransport = std::make_unique<COMTransport>();
+        // Создаем объект COM-порта с нужными параметрами
+        auto comTransport = std::make_unique<TransportCOM>(
+            ServiceTools::SafeWCHAR2MB(portName),
+            baudRate,
+            8,      // dataBits
+            'N',    // parity
+            1.0f    // stopBits
+        );
         
         try {
-            // Настраиваем параметры подключения
-            comTransport->SetPortName(ServiceTools::U16StringToWString(portName));
-            comTransport->SetBaudRate(baudRate);
-            comTransport->SetDataBits(8);
-            comTransport->SetParity(NOPARITY);
-            comTransport->SetStopBits(ONESTOPBIT);
-            comTransport->SetFlowControl(false);
-            
-            // Увеличиваем буферы для надежной работы с JSON
-            comTransport->SetBufferSizes(4096, 4096);
-            
-            // Установка таймаутов для более надежной работы с терминалом Приватбанка
+            // Устанавливаем таймауты для более надежной работы с терминалом Приватбанка
             // Согласно документации, терминал может требовать больше времени для первого ответа
-            comTransport->SetTimeouts(5000, 10000);
+            comTransport->SetTimeouts(
+                5000,   // readIntervalTimeout
+                0,      // readTotalTimeoutMultiplier
+                10000,  // readTotalTimeoutConstant
+                0,      // writeTotalTimeoutMultiplier
+                5000    // writeTotalTimeoutConstant
+            );
             
             // Регистрация обработчиков
             comTransport->SetDataReceivedCallback([this](const std::vector<uint8_t>& data) {
@@ -96,13 +97,11 @@ bool ECRPrivatJSONProtocol::ConnectCOM(const std::u16string& portName, int baudR
         
         // Добавляем небольшую паузу после открытия порта для стабилизации
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        
         try {
-            // Согласно протоколу, включаем линии DTR и RTS для правильного хендшейка
-            comTransport->SetDTR(true);
-            comTransport->SetRTS(true);
+            // Линии DTR и RTS для правильного хендшейка уже включены в конструкторе
+            // через вызов ConfigurePort, где DTR_CONTROL_ENABLE и RTS_CONTROL_ENABLE
             
-            // Добавляем паузу после установки линий для их стабилизации
+            // Добавляем паузу для стабилизации линий
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             
             // Проверяем, что порт действительно открыт
@@ -199,17 +198,13 @@ bool ECRPrivatJSONProtocol::ConnectTCP(const std::string& address, int port) {
         
         // Закрываем предыдущее соединение, если оно было
         Disconnect();
-        
-        // Создаем TCP транспорт
-        auto tcpTransport = std::make_unique<TCPTransport>();
+
+        // Создаем TCP транспорт с параметрами
+        auto tcpTransport = std::make_unique<TransportTCP>(address, port);
         
         try {
-            // Настраиваем параметры подключения
-            tcpTransport->SetAddress(address);
-            tcpTransport->SetPort(port);
-            
-            // Установка таймаута соединения 
-            tcpTransport->SetConnectTimeout(5000); // 5 секунд
+            // Установка таймаута соединения
+            tcpTransport->SetTimeout(5000); // 5 секунд
             
             // Регистрация обработчиков
             tcpTransport->SetDataReceivedCallback([this](const std::vector<uint8_t>& data) {
@@ -328,13 +323,13 @@ bool ECRPrivatJSONProtocol::ConnectWebSocket(const std::string& url) {
         
         // Закрываем предыдущее соединение, если оно было
         Disconnect();
-        
-        // Создаем WebSocket транспорт
-        auto wsTransport = std::make_unique<WSClientTransport>();
+
+        // Создаем WebSocket транспорт с параметрами
+        auto wsTransport = std::make_unique<TransportWSClient>(url);
         
         try {
-            // Настраиваем параметры подключения
-            wsTransport->SetURL(url);
+            // Настраиваем таймаут подключения
+            wsTransport->SetTimeout(10); // 10 секунд
             
             // Регистрация обработчиков
             wsTransport->SetDataReceivedCallback([this](const std::vector<uint8_t>& data) {
