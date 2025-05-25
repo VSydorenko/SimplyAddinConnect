@@ -41,8 +41,7 @@ std::vector<std::u16string> TestComponent::GetAvailablePorts() {
         }
     }
     
-    std::string msg = "Найдено портов: " + std::to_string(availablePorts.size());
-    REPORT_INFO(msg);
+    REPORT_INFO("Найдено портов: " + std::to_string(availablePorts.size()));
     return availablePorts;
 }
 
@@ -50,8 +49,7 @@ std::vector<std::u16string> TestComponent::GetAvailablePorts() {
 bool TestComponent::CheckPortExists(const std::u16string &portName) {
     std::string portNameMB = ServiceTools::SafeWCHAR2MB(portName);
     
-    std::string msg = "Проверка существования порта: " + portNameMB;
-    REPORT_DEBUG(msg);
+    REPORT_DEBUG("Проверка существования порта: " + portNameMB);
     
     // Создаем временный объект TransportCOM для проверки порта
     std::unique_ptr<TransportCOM> tempTransport = std::make_unique<TransportCOM>(portNameMB);
@@ -95,8 +93,7 @@ bool TestComponent::CheckPortExists(const std::u16string &portName) {
 bool TestComponent::IsPortAvailable(const std::u16string &portName) {
     std::string portNameMB = ServiceTools::SafeWCHAR2MB(portName);
     
-    std::string msg = "Проверка доступности порта: " + portNameMB;
-    REPORT_DEBUG(msg);
+    REPORT_DEBUG("Проверка доступности порта: " + portNameMB);
     
     // Проверяем, не открыт ли уже порт в нашем компоненте
     if (comTransport && comTransport->IsOpen()) {
@@ -143,8 +140,7 @@ bool TestComponent::OpenPort(const std::u16string &portName, const std::u16strin
         REPORT_WARN(errorMsg);
     }
     
-    std::string msg = "Открытие порта: " + portNameMB + " на скорости: " + std::to_string(baudRateInt);
-    REPORT_DEBUG(msg);
+    REPORT_DEBUG("Открытие порта: " + portNameMB + " на скорости: " + std::to_string(baudRateInt));
     
     // Если порт уже открыт, закрываем его
     if (comTransport && comTransport->IsOpen()) {
@@ -169,8 +165,7 @@ bool TestComponent::OpenPort(const std::u16string &portName, const std::u16strin
     
     // Устанавливаем обработчики событий
     comTransport->SetErrorCallback([this](const std::string& errorMessage, int errorCode) {
-        std::string msg = "Ошибка COM-порта: " + errorMessage + " (код: " + std::to_string(errorCode) + ")";
-        REPORT_ERROR(msg);
+        REPORT_ERROR("Ошибка COM-порта: " + errorMessage + " (код: " + std::to_string(errorCode) + ")");
     });
     
     comTransport->SetConnectionStateCallback([this](bool connected) {
@@ -190,8 +185,7 @@ bool TestComponent::OpenPort(const std::u16string &portName, const std::u16strin
             dataHex += hex;
             dataHex += " ";
         }
-        std::string msg = "Получены данные из COM-порта: " + dataHex;
-        REPORT_DEBUG(msg);
+        REPORT_DEBUG("Получены данные из COM-порта: " + dataHex);
         
         // Здесь можно добавить логику обработки полученных данных
     });
@@ -213,8 +207,7 @@ bool TestComponent::OpenPort(const std::u16string &portName, const std::u16strin
 bool TestComponent::ClosePort(const std::u16string &portName) {
     std::string portNameMB = ServiceTools::SafeWCHAR2MB(portName);
     
-    std::string msg = "Закрытие порта: " + portNameMB;
-    REPORT_DEBUG(msg);
+    REPORT_DEBUG("Закрытие порта: " + portNameMB);
     
     if (!comTransport) {
         REPORT_WARN("Невозможно закрыть порт: транспортный объект не создан");
