@@ -1,3 +1,4 @@
+#include "../core/pch.h"
 #include "UAPKIConnectHelper.h"
 #include "../ServiceTools.h"
 #include <stdexcept>
@@ -132,7 +133,7 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
         if (!ParseParamsString(paramsString, paramsJson)) {
             // Если не удалось разобрать строку параметров, возвращаем ошибку
             responseJson = R"({"status":"error","error":"Invalid parameters format"})";
-            ServiceTools::LogError(u"UAPKI Error: Invalid parameters format");
+            NEUTRAL_REPORT_ERROR("UAPKIConnectHelper", "UAPKI Error: Invalid parameters format");
             return false;
         }
         
@@ -142,8 +143,9 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
         // Преобразуем JSON в строку
         std::string requestStr = requestJson.dump();
         
-        // Логирование запроса с использованием ServiceTools
-        ServiceTools::LogInfo(u"UAPKI Request: " + std::u16string(requestStr.begin(), requestStr.end()));
+        // Логирование запроса 
+        std::string infoMsg = "UAPKI Request: " + requestStr;
+        NEUTRAL_REPORT_INFO("UAPKIConnectHelper", infoMsg);
         
         // Выполнение запроса через UAPKI API с использованием функций из библиотеки
         char* response = ::process(requestStr.c_str());
@@ -153,8 +155,9 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
             // Копируем результат
             responseJson = std::string(response);
             
-            // Логируем ответ с использованием ServiceTools
-            ServiceTools::LogInfo(u"UAPKI Response: " + std::u16string(responseJson.begin(), responseJson.end()));
+            // Логируем ответ
+            std::string responseMsg = "UAPKI Response: " + responseJson;
+            NEUTRAL_REPORT_INFO("UAPKIConnectHelper", responseMsg);
             
             // Освобождаем память, выделенную функцией process
             ::json_free(response);
@@ -167,8 +170,8 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
             // Если ответ пустой, формируем JSON с ошибкой
             responseJson = R"({"status":"error","error":"No response from UAPKI library"})";
             
-            // Логируем ошибку с использованием ServiceTools
-            ServiceTools::LogError(u"UAPKI Error: No response from library");
+            // Логируем ошибку
+            NEUTRAL_REPORT_ERROR("UAPKIConnectHelper", "UAPKI Error: No response from library");
             
             return false;
         }
@@ -177,15 +180,16 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
         // В случае исключения формируем JSON-ответ с сообщением об ошибке
         responseJson = R"({"status":"error","error":")" + std::string(ex.what()) + R"("})";
         
-        // Логируем ошибку с использованием ServiceTools
-        ServiceTools::LogError(u"UAPKI Exception: " + std::u16string(ex.what(), ex.what() + strlen(ex.what())));
+        // Логируем ошибку
+        std::string errorMsg = "UAPKI Exception: " + std::string(ex.what());
+        NEUTRAL_REPORT_ERROR("UAPKIConnectHelper", errorMsg);
 
         return false;
     }
 #else
     // Версия метода для сборки без UAPKI
     responseJson = R"({"status":"error","error":"UAPKI functionality is not available in this build"})";
-    ServiceTools::LogError(u"UAPKI Error: UAPKI functionality is not available in this build");
+    NEUTRAL_REPORT_ERROR("UAPKIConnectHelper", "UAPKI Error: UAPKI functionality is not available in this build");
     return false;
 #endif
 }

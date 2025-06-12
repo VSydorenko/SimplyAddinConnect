@@ -28,6 +28,16 @@ public:
      * @return false в случае ошибки
      */
     bool CallUapki(const std::string& method, const std::string& paramsString, std::string& jsonResponse);
+    
+    /**
+     * @brief Включить логирование для компонента
+     * 
+     * @param logLevel Уровень логирования
+     * @param logFilePath Путь к файлу лога
+     * @return true если логирование успешно включено
+     * @return false в случае ошибки
+     */
+    bool EnableLogging(const std::string& logLevel, const std::string& logFilePath);
 
 private:
     // Метод для регистрации методов компонента

@@ -1,3 +1,4 @@
+#include "../core/pch.h"
 #include "AddinUAPKIConnect.h"
 #include "../helpers/UAPKIConnect/UAPKIConnectHelper.h"
 #include "../helpers/ServiceTools.h"
@@ -16,11 +17,26 @@ AddinUAPKIConnect::AddinUAPKIConnect() {
 
 // Деструктор класса
 AddinUAPKIConnect::~AddinUAPKIConnect() {
-    // Здесь при необходимости можно выполнять дополнительные действия при уничтожении компонента
+    // Логируем завершение работы компонента
+    REPORT_INFO("Завершение работы компонента UAPKI");
+    ServiceTools::DisableComponentLogging(this);
 }
 
 // Регистрация методов компонента
 void AddinUAPKIConnect::RegisterMethods() {
+    // Добавляем метод для включения логирования из 1С
+    AddFunction(u"EnableLogging", u"ИспользоватьЛогирование",
+        [&](VH logLevel, VH logFilePath) {
+            // Преобразуем параметры в строки
+            std::string level = logLevel;
+            std::string path = logFilePath;
+            
+            // Вызываем метод EnableLogging
+            return this->EnableLogging(level, path);
+        },
+        { {0, DefaultHelper(u"info")}, {1, DefaultHelper(u"")} }  // Значения по умолчанию
+    );
+    
     // Регистрируем метод CallUapki/ВызватьUAPKI, который будет точкой входа
     // для всех вызовов библиотеки UAPKI
     AddFunction(u"CallUapki", u"ВызватьUAPKI",
@@ -32,20 +48,19 @@ void AddinUAPKIConnect::RegisterMethods() {
                 // Получаем строку параметров из второго аргумента
                 std::string paramsStr = (std::string)jsonParams;
                 
-                std::string jsonResponse;
+                // Логирование вызова метода UAPKI
+                std::string logMsg = "Вызов метода UAPKI: " + methodStr;
+                REPORT_INFO(logMsg);
                 
-                // Логирование вызова метода UAPKI с использованием ServiceTools
-                ServiceTools::LogInfo(u"[AddinUAPKIConnect] Вызов метода UAPKI: " + 
-                                     std::u16string(methodStr.begin(), methodStr.end()));
+                std::string jsonResponse;
                 
                 // Вызываем метод CallUapki для выполнения команды UAPKI
                 bool success = this->CallUapki(methodStr, paramsStr, jsonResponse);
                 
                 // Если вызов не успешен, логируем ошибку
                 if (!success) {
-                    ServiceTools::LogError(u"[AddinUAPKIConnect] Ошибка выполнения метода " + 
-                                         std::u16string(methodStr.begin(), methodStr.end()) + 
-                                         u": " + std::u16string(jsonResponse.begin(), jsonResponse.end()));
+                    std::string errorMsg = "Ошибка выполнения метода " + methodStr + ": " + jsonResponse;
+                    REPORT_ERROR(errorMsg);
                 }
                 
                 // Устанавливаем результат (успешный или с ошибкой)
@@ -59,11 +74,9 @@ void AddinUAPKIConnect::RegisterMethods() {
                 std::string jsonError = "{\"status\":\"error\",\"error\":\"" + errorMessage + "\"}";
                 this->result = jsonError;
                 
-                // Логирование ошибки с использованием ServiceTools
-                ServiceTools::LogError(AddInNative::MB2WCHAR(errorMessage));
-                
-                // Добавляем ошибку в лог компоненты
-                AddError(AddInNative::MB2WCHAR(errorMessage), E_FAIL);
+                // Логирование ошибки
+                std::string errorMsg = "Исключение C++: " + errorMessage;
+                REPORT_ERROR(errorMsg);
                 
                 return false;
             }
@@ -73,10 +86,7 @@ void AddinUAPKIConnect::RegisterMethods() {
                 this->result = jsonError;
                 
                 // Логирование неизвестной ошибки
-                ServiceTools::LogError(u"[AddinUAPKIConnect] Неизвестная ошибка при вызове метода");
-                
-                // Добавляем ошибку в лог компоненты
-                AddError(u"Неизвестная ошибка при вызове UAPKI", E_FAIL);
+                REPORT_ERROR("Неизвестная ошибка при вызове метода UAPKI");
                 
                 return false;
             }
@@ -85,7 +95,7 @@ void AddinUAPKIConnect::RegisterMethods() {
     );
     
     // Логирование успешной регистрации методов
-    ServiceTools::LogInfo(u"[AddinUAPKIConnect] Регистрация методов компонента завершена");
+    REPORT_INFO("Регистрация методов компонента UAPKI завершена");
 }
 
 // Метод для вызова команды UAPKI
@@ -95,18 +105,25 @@ bool AddinUAPKIConnect::CallUapki(const std::string& method, const std::string& 
     if (logParams.length() > 500) {
         logParams = logParams.substr(0, 500) + "...";
     }
-    ServiceTools::LogDebug(u"[AddinUAPKIConnect] Вызов UAPKIConnectHelper::ExecuteUapkiCommand: метод=" + 
-                          std::u16string(method.begin(), method.end()) + 
-                          u", параметры=" + std::u16string(logParams.begin(), logParams.end()));
+    
+    std::string debugMsg = "Вызов UAPKIConnectHelper::ExecuteUapkiCommand: метод=" + 
+                         method + ", параметры=" + logParams;
+    REPORT_DEBUG(debugMsg);
     
     // Вызываем метод UAPKIConnectHelper для выполнения команды
     bool result = UAPKIConnectHelper::ExecuteUapkiCommand(method, paramsString, jsonResponse);
     
     // Если результат выполнения с ошибкой - логируем
     if (!result) {
-        ServiceTools::LogError(u"[AddinUAPKIConnect] Ошибка выполнения ExecuteUapkiCommand: " + 
-                              std::u16string(jsonResponse.begin(), jsonResponse.end()));
+        std::string errorMsg = "Ошибка выполнения ExecuteUapkiCommand: " + jsonResponse;
+        REPORT_ERROR(errorMsg);
     }
     
     return result;
+}
+
+// Реализация метода EnableLogging
+bool AddinUAPKIConnect::EnableLogging(const std::string& logLevel, const std::string& logFilePath) {
+    // Делегирование вызова к ServiceTools
+    return ServiceTools::EnableComponentLogging(this, logLevel, logFilePath);
 }
