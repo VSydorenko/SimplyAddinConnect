@@ -11,6 +11,7 @@
  * 
  * Класс предоставляет интерфейс для вызова методов UAPKI через единую точку входа.
  * Обрабатывает параметры в формате ключ=значение и преобразует их в JSON-запросы к библиотеке UAPKI.
+ * Реализует механизмы логирования и обработки ошибок согласно стандартам проекта.
  */
 class AddinUAPKIConnect : public AddInNative {
 public:
@@ -28,11 +29,10 @@ public:
      * @return false в случае ошибки
      */
     bool CallUapki(const std::string& method, const std::string& paramsString, std::string& jsonResponse);
-    
     /**
      * @brief Включить логирование для компонента
      * 
-     * @param logLevel Уровень логирования
+     * @param logLevel Уровень логирования (error, warn, info, debug, trace, off)
      * @param logFilePath Путь к файлу лога
      * @return true если логирование успешно включено
      * @return false в случае ошибки

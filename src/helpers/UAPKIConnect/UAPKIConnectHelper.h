@@ -25,6 +25,15 @@ public:
 
 private:
     /**
+     * @brief Проверяет успешность выполнения операции по JSON-ответу
+     * 
+     * @param jsonResponse Строка с JSON-ответом от UAPKI
+     * @return true если операция выполнена успешно
+     * @return false если операция завершилась с ошибкой
+     */
+    static bool IsOperationSuccess(const std::string& jsonResponse);
+
+    /**
      * @brief Разбирает строку параметров в формате "ключ=значение,ключ=значение" в JSON объект
      * 
      * @param paramsString Строка параметров в формате "ключ=значение,ключ=значение"
