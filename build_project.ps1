@@ -202,14 +202,98 @@ if ($requiredFiles -and $zipFile) {
     Write-Host "Some files are missing. Check the build."
 }
 
-# Если UAPKI включен, запускаем скрипт для сборки провайдеров
+# Если UAPKI включен, собираем провайдеры напрямую здесь
 if ($WithUAPKI) {
     Write-Host "Building UAPKI providers..." -ForegroundColor Cyan
-    powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\scripts\build_providers.ps1"
     
-    # Проверяем успешность выполнения команды
-    if (-Not $?) {
-        Write-Host "Error building UAPKI providers" -ForegroundColor Red
+    # Проверяем наличие директории с библиотекой
+    $uapkiDir = "$PSScriptRoot\extern\uapki\library"
+    $cmPkcs12Dir = "$uapkiDir\cm-pkcs12"
+
+    if (-Not (Test-Path -Path $cmPkcs12Dir)) {
+        Write-Host "ERROR: UAPKI cm-pkcs12 directory not found at $cmPkcs12Dir" -ForegroundColor Red
         exit 1
+    }
+    
+    # Создаем директории для сборки провайдеров
+    $cmBuildFolderX86 = "$PSScriptRoot\cm_build_x86"
+    $cmBuildFolderX64 = "$PSScriptRoot\cm_build_x64"
+    
+    # Очищаем старые сборки провайдеров
+    Remove-Item -Recurse -Force $cmBuildFolderX86 -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $cmBuildFolderX64 -ErrorAction SilentlyContinue
+    
+    New-Item -Path $cmBuildFolderX86 -ItemType Directory -Force | Out-Null
+    New-Item -Path $cmBuildFolderX64 -ItemType Directory -Force | Out-Null
+    
+    # Директория для выходных DLL провайдеров
+    $providersDir = "$PSScriptRoot\bin\Release\providers"
+    New-Item -Path $providersDir -ItemType Directory -Force | Out-Null
+    
+    # Параметры для сборки провайдера
+    $cmParams = @(
+        "-DUAPKI_LIBRARIES=$PSScriptRoot\bin\Release", 
+        "-DUAPKI_INCLUDE_DIR=$uapkiDir\uapki\include",
+        "-DUAPKIC_INCLUDE_DIR=$uapkiDir\uapkic\include",
+        "-DUAPKIF_INCLUDE_DIR=$uapkiDir\uapkif\include"
+    )
+    
+    # Собираем провайдер PKCS12 для x86
+    Write-Host "Building PKCS12 provider for x86..." -ForegroundColor Cyan
+    & cmake -G "Visual Studio 17 2022" -A Win32 -S $cmPkcs12Dir -B $cmBuildFolderX86 $cmParams
+    
+    if (-Not $?) {
+        Write-Host "ERROR: Failed to generate CM-PKCS12 project for x86" -ForegroundColor Red
+        exit 1
+    }
+    
+    & cmake --build $cmBuildFolderX86 --config Release
+    
+    if (-Not $?) {
+        Write-Host "ERROR: Failed to build CM-PKCS12 for x86" -ForegroundColor Red
+        exit 1
+    }
+    
+    # Копируем 32-битный провайдер в выходную директорию
+    $providerX86Path = "$cmBuildFolderX86\Release\cm-pkcs12.dll"
+    if (Test-Path $providerX86Path) {
+        Copy-Item -Path $providerX86Path -Destination "$providersDir\cm-pkcs12_x86.dll" -Force
+        Write-Host "Copied x86 PKCS12 provider to $providersDir\cm-pkcs12_x86.dll" -ForegroundColor Green
+    } else {
+        Write-Host "WARNING: x86 PKCS12 provider DLL not found at $providerX86Path" -ForegroundColor Yellow
+    }
+    
+    # Собираем провайдер PKCS12 для x64
+    Write-Host "Building PKCS12 provider for x64..." -ForegroundColor Cyan
+    & cmake -G "Visual Studio 17 2022" -A x64 -S $cmPkcs12Dir -B $cmBuildFolderX64 $cmParams
+    
+    if (-Not $?) {
+        Write-Host "ERROR: Failed to generate CM-PKCS12 project for x64" -ForegroundColor Red
+        exit 1
+    }
+    
+    & cmake --build $cmBuildFolderX64 --config Release
+    
+    if (-Not $?) {
+        Write-Host "ERROR: Failed to build CM-PKCS12 for x64" -ForegroundColor Red
+        exit 1
+    }
+    
+    # Копируем 64-битный провайдер в выходную директорию
+    $providerX64Path = "$cmBuildFolderX64\Release\cm-pkcs12.dll"
+    if (Test-Path $providerX64Path) {
+        Copy-Item -Path $providerX64Path -Destination "$providersDir\cm-pkcs12_x64.dll" -Force
+        Write-Host "Copied x64 PKCS12 provider to $providersDir\cm-pkcs12_x64.dll" -ForegroundColor Green
+    } else {
+        Write-Host "WARNING: x64 PKCS12 provider DLL not found at $providerX64Path" -ForegroundColor Yellow
+    }
+    
+    # Проверка наличия собранных провайдеров
+    $providerFiles = Get-ChildItem -Path $providersDir -Filter *.dll -ErrorAction SilentlyContinue
+    if ($providerFiles) {
+        Write-Host "UAPKI providers built successfully:" -ForegroundColor Green
+        $providerFiles | ForEach-Object { Write-Host " - $($_.Name)" -ForegroundColor Green }
+    } else {
+        Write-Host "WARNING: No UAPKI providers were built." -ForegroundColor Yellow
     }
 }
