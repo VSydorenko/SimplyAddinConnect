@@ -53,6 +53,11 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/Release CACHE PATH "Runti
 # Патчим оригинальный CMakeLists.txt UAPKI библиотеки через включение файла
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_MODULE_PATH})
 
+# Проверяем наличие директорий UAPKI
+if(NOT EXISTS "${CMAKE_SOURCE_DIR}/extern/uapki/library/uapkic")
+    message(FATAL_ERROR "UAPKI library not found. Please run: git submodule update --init --recursive")
+endif()
+
 # Добавляем подпроекты UAPKI
 add_subdirectory(extern/uapki/library/uapkic)
 add_subdirectory(extern/uapki/library/uapkif)
@@ -65,9 +70,9 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/cm-pkcs12.cmake"
 
 # Добавляем директории с заголовочными файлами UAPKI и CURL
 target_include_directories(${TARGET} PRIVATE 
-    extern/uapki/library/uapki/include
-    extern/uapki/library/uapkic/include
-    extern/uapki/library/uapkif/include
+    ${CMAKE_SOURCE_DIR}/extern/uapki/library/uapki/include
+    ${CMAKE_SOURCE_DIR}/extern/uapki/library/uapkic/include
+    ${CMAKE_SOURCE_DIR}/extern/uapki/library/uapkif/include
     "${CURL_INCLUDE_DIR}"
 )
 
