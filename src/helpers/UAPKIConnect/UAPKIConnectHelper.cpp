@@ -1,4 +1,4 @@
-#include "../core/pch.h"
+#include "../../core/pch.h"
 #include "UAPKIConnectHelper.h"
 #include "../ServiceTools.h"
 #include <stdexcept>
