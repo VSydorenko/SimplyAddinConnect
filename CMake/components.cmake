@@ -177,7 +177,7 @@ target_include_directories(privat_json_helper_component PRIVATE
 )
 
 ## @var ecr_privat_json_component
-## @brief Компонент для работы с платежным терминалом ПриватБанка по JSON-протоколу
+## @brief Компонент для роботи з платежним терміналом ПриватБанка по JSON-протоколу
 add_library(ecr_privat_json_component OBJECT
     src/components/AddinECRPrivatJSON.h
     src/components/AddinECRPrivatJSON.cpp
@@ -230,7 +230,7 @@ target_include_directories(protocols_component PRIVATE
 ## @var uapki_helper_component
 ## @brief Вспомогательный компонент для работы с библиотекой UAPKI
 if(BUILD_WITH_UAPKI)
-    ## Компонент для работы с UAPKIConnect
+    ## Компонент для роботи з UAPKIConnect
     add_library(uapki_connect_helper_component OBJECT
         src/helpers/UAPKIConnect/UAPKIConnectHelper.h
         src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp
@@ -251,8 +251,8 @@ if(BUILD_WITH_UAPKI)
         CXX_STANDARD 17
         CXX_STANDARD_REQUIRED ON
     )
-    
-    ## Компонент для работы с UAPKI из 1С
+
+    ## Компонент для роботи з UAPKI з 1С
     add_library(uapki_connect_component OBJECT
         src/components/AddinUAPKIConnect.h
         src/components/AddinUAPKIConnect.cpp
@@ -353,25 +353,8 @@ target_link_libraries(${TARGET} PRIVATE nlohmann_json)
 target_link_libraries(${TARGET} PRIVATE spdlog::spdlog)
 target_link_libraries(${TARGET} PRIVATE ixwebsocket)
 
-# Настройка транспортного компонента
-set_target_properties(transport_component PROPERTIES
-    POSITION_INDEPENDENT_CODE ON
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-)
-
-# Пути включения для транспортного компонента
-target_include_directories(transport_component PRIVATE 
-    include
-    ${CMAKE_SOURCE_DIR}
-    ${SPDLOG_INCLUDE_DIR}
-    ${IXWEBSOCKET_INCLUDE_DIR}
-)
-
-# Зависимости для транспортного компонента
-add_dependencies(transport_component base_component spdlog)
-add_dependencies(transport_component helpers_component)
-
-# Зависимость от библиотеки ixwebsocket
-add_dependencies(transport_component ixwebsocket)
-target_link_libraries(transport_component PRIVATE interfaces_component spdlog::spdlog ixwebsocket)
+# Додаємо лінкування UAPKI до основної DLL
+if(BUILD_WITH_UAPKI)
+    include(CMake/uapki_full_static.cmake)
+    target_link_libraries(${TARGET} PRIVATE uapki_bundle)
+endif()

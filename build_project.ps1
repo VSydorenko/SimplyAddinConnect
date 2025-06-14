@@ -134,8 +134,8 @@ if ($missingCMakeFiles) {
 }
 
 # Если UAPKI включен, проверяем наличие соответствующего модульного файла
-if ($WithUAPKI -and -Not (Test-Path -Path "$PSScriptRoot\CMake\uapki_settings.cmake")) {
-    Write-Host "ERROR: Missing required CMake module file: uapki_settings.cmake" -ForegroundColor Red
+if ($WithUAPKI -and -Not (Test-Path -Path "$PSScriptRoot\CMake\uapki_full_static.cmake")) {
+    Write-Host "ERROR: Missing required CMake module file: uapki_full_static.cmake" -ForegroundColor Red
     exit 1
 }
 
