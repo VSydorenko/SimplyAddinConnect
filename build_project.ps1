@@ -190,163 +190,26 @@ if ($dllFiles) {
     Write-Host "DLL files not found. Archive not created."
 }
 
-# Перевірка наявності зібраних DLL-файлів та архіву
-$requiredFiles = Get-ChildItem -Path $releaseFolder -Filter *.dll -ErrorAction SilentlyContinue
-$zipFile = Get-Item -Path $zipFilePath -ErrorAction SilentlyContinue
-
-if ($requiredFiles -and $zipFile) {
-    Write-Host "All required files built successfully:"
-    $requiredFiles | ForEach-Object { Write-Host $_.Name }
-    Write-Host $zipFile.Name
-} else {
-    Write-Host "Some files are missing. Check the build."
-}
-
-# Если UAPKI включен, собираем провайдеры напрямую здесь
+# Перевірка наявності зібраних DLL-файлів та архіву.
+# Провайдери cm-pkcs12_x86/_x64.dll збираються як частина основної cmake-збірки
+# (ціль cm-pkcs12-provider) і лягають у bin/Release самі — окремого configure немає.
+$expectedFiles = @(
+    "SimplyAddinConnectWin_x86.dll",
+    "SimplyAddinConnectWin_x64.dll"
+)
 if ($WithUAPKI) {
-    Write-Host "Building UAPKI providers..." -ForegroundColor Cyan
-    
-    # Проверяем наличие директории с библиотекой
-    $uapkiDir = "$PSScriptRoot\extern\uapki\library"
-    $cmPkcs12Dir = "$uapkiDir\cm-pkcs12"
+    $expectedFiles += "cm-pkcs12_x86.dll"
+    $expectedFiles += "cm-pkcs12_x64.dll"
+}
+$expectedFiles += "SimplyAddinConnectWin.zip"
 
-    if (-Not (Test-Path -Path $cmPkcs12Dir)) {
-        Write-Host "ERROR: UAPKI cm-pkcs12 directory not found at $cmPkcs12Dir" -ForegroundColor Red
-        exit 1
-    }
-      # Используем те же директории сборки, что и для основного проекта
-    $cmBuildFolderX86 = "$PSScriptRoot\build_x86"
-    $cmBuildFolderX64 = "$PSScriptRoot\build_x64"
-    
-    # Проверяем наличие директорий сборки
-    if (-Not (Test-Path -Path $cmBuildFolderX86)) {
-        Write-Host "ERROR: Build directory not found at $cmBuildFolderX86" -ForegroundColor Red
-        exit 1
-    }
-    if (-Not (Test-Path -Path $cmBuildFolderX64)) {
-        Write-Host "ERROR: Build directory not found at $cmBuildFolderX64" -ForegroundColor Red
-        exit 1
-    }
-      # Директория для выходных DLL провайдеров
-    $providersDir = "$PSScriptRoot\bin\Release\providers"
-    New-Item -Path $providersDir -ItemType Directory -Force | Out-Null
-    
-    # Дополнительное логирование сборки
-    Write-Host "Provider build configuration:" -ForegroundColor Cyan
-    Write-Host " - Build directories: $cmBuildFolderX86, $cmBuildFolderX64" -ForegroundColor Cyan
-    Write-Host " - Output directory: $providersDir" -ForegroundColor Cyan
-    Write-Host " - UAPKI libraries directory: $uapkiDir" -ForegroundColor Cyan
-      # Параметры для сборки провайдера
-    $cmParams = @(
-        "-DUAPKI_LIBRARIES=$PSScriptRoot\bin\Release", 
-        "-DUAPKI_INCLUDE_DIR=$uapkiDir\uapki\include",
-        "-DUAPKIC_INCLUDE_DIR=$uapkiDir\uapkic\include",
-        "-DUAPKIF_INCLUDE_DIR=$uapkiDir\uapkif\include",
-        # Дополнительные пути к заголовочным файлам
-        "-DCMAKE_INCLUDE_PATH=$uapkiDir\uapki\include;$uapkiDir\uapkic\include;$uapkiDir\uapkif\include;$uapkiDir\common\macros;$uapkiDir\common\pkix;$uapkiDir\common\json",
-        # Дополнительные дефайны для провайдера
-        "-DCMAKE_CXX_FLAGS=-DUAPKI_STATIC -DUAPKIF_STATIC -DUAPKIC_STATIC -DBA_STATIC -DASN1_STATIC",
-        "-DCMAKE_C_FLAGS=-DUAPKI_STATIC -DUAPKIF_STATIC -DUAPKIC_STATIC -DBA_STATIC -DASN1_STATIC"
-    )
-      # Собираем провайдер PKCS12 для x86
-    Write-Host "Building PKCS12 provider for x86..." -ForegroundColor Cyan
-    
-    # Добавляем системные библиотеки для x86 версии
-    $cmParamsX86 = $cmParams + @(
-        "-DCURL_LIBRARY=$uapkiDir\common\curl\builds\windows_x86\libcurl.lib",
-        "-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:libcmt.lib /NODEFAULTLIB:msvcrt.lib",
-        "-DCMAKE_SHARED_LINKER_FLAGS=/NODEFAULTLIB:libcmt.lib /NODEFAULTLIB:msvcrt.lib"
-    )
-    
-    & cmake -G "Visual Studio 17 2022" -A Win32 -S $cmPkcs12Dir -B $cmBuildFolderX86 $cmParamsX86
-    
-    if (-Not $?) {
-        Write-Host "ERROR: Failed to generate CM-PKCS12 project for x86" -ForegroundColor Red
-        exit 1
-    }
-    
-    & cmake --build $cmBuildFolderX86 --config Release
-    
-    if (-Not $?) {
-        Write-Host "ERROR: Failed to build CM-PKCS12 for x86" -ForegroundColor Red
-        exit 1
-    }
-      # Копируем 32-битный провайдер в выходную директорию
-    # Проверяем оба возможных пути к DLL провайдера
-    $providerX86Paths = @(
-        "$cmBuildFolderX86\Release\cm-pkcs12.dll",
-        "$cmBuildFolderX86\cm-pkcs12\Release\cm-pkcs12.dll"
-    )
-    
-    $providerX86Found = $false
-    foreach ($path in $providerX86Paths) {
-        if (Test-Path $path) {
-            Copy-Item -Path $path -Destination "$providersDir\cm-pkcs12_x86.dll" -Force
-            Write-Host "Copied x86 PKCS12 provider from $path to $providersDir\cm-pkcs12_x86.dll" -ForegroundColor Green
-            $providerX86Found = $true
-            break
-        }
-    }
-    
-    if (-Not $providerX86Found) {
-        Write-Host "WARNING: x86 PKCS12 provider DLL not found. Searched in:" -ForegroundColor Yellow
-        foreach ($path in $providerX86Paths) {
-            Write-Host " - $path" -ForegroundColor Yellow
-        }
-    }
-      # Собираем провайдер PKCS12 для x64
-    Write-Host "Building PKCS12 provider for x64..." -ForegroundColor Cyan
-    
-    # Добавляем системные библиотеки для x64 версии
-    $cmParamsX64 = $cmParams + @(
-        "-DCURL_LIBRARY=$uapkiDir\common\curl\builds\windows_x86-64\libcurl.lib",
-        "-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:libcmt.lib /NODEFAULTLIB:msvcrt.lib",
-        "-DCMAKE_SHARED_LINKER_FLAGS=/NODEFAULTLIB:libcmt.lib /NODEFAULTLIB:msvcrt.lib"
-    )
-    
-    & cmake -G "Visual Studio 17 2022" -A x64 -S $cmPkcs12Dir -B $cmBuildFolderX64 $cmParamsX64
-    
-    if (-Not $?) {
-        Write-Host "ERROR: Failed to generate CM-PKCS12 project for x64" -ForegroundColor Red
-        exit 1
-    }
-    
-    & cmake --build $cmBuildFolderX64 --config Release
-    
-    if (-Not $?) {
-        Write-Host "ERROR: Failed to build CM-PKCS12 for x64" -ForegroundColor Red
-        exit 1
-    }
-      # Копируем 64-битный провайдер в выходную директорию
-    # Проверяем оба возможных пути к DLL провайдера
-    $providerX64Paths = @(
-        "$cmBuildFolderX64\Release\cm-pkcs12.dll",
-        "$cmBuildFolderX64\cm-pkcs12\Release\cm-pkcs12.dll"
-    )
-    
-    $providerX64Found = $false
-    foreach ($path in $providerX64Paths) {
-        if (Test-Path $path) {
-            Copy-Item -Path $path -Destination "$providersDir\cm-pkcs12_x64.dll" -Force
-            Write-Host "Copied x64 PKCS12 provider from $path to $providersDir\cm-pkcs12_x64.dll" -ForegroundColor Green
-            $providerX64Found = $true
-            break
-        }
-    }
-    
-    if (-Not $providerX64Found) {
-        Write-Host "WARNING: x64 PKCS12 provider DLL not found. Searched in:" -ForegroundColor Yellow
-        foreach ($path in $providerX64Paths) {
-            Write-Host " - $path" -ForegroundColor Yellow
-        }
-    }
-    
-    # Проверка наличия собранных провайдеров
-    $providerFiles = Get-ChildItem -Path $providersDir -Filter *.dll -ErrorAction SilentlyContinue
-    if ($providerFiles) {
-        Write-Host "UAPKI providers built successfully:" -ForegroundColor Green
-        $providerFiles | ForEach-Object { Write-Host " - $($_.Name)" -ForegroundColor Green }
-    } else {
-        Write-Host "WARNING: No UAPKI providers were built." -ForegroundColor Yellow
-    }
+$missingFiles = $expectedFiles | Where-Object { -Not (Test-Path -Path (Join-Path $releaseFolder $_)) }
+
+if ($missingFiles) {
+    Write-Host "ERROR: Missing expected build artifacts in $releaseFolder :" -ForegroundColor Red
+    $missingFiles | ForEach-Object { Write-Host " - $_" -ForegroundColor Red }
+    exit 1
+} else {
+    Write-Host "All required files built successfully:" -ForegroundColor Green
+    $expectedFiles | ForEach-Object { Write-Host " - $_" -ForegroundColor Green }
 }

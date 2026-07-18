@@ -91,8 +91,8 @@ void AddinUAPKIConnect::RegisterMethods() {
             catch (const std::exception& e) {
                 // Обработка исключений - возвращаем ошибку в формате JSON
                 std::string errorMessage = e.what();
-                this->result = "{\"status\":\"error\",\"error\":\"" + errorMessage + "\"}";
-                
+                this->result = "{\"errorCode\":500,\"error\":\"" + errorMessage + "\"}";
+
                 // Логирование ошибки
                 REPORT_ERROR("Исключение C++ при вызове UAPKI: " + errorMessage);
                 
@@ -100,7 +100,7 @@ void AddinUAPKIConnect::RegisterMethods() {
             }
             catch (...) {
                 // Обработка неизвестных исключений
-                this->result = "{\"status\":\"error\",\"error\":\"Unknown error\"}";
+                this->result = "{\"errorCode\":500,\"error\":\"Unknown error\"}";
                 
                 // Логирование неизвестной ошибки
                 REPORT_ERROR("Неизвестное исключение при вызове метода UAPKI");
@@ -148,12 +148,12 @@ bool AddinUAPKIConnect::CallUapki(const std::string& method, const std::string& 
     catch (const std::exception& e) {
         std::string errorMessage = e.what();
         REPORT_ERROR("Исключение при вызове метода UAPKI " + method + ": " + errorMessage);
-        jsonResponse = "{\"status\":\"error\",\"error\":\"Exception: " + errorMessage + "\"}";
+        jsonResponse = "{\"errorCode\":500,\"error\":\"Exception: " + errorMessage + "\"}";
         return false;
     }
     catch (...) {
         REPORT_ERROR("Неизвестное исключение при вызове метода UAPKI " + method);
-        jsonResponse = "{\"status\":\"error\",\"error\":\"Unknown exception\"}";
+        jsonResponse = "{\"errorCode\":500,\"error\":\"Unknown exception\"}";
         return false;
     }
 }

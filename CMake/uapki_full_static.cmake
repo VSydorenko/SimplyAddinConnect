@@ -33,7 +33,7 @@ if(WIN32)
     target_link_libraries(byte-array PUBLIC bcrypt)
 endif()
 # Добавляем явные экспортируемые дефайны для byte-array
-target_compile_definitions(byte-array PUBLIC UAPKIC_STATIC UAPKIC_LIBRARY NOCRYPT _CRT_SECURE_NO_WARNINGS BA_STATIC)
+target_compile_definitions(byte-array PUBLIC UAPKIC_STATIC NOCRYPT _CRT_SECURE_NO_WARNINGS BA_STATIC)
 
 # --- Збірка ba-utils ---
 file(GLOB BA_UTILS_SOURCES 
@@ -93,7 +93,7 @@ target_include_directories(uapkic PUBLIC
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/uapkic/src
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/macros
 )
-target_compile_definitions(uapkic PUBLIC UAPKIC_STATIC UAPKIC_LIBRARY UAPKIC_SELF_TEST NOCRYPT _CRT_SECURE_NO_WARNINGS BA_STATIC)
+target_compile_definitions(uapkic PUBLIC UAPKIC_STATIC UAPKIC_SELF_TEST NOCRYPT _CRT_SECURE_NO_WARNINGS BA_STATIC)
 if(WIN32)
     target_link_libraries(uapkic PUBLIC stacktrace byte-array bcrypt)
 else()
@@ -110,7 +110,7 @@ target_include_directories(uapkif PUBLIC
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/uapkif/src/asn1
 )
 target_link_libraries(uapkif PUBLIC uapkic asn1 ba-utils)
-target_compile_definitions(uapkif PRIVATE UAPKIF_STATIC UAPKIF_LIBRARY NOCRYPT _CRT_SECURE_NO_WARNINGS)
+target_compile_definitions(uapkif PRIVATE UAPKIF_STATIC NOCRYPT _CRT_SECURE_NO_WARNINGS)
 
 # --- Збірка parson (JSON) ---
 file(GLOB PARSON_SOURCES
@@ -127,16 +127,22 @@ target_include_directories(parson PUBLIC
 )
 target_link_libraries(parson PUBLIC ba-utils byte-array)
 
-# --- Збірка cm-pkcs12 ---
+# --- Збірка cm-pkcs12 як окремої самодостатньої SHARED-DLL (провайдер) ---
+# Провайдер вантажиться в рантаймі через LoadLibrary; символьних залежностей
+# від головної DLL немає. Статичні uapkic/uapkif/asn1/parson/ba-utils/byte-array
+# лінкуються всередину провайдера. Спільні джерела (parson, ba-utils) беруться
+# ЛІНКУВАННЯМ статичних цілей, а не компілюються вдруге (інакше LNK2005).
 file(GLOB CM_PKCS12_SRC
     "${CMAKE_SOURCE_DIR}/extern/uapki/library/cm-pkcs12/src/*.c"
     "${CMAKE_SOURCE_DIR}/extern/uapki/library/cm-pkcs12/src/*.cpp"
     "${CMAKE_SOURCE_DIR}/extern/uapki/library/cm-pkcs12/src/crypto/*.c"
     "${CMAKE_SOURCE_DIR}/extern/uapki/library/cm-pkcs12/src/storage/*.c"
+    "${CMAKE_SOURCE_DIR}/extern/uapki/library/cm-pkcs12/src/crypto/*.cpp"
+    "${CMAKE_SOURCE_DIR}/extern/uapki/library/cm-pkcs12/src/storage/*.cpp"
 )
-add_library(cm-pkcs12 STATIC ${CM_PKCS12_SRC}
+add_library(cm-pkcs12-provider SHARED ${CM_PKCS12_SRC}
+    # common/pkix файли, яких немає в жодній статичній цілі
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/aid.c
-    ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/ba-utils.c
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/dstu4145-params.c
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/iconv-utils.c
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/iso15946.c
@@ -145,11 +151,8 @@ add_library(cm-pkcs12 STATIC ${CM_PKCS12_SRC}
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/oid-utils.c
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/private-key.c
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/uapki-ns-util.cpp
-    ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/json/parson.c
-    ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/json/parson-helper.cpp
-    ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/json/strtod-no-locale.c
 )
-target_include_directories(cm-pkcs12 PUBLIC
+target_include_directories(cm-pkcs12-provider PRIVATE
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/cm-pkcs12/src
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/cm-pkcs12/src/crypto
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/cm-pkcs12/src/storage
@@ -157,15 +160,31 @@ target_include_directories(cm-pkcs12 PUBLIC
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/json
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/macros
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix
+    ${CMAKE_SOURCE_DIR}/extern/uapki/library/uapkic/include
+    ${CMAKE_SOURCE_DIR}/extern/uapki/library/uapkif/include
 )
-target_link_libraries(cm-pkcs12 PUBLIC uapkic uapkif parson stacktrace)
-target_compile_definitions(cm-pkcs12 PRIVATE CM_LIBRARY)
-if(WIN32)
-    target_compile_definitions(cm-pkcs12 PRIVATE NOCRYPT _CRT_SECURE_NO_WARNINGS)
-endif()
+# curl НЕ лінкувати — потрібен лише ядру uapki
+target_link_libraries(cm-pkcs12-provider PRIVATE
+    uapkic uapkif asn1 parson ba-utils byte-array stacktrace dirent-internal
+    bcrypt crypt32 ws2_32
+)
+# CM_LIBRARY робить рівно 7 provider_* символів dllexport (усі позначені CM_EXPORT
+# у main-cm-pkcs12.cpp); STATIC-дефайни вже глобальні через add_definitions вище.
+# БЕЗ CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS і без .def — інакше витягнуло б тисячі символів.
+target_compile_definitions(cm-pkcs12-provider PRIVATE CM_LIBRARY NOCRYPT _CRT_SECURE_NO_WARNINGS)
 if(APPLE)
-    target_link_libraries(cm-pkcs12 PRIVATE iconv)
+    target_link_libraries(cm-pkcs12-provider PRIVATE iconv)
 endif()
+# Ім'я з арх-суфіксом, вихід — поруч з головною DLL у bin/Release
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set_target_properties(cm-pkcs12-provider PROPERTIES OUTPUT_NAME "cm-pkcs12_x64")
+else()
+    set_target_properties(cm-pkcs12-provider PROPERTIES OUTPUT_NAME "cm-pkcs12_x86")
+endif()
+set_target_properties(cm-pkcs12-provider PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/bin/Release"
+)
 
 # --- dirent-internal уже объявлен ранее ---
 
@@ -174,11 +193,20 @@ file(GLOB UAPKI_API_SOURCES "${CMAKE_SOURCE_DIR}/extern/uapki/library/uapki/src/
 file(GLOB UAPKI_SOURCES "${CMAKE_SOURCE_DIR}/extern/uapki/library/uapki/src/*.cpp")
 file(GLOB COMMON_SOURCES "${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/*.cpp")
 file(GLOB JSON_SOURCES "${CMAKE_SOURCE_DIR}/extern/uapki/library/common/json/*.cpp")
+# common/pkix/*.c потрібні ядру uapki (oids, oid-utils, key-wrap, private-key, iconv-utils,
+# aid, dstu4145-params, iso15946). Раніше приходили через стару cm-pkcs12. ba-utils.c та
+# uapki-errors.c ВИКЛЮЧАЄМО — вони вже в статичній цілі ba-utils (уникаємо LNK2005).
+file(GLOB UAPKI_PKIX_C_SOURCES "${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/*.c")
+list(REMOVE_ITEM UAPKI_PKIX_C_SOURCES
+    "${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/ba-utils.c"
+    "${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/uapki-errors.c"
+)
 add_library(uapki STATIC
     ${UAPKI_API_SOURCES}
     ${UAPKI_SOURCES}
     ${COMMON_SOURCES}
     ${JSON_SOURCES}
+    ${UAPKI_PKIX_C_SOURCES}
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/loaders/cm-loader.cpp
 )
 target_include_directories(uapki PUBLIC
@@ -194,8 +222,8 @@ target_include_directories(uapki PUBLIC
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/loaders
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/curl/include
 )
-target_link_libraries(uapki PUBLIC uapkic stacktrace uapkif asn1 ba-utils parson cm-pkcs12 dirent-internal)
-target_compile_definitions(uapki PRIVATE UAPKI_STATIC UAPKI_LIBRARY NOCRYPT _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(uapki PUBLIC uapkic stacktrace uapkif asn1 ba-utils parson dirent-internal)
+target_compile_definitions(uapki PRIVATE UAPKI_STATIC NOCRYPT _CRT_SECURE_NO_WARNINGS)
 
 # --- Додаємо curl ---
 set(CURL_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/extern/uapki/library/common/curl/include")
@@ -237,7 +265,6 @@ if(WIN32)
         uapkif
         asn1
         parson
-        cm-pkcs12
         ${CURL_LIBRARY}
         wldap32 crypt32 ws2_32 winmm bcrypt
     )
@@ -254,7 +281,6 @@ else()
         uapkif
         asn1
         parson
-        cm-pkcs12
         -Wl,--no-whole-archive
         ${CURL_LIBRARY}
     )

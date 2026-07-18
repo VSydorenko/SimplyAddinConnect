@@ -22,8 +22,11 @@ git submodule update --init --recursive
 ```powershell
 powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTests]
 ```
-- без прапорців — основний проєкт;
-- `-WithUAPKI` — + інтеграція UAPKI та провайдери `cm-pkcs12`;
+- без прапорців — основний проєкт (2 головні DLL + `manifest.xml` у ZIP);
+- `-WithUAPKI` — за один прохід збирає ядро UAPKI (`uapki`+`uapkic`+`uapkif`, статично в
+  головну DLL) і окремо самодостатній провайдер `cm-pkcs12_x86.dll` / `_x64.dll`
+  (вантажиться ядром у рантаймі через `LoadLibraryA`); у підсумковий ZIP потрапляють обидва —
+  разом 5 файлів (див. `docs/ARCHITECTURE.md` §6, §8);
 - `-WithTests` — ⚠️ **зараз падає** (див. нижче).
 
 Скрипт перегенеровує `version.h` (інкремент build), очищає `build_x86/`, `build_x64/`,

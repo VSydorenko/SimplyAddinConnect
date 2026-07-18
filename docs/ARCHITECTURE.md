@@ -33,7 +33,8 @@ flowchart TD
         T --> T1["COM"] & T2["TCP"] & T3["WS-client"] & T4["WS-server"]
 
         C2 --> H2["UAPKIConnectHelper"]
-        H2 -->|"process() / json_free()"| U["UAPKI (статичний лінк)"]
+        H2 -->|"process() / json_free()"| U["UAPKI ядро<br/>(uapki+uapkic+uapkif, статичний лінк)"]
+        U -.->|"LoadLibraryA у INIT<br/>(cmProviders.dir + арх-суфікс)"| CM["cm-pkcs12_x86/_x64.dll<br/>(окрема самодостатня DLL)"]
 
         B -.-> S["ServiceTools<br/>(логування, конвертації)"]
         C1 -.-> S
@@ -44,6 +45,7 @@ flowchart TD
     T2 --> D1
     T3 --> D1
     U --> D2["НКІ / сертифікати / ЕЦП"]
+    CM --> D2
 ```
 
 **Шари:**
@@ -229,19 +231,28 @@ UAPKIConnectHelper::ExecuteUapkiCommand  (static)
         │  формує JSON-запит {method, parameters}
         ▼
 process(request) / json_free(result)     (C-API UAPKI, статичний лінк, WITH_UAPKI)
+        │
+        ▼ (у method == INIT, рантайм)
+cm-pkcs12_x86.dll / cm-pkcs12_x64.dll     (окрема самодостатня DLL, LoadLibraryA)
 ```
 
 - Компонента приймає з 1С назву методу UAPKI та параметри, хелпер збирає з них JSON-запит
   (`nlohmann::json`), викликає C-функцію `process()`, повертає JSON-відповідь у 1С, звільняє
   пам'ять через `json_free()`.
-- Уся бібліотека UAPKI (`uapki`, `uapkic`, `uapkif`, провайдери `cm-pkcs12`) лінкується
-  **статично** — див. `CMake/uapki_full_static.cmake` (ціль `uapki_bundle`) та опції в
-  `CMake/options.cmake` (`*_STATIC`-дефайни вимикають `dllimport`).
+- **Статично** в головну DLL лінкується лише **ядро UAPKI** (`uapki`, `uapkic`, `uapkif`) —
+  див. `CMake/uapki_full_static.cmake` (ціль `uapki_bundle`) та опції в `CMake/options.cmake`
+  (`*_STATIC`-дефайни вимикають `dllimport`).
+- Провайдер **`cm-pkcs12` більше не лінкується статично** — це окрема самодостатня SHARED DLL
+  з арх-суфіксом (`cm-pkcs12_x86.dll` / `cm-pkcs12_x64.dll`, статичні `uapkic`/`uapkif`
+  усередині неї, рівно 7 експортованих CM-API символів). Ядро UAPKI вантажить її в рантаймі
+  через `LoadLibraryA` при виклику методу `INIT` (поле `cmProviders`).
+- `UAPKIConnectHelper` при `method == INIT` автоматично інжектить `cmProviders.dir` — каталог
+  власного модуля DLL (через `GetModuleFileName`) — і дописує до імені провайдера
+  арх-суфікс (`_x86`/`_x64`), тож 1С-скрипту не треба знати шлях чи розрядність.
 - Повний JSON-протокол UAPKI (методи, параметри, коди помилок) — `docs/UAPKI_Protokol.md`.
 
-> ⚠️ Відомі недоробки цього стеку (детекція успіху за `errorCode`, обмежений парсер
-> параметрів) описані окремо в нотатках проєкту — при доопрацюванні звіряйся з
-> `docs/UAPKI_Protokol.md`.
+> Детекція успіху за `errorCode` у цьому стеку вже виправлена; обмежений парсер параметрів —
+> за деталями звіряйся з `docs/UAPKI_Protokol.md`.
 
 ---
 
@@ -283,9 +294,16 @@ uapki_connect_component        ┘ + uapki_bundle (статичний UAPKI)
 - Деталі компонент і залежностей — `CMake/components.cmake`.
 
 ### Пакування
-Скрипт `build_project.ps1` збирає обидві архітектури в Release, інкрементує `version.h`,
-генерує `manifest.xml` (`manifest.ps1`) і пакує обидві DLL + маніфест у
-`bin/Release/SimplyAddinConnectWin.zip` — готовий пакет для підключення в 1С.
+Скрипт `build_project.ps1` збирає обидві архітектури в Release за один прохід, інкрементує
+`version.h`, генерує `manifest.xml` (`manifest.ps1`) і пакує результат у
+`bin/Release/SimplyAddinConnectWin.zip`:
+
+- **без `-WithUAPKI`** — 3 файли: `manifest.xml` + 2 головні DLL (`_x86`/`_x64`);
+- **з `-WithUAPKI`** — 5 файлів: `manifest.xml` + 2 головні DLL + 2 самодостатні провайдери
+  `cm-pkcs12_x86.dll` / `cm-pkcs12_x64.dll`. `manifest.xml` описує лише 2 DLL-файли за
+  архітектурами (`i386`/`x86_64`); компоненти-класи (`AddinECRPrivatJSON`, `AddinUAPKIConnect`)
+  реєструються всередині кожної DLL, а провайдери — додаткові файли поруч, у маніфесті
+  не описані.
 
 ---
 
