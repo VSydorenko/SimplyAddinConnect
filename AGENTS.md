@@ -90,4 +90,5 @@ extern/             # сабмодулі: spdlog, nlohmann_json, ixwebsocket, ua
 - Правки в сабмодулі `extern/uapki` (потрібні для статичної збірки) комітяться **всередині
   сабмодуля**, не з кореня — не загуби їх при `submodule update`.
 - `version.h` перегенеровується скриптом при кожній збірці — очікуваний diff.
-- У `.gitignore`: `bin/`, `build_*`, `.vscode/`, `tmp/`, `manifest.xml`, `*.epf`.
+- У `.gitignore`: `bin/`, `build_*/` та інші build-теки (`/build`, `/build64Lin` тощо), `.vscode/`,
+  `tmp/`, `manifest.xml`, `*.epf`, об'єктні файли (`*.o`, `*.d`, `*.so`).
