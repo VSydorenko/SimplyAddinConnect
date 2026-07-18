@@ -1,5 +1,4 @@
-﻿/build_x64
-/build_x86
+﻿/build_*/
 /build64Lin
 /build32Lin
 /build64
