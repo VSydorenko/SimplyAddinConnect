@@ -134,8 +134,8 @@ if ($missingCMakeFiles) {
 }
 
 # Если UAPKI включен, проверяем наличие соответствующего модульного файла
-if ($WithUAPKI -and -Not (Test-Path -Path "$PSScriptRoot\CMake\uapki_settings.cmake")) {
-    Write-Host "ERROR: Missing required CMake module file: uapki_settings.cmake" -ForegroundColor Red
+if ($WithUAPKI -and -Not (Test-Path -Path "$PSScriptRoot\CMake\uapki_full_static.cmake")) {
+    Write-Host "ERROR: Missing required CMake module file: uapki_full_static.cmake" -ForegroundColor Red
     exit 1
 }
 
@@ -190,26 +190,26 @@ if ($dllFiles) {
     Write-Host "DLL files not found. Archive not created."
 }
 
-# Перевірка наявності зібраних DLL-файлів та архіву
-$requiredFiles = Get-ChildItem -Path $releaseFolder -Filter *.dll -ErrorAction SilentlyContinue
-$zipFile = Get-Item -Path $zipFilePath -ErrorAction SilentlyContinue
-
-if ($requiredFiles -and $zipFile) {
-    Write-Host "All required files built successfully:"
-    $requiredFiles | ForEach-Object { Write-Host $_.Name }
-    Write-Host $zipFile.Name
-} else {
-    Write-Host "Some files are missing. Check the build."
-}
-
-# Если UAPKI включен, запускаем скрипт для сборки провайдеров
+# Перевірка наявності зібраних DLL-файлів та архіву.
+# Провайдери cm-pkcs12_x86/_x64.dll збираються як частина основної cmake-збірки
+# (ціль cm-pkcs12-provider) і лягають у bin/Release самі — окремого configure немає.
+$expectedFiles = @(
+    "SimplyAddinConnectWin_x86.dll",
+    "SimplyAddinConnectWin_x64.dll"
+)
 if ($WithUAPKI) {
-    Write-Host "Building UAPKI providers..." -ForegroundColor Cyan
-    powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\scripts\build_providers.ps1"
-    
-    # Проверяем успешность выполнения команды
-    if (-Not $?) {
-        Write-Host "Error building UAPKI providers" -ForegroundColor Red
-        exit 1
-    }
+    $expectedFiles += "cm-pkcs12_x86.dll"
+    $expectedFiles += "cm-pkcs12_x64.dll"
+}
+$expectedFiles += "SimplyAddinConnectWin.zip"
+
+$missingFiles = $expectedFiles | Where-Object { -Not (Test-Path -Path (Join-Path $releaseFolder $_)) }
+
+if ($missingFiles) {
+    Write-Host "ERROR: Missing expected build artifacts in $releaseFolder :" -ForegroundColor Red
+    $missingFiles | ForEach-Object { Write-Host " - $_" -ForegroundColor Red }
+    exit 1
+} else {
+    Write-Host "All required files built successfully:" -ForegroundColor Green
+    $expectedFiles | ForEach-Object { Write-Host " - $_" -ForegroundColor Green }
 }

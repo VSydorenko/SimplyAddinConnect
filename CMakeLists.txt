@@ -21,12 +21,7 @@ include(CMake/output_settings.cmake)
 include(CMake/platform_settings.cmake)
 include(CMake/link_settings.cmake)
 
-# Подключаем файл настройки UAPKI только если включена опция
-if(BUILD_WITH_UAPKI)
-    include(CMake/uapki_settings.cmake)
-endif()
-
-# Подключаем тесты, если включена соответствующая опция
+# Подключаем тесты, если включена відповідна опція
 if(BUILD_TESTS)
     add_subdirectory(tests)
     message(STATUS "Test suite enabled")

@@ -6,7 +6,8 @@
 	url = https://github.com/nlohmann/json
 [submodule "extern/uapki"]
 	path = extern/uapki
-	url = https://github.com/specinfo-ua/UAPKI
+	url = https://github.com/VSydorenko/UAPKI
+	branch = main-dev
 [submodule "extern/ixwebsocket"]
 	path = extern/ixwebsocket
 	url = https://github.com/machinezone/IXWebSocket.git

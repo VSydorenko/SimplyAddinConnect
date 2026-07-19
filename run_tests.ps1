@@ -1,68 +1,347 @@
-# Скрипт для сборки и запуска тестов
-# powershell -ExecutionPolicy Bypass -File run_tests.ps1 [x86|x64]
+﻿<#
+    run_tests.ps1 — оркестратор тестування ЕЦП-стеку UAPKI (без 1С).
 
-# --- Переход в директорию скрипта ---
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-Set-Location $ScriptDir
+    Рівні:
+      L0  — статичні інваріанти постачання (dumpbin): рівно 3 експорти головної DLL;
+            самодостатній провайдер cm-pkcs12 (7 експортів, лише системні залежності);
+            python-ctypes smoke provider_info (SKIP, якщо немає python).
+      L1  — uapki_selftest.exe: JSON-сценарії напряму через статичне крипто-ядро
+            (tests/scenarios/*.json), кожен — окремий процес у тимч. робочому каталозі.
+      L2/L3 — native_host.exe: e2e поверх ГОЛОВНОЇ DLL через IComponentBase (кейси 1..4),
+            крос-валідація ПРРО (кейс 5) — лише за наявності еталонів.
 
-Write-Host "Starting test build process..."
+    Запуск:  powershell -ExecutionPolicy Bypass -File run_tests.ps1 [x64|x86]
+    Дефолт архітектури — x64. Ненульовий код виходу, якщо будь-що впало.
 
-# Определение архитектуры (по умолчанию x64)
-$architecture = "x64"
-$archParam = "x64"
-if ($args.Length -gt 0 -and $args[0] -eq "x86") {
-    $architecture = "Win32"
-    $archParam = "x86"
+    Тестові дані (tests/data) — read-only вхід; сценарії пишуть лише в тимч. каталог.
+#>
+
+[CmdletBinding()]
+param(
+    [ValidateSet('x64', 'x86')]
+    [string]$Arch = 'x64'
+)
+
+$ErrorActionPreference = 'Continue'
+
+# --- У корінь репозиторію (стійкість до cwd) ---
+$Root = Split-Path -Parent $MyInvocation.MyCommand.Definition
+Set-Location $Root
+
+# --- Похідні від архітектури значення ---
+if ($Arch -eq 'x86') { $ArchSuffix = '_x86'; $CmakePlatform = 'Win32' }
+else                 { $ArchSuffix = '_x64'; $CmakePlatform = 'x64'   }
+
+$BinRelease   = Join-Path $Root 'bin/Release'
+$MainDll      = Join-Path $BinRelease "SimplyAddinConnectWin$ArchSuffix.dll"
+$ProviderName = "cm-pkcs12$ArchSuffix"
+$ProviderDll  = Join-Path $BinRelease "$ProviderName.dll"
+$SelfTestExe  = Join-Path $BinRelease "uapki_selftest$ArchSuffix.exe"
+$NativeHostExe= Join-Path $BinRelease "native_host$ArchSuffix.exe"
+$DataDir      = Join-Path $Root 'tests/data'
+$ScenDir      = Join-Path $Root 'tests/scenarios'
+
+# --- Збір результатів для підсумкової таблиці ---
+$Results = New-Object System.Collections.Generic.List[object]
+function Add-Result {
+    param([string]$Level, [string]$Name, [string]$Status, [string]$Detail = '')
+    $Results.Add([pscustomobject]@{ Level = $Level; Name = $Name; Status = $Status; Detail = $Detail })
+    $color = switch ($Status) { 'PASS' { 'Green' } 'FAIL' { 'Red' } 'SKIP' { 'Yellow' } 'BLOCKED' { 'Red' } default { 'Gray' } }
+    $line = "  [{0,-7}] {1,-4} {2}" -f $Status, $Level, $Name
+    if ($Detail) { $line += "  — $Detail" }
+    Write-Host $line -ForegroundColor $color
 }
 
-Write-Host "Building tests for architecture: $archParam"
-
-# Очистка предыдущих сборок тестов, но сохранение сборки проекта
-if (Test-Path -Path "build_tests") {
-    Write-Host "Cleaning previous test build directory..."
-    Remove-Item -Recurse -Force "build_tests" -ErrorAction SilentlyContinue
+function Section([string]$Title) {
+    Write-Host ''
+    Write-Host "==== $Title ====" -ForegroundColor Cyan
 }
 
-# Очищаем только папку Debug в bin, но сохраняем Release для основного проекта
-if (Test-Path -Path "$PSScriptRoot\bin\Debug") {
-    Write-Host "Cleaning Debug output directory..."
-    Remove-Item -Recurse -Force "$PSScriptRoot\bin\Debug" -ErrorAction SilentlyContinue
-} else {
-    # Создаем директорию, если она не существует
-    New-Item -Path "$PSScriptRoot\bin\Debug" -ItemType Directory -Force | Out-Null
-}
+Write-Host "run_tests: архітектура=$Arch, корінь=$Root" -ForegroundColor White
 
-# Создание директории для сборки тестов
-Write-Host "Creating test build directory..."
-New-Item -Path "build_tests" -ItemType Directory -Force | Out-Null
+# =====================================================================
+# ЕТАП 0 (L0): статичні інваріанти постачання через dumpbin
+# =====================================================================
+Section 'ЕТАП 0 (L0): dumpbin-інваріанти постачання'
 
-# Переход в директорию сборки
-Set-Location -Path "build_tests"
-
-# Генерация проекта с CMake с явным указанием платформы и включением тестов
-Write-Host "Generating CMake project for tests..."
-cmake .. -DBUILD_TESTS=ON -A $architecture
-
-# Сборка тестов с добавлением флага /FS для синхронизации записи в PDB-файл
-Write-Host "Building tests..."
-cmake --build . --config Debug -- /p:CL_MPCount=1 /p:UseMultiToolTask=true /p:AdditionalOptions="/FS"
-
-# Проверка успешности сборки
-if ($LASTEXITCODE -eq 0) {
-    # Запуск тестов
-    Write-Host "Running tests..."
-    ctest -C Debug --verbose
-    
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "All tests completed successfully." -ForegroundColor Green
-    } else {
-        Write-Host "Some tests failed. See log above for details." -ForegroundColor Red
+# --- Пошук dumpbin у VS BuildTools/Community/... ---
+$DumpBin = $null
+$vsRoots = @(
+    "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022",
+    "${env:ProgramFiles}\Microsoft Visual Studio\2022"
+)
+$hostArch = if ($Arch -eq 'x86') { 'Hostx86' } else { 'Hostx64' }
+$dumpArch = if ($Arch -eq 'x86') { 'x86' } else { 'x64' }
+foreach ($vr in $vsRoots) {
+    if (-not (Test-Path $vr)) { continue }
+    $cand = Get-ChildItem -Path $vr -Recurse -Filter 'dumpbin.exe' -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "\\$hostArch\\$dumpArch\\dumpbin\.exe$" } |
+            Select-Object -First 1
+    if (-not $cand) {
+        $cand = Get-ChildItem -Path $vr -Recurse -Filter 'dumpbin.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
     }
-} else {
-    Write-Host "Test build failed. Cannot run tests." -ForegroundColor Red
+    if ($cand) { $DumpBin = $cand.FullName; break }
 }
 
-# Возврат в исходную директорию
-Set-Location $ScriptDir
+function Get-Exports([string]$dll) {
+    # Повертає масив імен експортованих символів
+    $out = & $DumpBin /nologo /EXPORTS $dll 2>$null
+    $names = @()
+    foreach ($ln in $out) {
+        # рядок таблиці: "     1    0 00011D90 SymbolName"
+        if ($ln -match '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\S+)\s*$') {
+            $names += $Matches[1]
+        }
+    }
+    return $names
+}
 
-Write-Host "Test process completed."
+function Get-Dependents([string]$dll) {
+    $out = & $DumpBin /nologo /DEPENDENTS $dll 2>$null
+    $deps = @()
+    foreach ($ln in $out) {
+        if ($ln -match '^\s+(\S+\.dll)\s*$') { $deps += $Matches[1] }
+    }
+    return $deps
+}
+
+if (-not $DumpBin) {
+    Add-Result 'L0' 'dumpbin' 'SKIP' 'dumpbin.exe не знайдено (VS BuildTools?) — L0-перевірки експортів пропущено'
+}
+else {
+    Write-Host "  dumpbin: $DumpBin" -ForegroundColor DarkGray
+
+    # --- L0.1: головна DLL — рівно 3 експорти ---
+    if (-not (Test-Path $MainDll)) {
+        Add-Result 'L0' 'main-dll-exports' 'FAIL' "немає файлу: $MainDll"
+    }
+    else {
+        $exp = Get-Exports $MainDll
+        $need = @('GetClassObject', 'DestroyObject', 'GetClassNames')
+        $missing = $need | Where-Object { $exp -notcontains $_ }
+        $extra   = $exp  | Where-Object { $need -notcontains $_ }
+        if ($missing.Count -eq 0 -and $extra.Count -eq 0) {
+            Add-Result 'L0' 'main-dll-exports' 'PASS' 'рівно 3: GetClassObject/DestroyObject/GetClassNames'
+        }
+        else {
+            $d = @()
+            if ($missing) { $d += "відсутні: $($missing -join ',')" }
+            if ($extra)   { $d += "зайві: $($extra -join ',')" }
+            Add-Result 'L0' 'main-dll-exports' 'FAIL' ($d -join '; ')
+        }
+    }
+
+    # --- L0.2: провайдер — 7 обовʼязкових експортів, лише системні залежності ---
+    if (-not (Test-Path $ProviderDll)) {
+        Add-Result 'L0' 'provider-exports' 'FAIL' "немає файлу: $ProviderDll"
+    }
+    else {
+        $pexp = Get-Exports $ProviderDll
+        $needP = @('provider_info', 'provider_init', 'provider_deinit', 'provider_open',
+                   'provider_close', 'block_free', 'bytearray_free')
+        $missP = $needP | Where-Object { $pexp -notcontains $_ }
+        # захист від витоку символів (CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS/.def-регресія)
+        $leak = $pexp | Where-Object { $_ -match '^(uapki|uapkic|uapkif|asn1|ba_|byte_|parson|BA_|EVP_)' }
+        if ($missP.Count -eq 0 -and $leak.Count -eq 0) {
+            Add-Result 'L0' 'provider-exports' 'PASS' "$($pexp.Count) експортів (7 обовʼязкових на місці, витоку немає)"
+        }
+        else {
+            $d = @()
+            if ($missP) { $d += "відсутні: $($missP -join ',')" }
+            if ($leak)  { $d += "витік символів: $($leak.Count)" }
+            Add-Result 'L0' 'provider-exports' 'FAIL' ($d -join '; ')
+        }
+
+        # залежності провайдера — лише системні
+        $deps = Get-Dependents $ProviderDll
+        $bad = $deps | Where-Object { $_ -match '^(uapki|uapkic|uapkif)' }
+        if ($bad.Count -eq 0) {
+            Add-Result 'L0' 'provider-imports' 'PASS' "залежності системні: $($deps -join ', ')"
+        }
+        else {
+            Add-Result 'L0' 'provider-imports' 'FAIL' "несистемні залежності: $($bad -join ', ')"
+        }
+    }
+}
+
+# --- L0.3: python ctypes smoke provider_info ---
+$python = (Get-Command python -ErrorAction SilentlyContinue)
+if (-not $python) { $python = (Get-Command py -ErrorAction SilentlyContinue) }
+if (-not $python) {
+    Add-Result 'L0' 'py-provider_info' 'SKIP' 'python не в PATH'
+}
+elseif (-not (Test-Path $ProviderDll)) {
+    Add-Result 'L0' 'py-provider_info' 'SKIP' "немає провайдера: $ProviderDll"
+}
+else {
+    $pySmoke = @'
+import sys, ctypes, ctypes.util
+dll = sys.argv[1]
+lib = ctypes.CDLL(dll)
+fn = lib.provider_info            # cm_provider_info_f(CM_JSON_PCHAR* out) -> int
+fn.restype = ctypes.c_int
+fn.argtypes = [ctypes.POINTER(ctypes.c_char_p)]
+out = ctypes.c_char_p()
+rc = fn(ctypes.byref(out))
+info = out.value.decode('utf-8', 'replace') if out.value else ''
+if rc != 0:
+    print("provider_info rc=%d" % rc); sys.exit(1)
+if 'PKCS12' not in info and 'pkcs12' not in info and 'provider' not in info.lower():
+    print("provider_info без очікуваного вмісту: %s" % info[:120]); sys.exit(1)
+print("provider_info OK: %s" % info[:120])
+sys.exit(0)
+'@
+    $tmpPy = Join-Path ([System.IO.Path]::GetTempPath()) ("prov_smoke_" + [guid]::NewGuid().ToString('N').Substring(0,8) + '.py')
+    Set-Content -Path $tmpPy -Value $pySmoke -Encoding UTF8
+    $so = & $python.Source $tmpPy $ProviderDll 2>&1
+    $ok = ($LASTEXITCODE -eq 0)
+    Remove-Item $tmpPy -ErrorAction SilentlyContinue
+    if ($ok) { Add-Result 'L0' 'py-provider_info' 'PASS' ("$so".Trim()) }
+    else     { Add-Result 'L0' 'py-provider_info' 'FAIL' ("$so".Trim()) }
+}
+
+# =====================================================================
+# ЕТАП 1 (build): наявність тестових exe; за потреби — конфіг+збірка
+# =====================================================================
+Section 'ЕТАП 1 (build): тестові виконувані файли'
+
+$haveExes = (Test-Path $SelfTestExe) -and (Test-Path $NativeHostExe)
+if ($haveExes) {
+    Add-Result 'build' 'test-exes' 'PASS' 'uapki_selftest.exe та native_host.exe вже зібрані'
+}
+else {
+    Write-Host "  Тестові exe відсутні — конфігурую+збираю build_$Arch (BUILD_WITH_UAPKI=ON, BUILD_TESTS=ON)..." -ForegroundColor Yellow
+    $buildDir = Join-Path $Root "build_$Arch"
+    & cmake -S $Root -B $buildDir -A $CmakePlatform -DBUILD_WITH_UAPKI=ON -DBUILD_TESTS=ON | Out-Host
+    & cmake --build $buildDir --config Release | Out-Host
+
+    $haveExes = (Test-Path $SelfTestExe) -and (Test-Path $NativeHostExe)
+    if ($haveExes) {
+        Add-Result 'build' 'test-exes' 'PASS' 'зібрано'
+    }
+    else {
+        Add-Result 'build' 'test-exes' 'BLOCKED' `
+            "exe не зʼявилися після збірки. Перевірте, що конфіг пройшов з -DBUILD_WITH_UAPKI=ON -DBUILD_TESTS=ON і що add_subdirectory(tests) виконався (у виводі CMake має бути 'Test suite enabled')."
+    }
+}
+
+# =====================================================================
+# ЕТАП 2 (L1): uapki_selftest на кожному сценарії (окремий процес)
+# =====================================================================
+Section 'ЕТАП 2 (L1): uapki_selftest сценарії'
+
+$WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) ("sac_tests_" + [guid]::NewGuid().ToString('N').Substring(0,8))
+$cleanup = @()
+
+if (-not (Test-Path $SelfTestExe)) {
+    Add-Result 'L1' 'uapki_selftest' 'SKIP' 'немає uapki_selftest.exe (див. ЕТАП 1)'
+}
+elseif (-not (Test-Path $ProviderDll)) {
+    Add-Result 'L1' 'uapki_selftest' 'SKIP' "немає провайдера $ProviderDll"
+}
+else {
+    New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+    $cleanup += $WorkDir
+    # Робочий каталог: read-only дані + провайдер поруч (сценарії мають dir="./")
+    Copy-Item -Path (Join-Path $DataDir '*') -Destination $WorkDir -Recurse -Force
+    Copy-Item -Path $ProviderDll -Destination $WorkDir -Force
+    # Копії сценаріїв у робочий каталог; для x86 — підмінити ім'я провайдера
+    $wScen = Join-Path $WorkDir 'scenarios'
+    New-Item -ItemType Directory -Force -Path $wScen | Out-Null
+    Get-ChildItem -Path $ScenDir -Filter '*.json' | ForEach-Object {
+        $txt = [System.IO.File]::ReadAllText($_.FullName)
+        if ($Arch -eq 'x86') { $txt = $txt -replace 'cm-pkcs12_x64', 'cm-pkcs12_x86' }
+        # UTF-8 БЕЗ BOM: parson не парсить JSON із BOM на початку, а Set-Content -Encoding UTF8
+        # у Windows PowerShell 5.1 додав би BOM (усі сценарії тоді падали б exit=2).
+        [System.IO.File]::WriteAllText((Join-Path $wScen $_.Name), $txt, (New-Object System.Text.UTF8Encoding($false)))
+    }
+
+    $scenarios = Get-ChildItem -Path $wScen -Filter '*.json' | Sort-Object Name
+    foreach ($sc in $scenarios) {
+        $p = Start-Process -FilePath $SelfTestExe -ArgumentList "`"$($sc.FullName)`"" `
+                -WorkingDirectory $WorkDir -NoNewWindow -Wait -PassThru `
+                -RedirectStandardOutput (Join-Path $WorkDir "$($sc.BaseName).out") `
+                -RedirectStandardError  (Join-Path $WorkDir "$($sc.BaseName).err")
+        $outTxt = ''
+        $outFile = Join-Path $WorkDir "$($sc.BaseName).out"
+        if (Test-Path $outFile) { $outTxt = Get-Content -Raw $outFile }
+        if ($p.ExitCode -eq 0) {
+            Add-Result 'L1' $sc.Name 'PASS' (($outTxt -split "`n" | Where-Object { $_ -match '====' } | Select-Object -Last 1))
+        }
+        else {
+            $fails = ($outTxt -split "`n" | Where-Object { $_ -match '\[FAIL\]' }) -join ' | '
+            Add-Result 'L1' $sc.Name 'FAIL' "exit=$($p.ExitCode) $fails"
+        }
+    }
+}
+
+# =====================================================================
+# ЕТАП 3 (L2/L3): native_host кейси 1..4 (+5 за наявності ПРРО-еталонів)
+# =====================================================================
+Section 'ЕТАП 3 (L2/L3): native_host кейси'
+
+if (-not (Test-Path $NativeHostExe)) {
+    Add-Result 'L2/L3' 'native_host' 'SKIP' 'немає native_host.exe (див. ЕТАП 1)'
+}
+elseif (-not (Test-Path $MainDll)) {
+    Add-Result 'L2/L3' 'native_host' 'SKIP' "немає головної DLL $MainDll"
+}
+else {
+    # native_host case4/5 указують UAPKI CerStore на dataDir\certs. CerStore іменує серти за
+    # вмістом (thumbprint) — tests/data/certs зберігаються ВЖЕ в канонічній формі upstream,
+    # тож повторне сканування ідемпотентне (не перейменовує, git-diff не зʼявляється).
+    foreach ($kase in 1..4) {
+        $argList = @("$kase", "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"")
+        $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_${kase}_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+        $p = Start-Process -FilePath $NativeHostExe -ArgumentList $argList `
+                -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+        $txt = ''
+        if (Test-Path $outF) { $txt = Get-Content -Raw $outF }
+        $lastLine = ($txt -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 1)
+        if ($p.ExitCode -eq 0) { Add-Result 'L2/L3' "native_host case $kase" 'PASS' $lastLine }
+        else                   { Add-Result 'L2/L3' "native_host case $kase" 'FAIL' "exit=$($p.ExitCode) $lastLine" }
+        Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
+    }
+
+    # Кейс 5 — крос-валідація ПРРО, лише за наявності еталонів
+    $prro = $env:PRRO_DOCS_DIR
+    if (-not $prro -and (Test-Path 'R:/github/prro_docs')) { $prro = 'R:/github/prro_docs' }
+    if (-not $prro) {
+        Add-Result 'L2/L3' 'native_host case 5' 'SKIP' 'немає PRRO_DOCS_DIR і R:/github/prro_docs'
+    }
+    else {
+        $argList = @('5', "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"", "`"$prro`"")
+        $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_5_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+        $p = Start-Process -FilePath $NativeHostExe -ArgumentList $argList `
+                -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+        $txt = if (Test-Path $outF) { Get-Content -Raw $outF } else { '' }
+        $lastLine = ($txt -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 1)
+        if ($p.ExitCode -eq 0) { Add-Result 'L2/L3' 'native_host case 5' 'PASS' $lastLine }
+        else                   { Add-Result 'L2/L3' 'native_host case 5' 'FAIL' "exit=$($p.ExitCode) $lastLine" }
+        Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
+    }
+}
+
+# --- Прибирання тимч. каталогів ---
+foreach ($d in $cleanup) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }
+
+# =====================================================================
+# ПІДСУМОК
+# =====================================================================
+Section 'ПІДСУМОК'
+$Results | Format-Table -AutoSize Level, Status, Name, Detail | Out-Host
+
+$nFail = ($Results | Where-Object { $_.Status -in @('FAIL', 'BLOCKED') }).Count
+$nPass = ($Results | Where-Object { $_.Status -eq 'PASS' }).Count
+$nSkip = ($Results | Where-Object { $_.Status -eq 'SKIP' }).Count
+Write-Host ''
+Write-Host ("Разом: PASS=$nPass  FAIL/BLOCKED=$nFail  SKIP=$nSkip") -ForegroundColor White
+
+if ($nFail -gt 0) {
+    Write-Host 'РЕЗУЛЬТАТ: Є провали.' -ForegroundColor Red
+    exit 1
+}
+else {
+    Write-Host 'РЕЗУЛЬТАТ: Усі виконані перевірки пройшли.' -ForegroundColor Green
+    exit 0
+}

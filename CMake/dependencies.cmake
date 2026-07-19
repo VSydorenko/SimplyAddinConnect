@@ -51,9 +51,14 @@ option(USE_OPEN_SSL "" OFF)
 option(USE_MBED_TLS "" OFF)
 option(USE_ZLIB "" OFF)
 
-# Принудительно отключаем сборку примеров и тестов
+# Отключаем сборку демонстрационных примеров ixwebsocket.
+# ВНИМАНИЕ: ixwebsocket НЕ читает переменные BUILD_TESTS/BUILD_EXAMPLES (их нет
+# в его CMakeLists), поэтому его примеры и так не собираются. Строку
+#   set(BUILD_TESTS OFF CACHE BOOL "Build tests" FORCE)
+# убрали намеренно: она FORCE-затирала ОДНОИМЁННУЮ опцию проекта
+# (CMake/options.cmake) и ломала -DBUILD_TESTS=ON — add_subdirectory(tests)
+# в корневом CMakeLists никогда не выполнялся.
 set(BUILD_EXAMPLES OFF CACHE BOOL "Build examples" FORCE)
-set(BUILD_TESTS OFF CACHE BOOL "Build tests" FORCE)
 
 # Настраиваем статическую библиотеку
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE) 

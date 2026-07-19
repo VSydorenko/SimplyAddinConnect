@@ -1,0 +1,30 @@
+{
+  "comment": "L1: VERSION, INIT з розгортанням cm-pkcs12 провайдера, PROVIDERS, DEINIT. x64.",
+  "tasks": [
+    {
+      "method": "VERSION"
+    },
+    {
+      "method": "INIT",
+      "comment": "Провайдер cm-pkcs12_x64.dll очікується у робочому каталозі (dir='./'). x86: lib=cm-pkcs12_x86",
+      "expectCountCmProviders": 1,
+      "parameters": {
+        "offline": true,
+        "cmProviders": {
+          "dir": "./",
+          "allowedProviders": [
+            {
+              "lib": "cm-pkcs12_x64"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "PROVIDERS"
+    },
+    {
+      "method": "DEINIT"
+    }
+  ]
+}
