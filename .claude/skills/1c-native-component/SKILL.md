@@ -213,5 +213,5 @@ HRSRC hRes = FindResourceW(hMod, UAPKI_PROVIDER_RESOURCE_NAME, MAKEINTRESOURCEW(
 
 ## Докладніше
 
-- Ядро компоненти (експорти, `IComponentBase`, `VariantHelper`, реєстрація методів): `docs/architecture/01-core.md`.
-- Збірка й пакування (OBJECT→SHARED, іменування DLL, ZIP): `docs/architecture/04-build-and-packaging.md`.
+- Ядро компоненти (експорти, `IComponentBase`, `VariantHelper`, реєстрація методів): `docs/architecture/core.md`.
+- Збірка й пакування (OBJECT→SHARED, іменування DLL, ZIP): `docs/architecture/build-and-packaging.md`.

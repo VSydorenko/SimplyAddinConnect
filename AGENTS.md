@@ -26,8 +26,8 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTe
 - `-WithUAPKI` — за один прохід збирає ядро UAPKI (`uapki`+`uapkic`+`uapkif`, статично в
   головну DLL) і окремо самодостатній провайдер `cm-pkcs12_x86.dll` / `_x64.dll`; кожна головна
   DLL додатково вбудовує РЕСУРСОМ (RCDATA) провайдер своєї архітектури й розгортає його сама
-  при `INIT` (потрійний пошук каталогу — див. `docs/architecture/03-uapki.md`); у підсумковий ZIP
-  потрапляють обидва варіанти — разом 5 файлів (див. `docs/architecture/03-uapki.md`, `04-build-and-packaging.md`);
+  при `INIT` (потрійний пошук каталогу — див. `docs/architecture/uapki.md`); у підсумковий ZIP
+  потрапляють обидва варіанти — разом 5 файлів (див. `docs/architecture/uapki.md`, `build-and-packaging.md`);
 - `-WithTests` — збирає тестові консольні exe (`uapki_selftest`, `native_host`) з `tests/`
   (працює **лише разом з `-WithUAPKI`** — тести залежать від крипто-ядра; без UAPKI піддиректорію
   `tests/` тихо пропущено).
@@ -110,7 +110,7 @@ extern/             # сабмодулі: spdlog, nlohmann_json, ixwebsocket, ua
    і `$<TARGET_OBJECTS:...>` до фінальної SHARED-цілі.
 3. Перевір збірку `build_project.ps1` (+`-WithUAPKI`, якщо залежить від UAPKI).
 
-Детальніше про модель ядра (VariantHelper, реєстрація, життєвий цикл) — `docs/architecture/01-core.md`.
+Детальніше про модель ядра (VariantHelper, реєстрація, життєвий цикл) — `docs/architecture/core.md`.
 
 ## Git-нюанси
 

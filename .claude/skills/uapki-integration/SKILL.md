@@ -253,6 +253,6 @@ DLL із ZIP-компоненти — у робочому каталозі ли�
 
 ## Джерела
 
-- `docs/architecture/03-uapki.md` — детальна архітектура інтеграції в SimplyAddinConnect.
+- `docs/architecture/uapki.md` — детальна архітектура інтеграції в SimplyAddinConnect.
 - `docs/UAPKI_Protokol.md` — офіційний протокол: таблиці методів, формат
   запиту/відповіді, коди помилок (Додаток А).

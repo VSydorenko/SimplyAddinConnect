@@ -10,7 +10,7 @@ description: Use when testing the crypto/digital-signature (UAPKI) stack of Simp
 1С тестовий харнес або лінкує крипто-ядро статично, або сам вантажить головну DLL і
 викликає компоненту через `IComponentBase` — точно так, як це робить 1С.
 
-Архітектурний контекст стеку — `docs/architecture/03-uapki.md`.
+Архітектурний контекст стеку — `docs/architecture/uapki.md`.
 
 ## Піраміда рівнів L0–L3
 
@@ -214,4 +214,4 @@ L2/L3 native_host ×5, плюс build-етап), FAIL/SKIP=0.
   `KEY_ID`, пароль.
 - `tests/scenarios/*.json` — приклади сценаріїв (01–07).
 - `tests/data/` — `test-diia.p12`, `certs/`, `test-fox.txt`.
-- `docs/architecture/03-uapki.md` — архітектура UAPKI-стеку.
+- `docs/architecture/uapki.md` — архітектура UAPKI-стеку.

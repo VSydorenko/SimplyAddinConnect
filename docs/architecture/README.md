@@ -32,10 +32,10 @@ UAPKI — **лише одна з підсистем**, а не суть усьо
 
 | # | Підсистема | Документ | Про що |
 |---|---|---|---|
-| 01 | Ядро (`AddInNative`) | [01-core.md](01-core.md) | Міст до SDK 1С, реєстр компонент, `VariantHelper`, модель методів/властивостей |
-| 02 | ECRPrivatJSON | [02-ecrprivatjson.md](02-ecrprivatjson.md) | Драйвер платіжного термінала: протокол, хелпер, транспорт (COM/TCP/WS) |
-| 03 | UAPKI | [03-uapki.md](03-uapki.md) | ЕЦП/крипто: JSON-API `process()`, провайдер `cm-pkcs12`, потрійний пошук каталогу |
-| 04 | Збірка й пакування | [04-build-and-packaging.md](04-build-and-packaging.md) | Модульний CMake, `build_project.ps1`, ZIP + `manifest.xml`, доставка в 1С |
+| 01 | Ядро (`AddInNative`) | [core.md](core.md) | Міст до SDK 1С, реєстр компонент, `VariantHelper`, модель методів/властивостей |
+| 02 | ECRPrivatJSON | [ecrprivatjson.md](ecrprivatjson.md) | Драйвер платіжного термінала: протокол, хелпер, транспорт (COM/TCP/WS) |
+| 03 | UAPKI | [uapki.md](uapki.md) | ЕЦП/крипто: JSON-API `process()`, провайдер `cm-pkcs12`, потрійний пошук каталогу |
+| 04 | Збірка й пакування | [build-and-packaging.md](build-and-packaging.md) | Модульний CMake, `build_project.ps1`, ZIP + `manifest.xml`, доставка в 1С |
 
 ---
 
