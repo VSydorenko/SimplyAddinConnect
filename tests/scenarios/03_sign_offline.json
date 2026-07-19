@@ -1,0 +1,76 @@
+{
+  "comment": "L1: офлайн-підпис CAdES-BES ключем test-diia.p12. Ланцюг прострочений -> offline+ignoreCertStatus.",
+  "tasks": [
+    {
+      "method": "VERSION"
+    },
+    {
+      "method": "INIT",
+      "expectCountCmProviders": 1,
+      "parameters": {
+        "offline": true,
+        "cmProviders": {
+          "dir": "./",
+          "allowedProviders": [
+            {
+              "lib": "cm-pkcs12_x64"
+            }
+          ]
+        },
+        "certCache": {
+          "path": "certs/"
+        },
+        "crlCache": {
+          "path": "crls/"
+        }
+      }
+    },
+    {
+      "method": "OPEN",
+      "parameters": {
+        "provider": "PKCS12",
+        "storage": "test-diia.p12",
+        "password": "testpassword",
+        "mode": "RO"
+      }
+    },
+    {
+      "method": "KEYS"
+    },
+    {
+      "method": "SELECT_KEY",
+      "parameters": {
+        "id": "5BC6C06EE1E00C1700E92AA7A9AD75F82D3CB7A9B66E3A98023209B24513315C"
+      }
+    },
+    {
+      "method": "SIGN",
+      "comment": "CAdES-BES, attached",
+      "parameters": {
+        "signParams": {
+          "signatureFormat": "CAdES-BES",
+          "signAlgo": "1.2.804.2.1.1.1.1.3.1.1",
+          "detachedData": false,
+          "includeCert": true,
+          "includeTime": true,
+          "includeContentTS": false
+        },
+        "dataTbs": [
+          {
+            "id": "doc-0",
+            "bytes": "VGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIHRoZSBsYXp5IGRvZw=="
+          }
+        ],
+        "options": {
+          "ignoreCertStatus": true
+        }
+      }
+    },
+    {
+      "method": "CLOSE"
+    },
+    {
+      "method": "DEINIT"
+    }
+  ]
+}

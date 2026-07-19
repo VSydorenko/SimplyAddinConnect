@@ -1,0 +1,79 @@
+{
+  "comment": "L1: ENCRYPT + DECRYPT (errorCode==0). Змістовний roundtrip між тасками selftest не з'єднує.",
+  "tasks": [
+    {
+      "method": "VERSION"
+    },
+    {
+      "method": "INIT",
+      "expectCountCmProviders": 1,
+      "parameters": {
+        "cmProviders": {
+          "dir": "./",
+          "allowedProviders": [
+            {
+              "lib": "cm-pkcs12_x64"
+            }
+          ]
+        },
+        "certCache": {
+          "path": "certs/"
+        }
+      }
+    },
+    {
+      "method": "OPEN",
+      "parameters": {
+        "provider": "PKCS12",
+        "storage": "test-diia.p12",
+        "password": "testpassword",
+        "mode": "RO"
+      }
+    },
+    {
+      "method": "SELECT_KEY",
+      "comment": "ключ КЕП (отримувач envelopedData)",
+      "parameters": {
+        "id": "6B1B77C0D1A1B60473A98DD6D4FE5302742AEDE101DAA21F2C83A67CCDEDB782"
+      }
+    },
+    {
+      "method": "ENCRYPT",
+      "comment": "envelopedData на сертифікат отримувача (ефемерний ключ, DSTU)",
+      "parameters": {
+        "content": {
+          "bytes": "VGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIHRoZSBsYXp5IGRvZw==",
+          "encryptionAlgo": "1.2.804.2.1.1.1.1.1.3.3.2",
+          "type": "1.2.840.113549.1.7.1"
+        },
+        "recipientInfos": [
+          {
+            "certId": "MIH6MIHhMRYwFAYDVQQKDA3QlNCfICLQlNCG0K8iMXMwcQYDVQQDDGoi0JTRltGPIi4g0JrQstCw0LvRltGE0ZbQutC+0LLQsNC90LjQuSDQvdCw0LTQsNCy0LDRhyDQtdC70LXQutGC0YDQvtC90L3QuNGFINC00L7QstGW0YDRh9C40YUg0L/QvtGB0LvRg9CzMRkwFwYDVQQFExBVQS00MzM5NTAzMy0xMDAwMQswCQYDVQQGEwJVQTERMA8GA1UEBwwI0JrQuNGX0LIxFzAVBgNVBGEMDk5UUlVBLTQzMzk1MDMzAhQ+1QgxYNvFmwQAAACpHgYAdKV2AA==",
+            "kdfAlgo": "1.2.804.2.1.1.1.1.3.7",
+            "keyWrapAlgo": "1.2.804.2.1.1.1.1.1.3.11"
+          }
+        ]
+      }
+    },
+    {
+      "method": "DECRYPT",
+      "comment": "розшифрування envelopedData #1",
+      "parameters": {
+        "bytes": "MIICJwYJKoZIhvcNAQcDoIICGDCCAhQCAQIxggG4oYIBtAIBA6BdoVswHgYLKoYkAgEBAQEDAQEwDwYNKoYkAgEBAQEDAQECCQM5AAQ2chSjGSZgpURVXLxnoVxODijIHC/z3eTZ4hCiDGtUgH/tlL8jSp94yClPjTCrY6mvDRsXMRYYMB0GCiqGJAIBAQEBAwQwDwYLKoYkAgEBAQEBAQUFADCCAS8wggErMIH6MIHhMRYwFAYDVQQKDA3QlNCfICLQlNCG0K8iMXMwcQYDVQQDDGoi0JTRltGPIi4g0JrQstCw0LvRltGE0ZbQutC+0LLQsNC90LjQuSDQvdCw0LTQsNCy0LDRhyDQtdC70LXQutGC0YDQvtC90L3QuNGFINC00L7QstGW0YDRh9C40YUg0L/QvtGB0LvRg9CzMRkwFwYDVQQFExBVQS00MzM5NTAzMy0xMDAwMQswCQYDVQQGEwJVQTERMA8GA1UEBwwI0JrQuNGX0LIxFzAVBgNVBGEMDk5UUlVBLTQzMzk1MDMzAhQ+1QgxYNvFmwQAAACpHgYAdKV2AAQscawPwDM9bgfyQmJnON56FLPDARG0+O4VrHKTAd0BD8jR/K6UA+exwO37oREwUwYJKoZIhvcNAQcBMBkGCyqGJAIBAQEBAQEDMAoECHpkyygpJjDYgCvh4utjSkG+Fe5SXHa9g2sazlG+Wt0gQYAzZe/vx+qEBR/MhUoE9cT3AGhY"
+      }
+    },
+    {
+      "method": "DECRYPT",
+      "comment": "розшифрування envelopedData #2",
+      "parameters": {
+        "bytes": "MIIDTwYJKoZIhvcNAQcDoIIDQDCCAzwCAQIxggKdoYICmQIBA6CB/TCB+jCB4TEWMBQGA1UECgwN0JTQnyAi0JTQhtCvIjFzMHEGA1UEAwxqItCU0ZbRjyIuINCa0LLQsNC70ZbRhNGW0LrQvtCy0LDQvdC40Lkg0L3QsNC00LDQstCw0Ycg0LXQu9C10LrRgtGA0L7QvdC90LjRhSDQtNC+0LLRltGA0YfQuNGFINC/0L7RgdC70YPQszEZMBcGA1UEBRMQVUEtNDMzOTUwMzMtMTAwMDELMAkGA1UEBhMCVUExETAPBgNVBAcMCNCa0LjRl9CyMRcwFQYDVQRhDA5OVFJVQS00MzM5NTAzMwIUPtUIMWDbxZsEAAAAqR4GAHSldgChQgRA5tq2pjTWXBzZwbvYewYD8U7ZVpKkq5HLerSY018O/aVTcZBF5gzFb1NBpd4j7b0ssIdcaIRd1p8GyzsAIUGdjTAdBgoqhiQCAQEBAQMEMA8GCyqGJAIBAQEBAQEFBQAwggEvMIIBKzCB+jCB4TEWMBQGA1UECgwN0JTQnyAi0JTQhtCvIjFzMHEGA1UEAwxqItCU0ZbRjyIuINCa0LLQsNC70ZbRhNGW0LrQvtCy0LDQvdC40Lkg0L3QsNC00LDQstCw0Ycg0LXQu9C10LrRgtGA0L7QvdC90LjRhSDQtNC+0LLRltGA0YfQuNGFINC/0L7RgdC70YPQszEZMBcGA1UEBRMQVUEtNDMzOTUwMzMtMTAwMDELMAkGA1UEBhMCVUExETAPBgNVBAcMCNCa0LjRl9CyMRcwFQYDVQRhDA5OVFJVQS00MzM5NTAzMwIUPtUIMWDbxZsEAAAAqR4GAHSldgAELFUsWd3hFhIaOL2jX5xhuK7c8dtrAtVv8yytM5sV65BdZ1Tcn60cXneHkuadMIGVBgkqhkiG9w0BBwEwWwYLKoYkAgEBAQEBAQMwTAQIyE4BcSWPc9YEQKnW60XxPHCCgMSWeyMfXq32WOukwDcpHTjZa/Alyk4X+OlyDcYVtDool18Lwd6jZDi1ZOosF5/QEj5tuPrFeQSAK9avS6dRn6MoBqIMrGK8nUp/W6YOMk5/9WGEF58RH/+4q+YjNBPU2y7lM/4="
+      }
+    },
+    {
+      "method": "CLOSE"
+    },
+    {
+      "method": "DEINIT"
+    }
+  ]
+}

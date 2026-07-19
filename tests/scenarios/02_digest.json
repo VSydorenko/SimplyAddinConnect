@@ -1,0 +1,53 @@
+{
+  "comment": "L1: DIGEST (без INIT). Еталони hex — upstream digest.json. bytes='The quick brown fox...'",
+  "tasks": [
+    {
+      "method": "VERSION"
+    },
+    {
+      "method": "DIGEST",
+      "comment": "SHA2-256",
+      "expectHashHex": "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592",
+      "parameters": {
+        "hashAlgo": "2.16.840.1.101.3.4.2.1",
+        "bytes": "VGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIHRoZSBsYXp5IGRvZw=="
+      }
+    },
+    {
+      "method": "DIGEST",
+      "comment": "SHA2-384",
+      "expectHashHex": "ca737f1014a48f4c0b6dd43cb177b0afd9e5169367544c494011e3317dbf9a509cb1e5dc1e85a941bbee3d7f2afbc9b1",
+      "parameters": {
+        "hashAlgo": "2.16.840.1.101.3.4.2.2",
+        "bytes": "VGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIHRoZSBsYXp5IGRvZw=="
+      }
+    },
+    {
+      "method": "DIGEST",
+      "comment": "SHA2-512",
+      "expectHashHex": "07e547d9586f6a73f73fbac0435ed76951218fb7d0c8d788a309d785436bbb642e93a252a954f23912547d1e8a3b5ed6e1bfd7097821233fa0538f3db854fee6",
+      "parameters": {
+        "hashAlgo": "2.16.840.1.101.3.4.2.3",
+        "bytes": "VGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIHRoZSBsYXp5IGRvZw=="
+      }
+    },
+    {
+      "method": "DIGEST",
+      "comment": "signAlgo ECDSA-SHA256 -> хеш SHA2-256",
+      "expectHashHex": "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592",
+      "parameters": {
+        "signAlgo": "1.2.840.10045.4.3.2",
+        "bytes": "VGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIHRoZSBsYXp5IGRvZw=="
+      }
+    },
+    {
+      "method": "DIGEST",
+      "comment": "GOST-34311 (ДСТУ 34311)",
+      "expectHashHex": "0f1355130b4a820a1e4e3f6474f6bdecc718a4a73345595edc1c1809832b2333",
+      "parameters": {
+        "hashAlgo": "1.2.804.2.1.1.1.1.2.1",
+        "bytes": "VGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIHRoZSBsYXp5IGRvZw=="
+      }
+    }
+  ]
+}
