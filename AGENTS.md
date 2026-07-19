@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Настанови для coding-агентів по цьому репозиторію. Архітектура — `docs/ARCHITECTURE.md`.
+Настанови для coding-агентів по цьому репозиторію. Архітектура — `docs/architecture/` (по документу на підсистему).
 Мова коду й комітів — українська/російська (дотримуйся мови файлу, який редагуєш).
 
 ## Проєкт
@@ -26,8 +26,8 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTe
 - `-WithUAPKI` — за один прохід збирає ядро UAPKI (`uapki`+`uapkic`+`uapkif`, статично в
   головну DLL) і окремо самодостатній провайдер `cm-pkcs12_x86.dll` / `_x64.dll`; кожна головна
   DLL додатково вбудовує РЕСУРСОМ (RCDATA) провайдер своєї архітектури й розгортає його сама
-  при `INIT` (потрійний пошук каталогу — див. `docs/ARCHITECTURE.md` §6); у підсумковий ZIP
-  потрапляють обидва варіанти — разом 5 файлів (див. `docs/ARCHITECTURE.md` §6, §8);
+  при `INIT` (потрійний пошук каталогу — див. `docs/architecture/03-uapki.md`); у підсумковий ZIP
+  потрапляють обидва варіанти — разом 5 файлів (див. `docs/architecture/03-uapki.md`, `04-build-and-packaging.md`);
 - `-WithTests` — збирає тестові консольні exe (`uapki_selftest`, `native_host`) з `tests/`
   (працює **лише разом з `-WithUAPKI`** — тести залежать від крипто-ядра; без UAPKI піддиректорію
   `tests/` тихо пропущено).
@@ -73,7 +73,8 @@ src/helpers/        # ServiceTools (логування/конвертації) +
 src/transport/      # канали: COM, TCP, WebSocket (client/server)
 include/            # заголовки SDK 1С
 tests/              # uapki_selftest (L1) + native_host (L2/L3) + scenarios/ + data/
-docs/               # ARCHITECTURE.md + специфікації протоколів
+docs/architecture/    # архітектура по підсистемах (README + 01..04)
+docs/               # специфікації протоколів (ECR/UAPKI), tasks/
 extern/             # сабмодулі: spdlog, nlohmann_json, ixwebsocket, uapki
 ```
 
@@ -109,7 +110,7 @@ extern/             # сабмодулі: spdlog, nlohmann_json, ixwebsocket, ua
    і `$<TARGET_OBJECTS:...>` до фінальної SHARED-цілі.
 3. Перевір збірку `build_project.ps1` (+`-WithUAPKI`, якщо залежить від UAPKI).
 
-Детальніше про модель ядра (VariantHelper, реєстрація, життєвий цикл) — `docs/ARCHITECTURE.md` §2.
+Детальніше про модель ядра (VariantHelper, реєстрація, життєвий цикл) — `docs/architecture/01-core.md`.
 
 ## Git-нюанси
 
