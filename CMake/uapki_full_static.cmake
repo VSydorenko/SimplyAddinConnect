@@ -328,3 +328,17 @@ if(APPLE)
 endif()
 
 message(STATUS "[UAPKI] All static dependencies added. Link them to your DLL target as needed.")
+
+# --- Вбудовуємо провайдер cm-pkcs12_<arch>.dll ресурсом RCDATA у головну DLL ---
+# Щоб хелпер розгортав його з ресурсу в рантаймі (самодостатність для 1С).
+# Файл include-иться з components.cmake ПІСЛЯ add_library(${TARGET} SHARED ...),
+# тож ${TARGET} тут гарантовано існує, а ціль cm-pkcs12-provider визначена вище.
+# $<TARGET_FILE:...> у file(GENERATE) віддає шлях з прямими слешами — RC приймає '/'.
+# VS — мультиконфіг-генератор: шлях провайдера залежить від конфігурації, тому
+# генеруємо окремий .rc на кожну конфігурацію ($<CONFIG> у імені й у вмісті).
+set(_PROVIDER_RC "${CMAKE_BINARY_DIR}/cm_pkcs12_provider_resource_$<CONFIG>.rc")
+file(GENERATE OUTPUT "${_PROVIDER_RC}"
+     CONTENT "CM_PKCS12_PROVIDER RCDATA \"$<TARGET_FILE:cm-pkcs12-provider>\"\n")
+target_sources(${TARGET} PRIVATE "${_PROVIDER_RC}")
+# Провайдер має бути ЗІБРАНИЙ до компіляції ресурсу головної DLL.
+add_dependencies(${TARGET} cm-pkcs12-provider)

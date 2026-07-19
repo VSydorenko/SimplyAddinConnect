@@ -1,6 +1,6 @@
 #define VER_FILENAME SimplyAddinConnect
-#define VERSION_FULL 3.0.2.97
+#define VERSION_FULL 3.0.2.104
 #define VERSION_MAJOR     3
 #define VERSION_MINOR     0
 #define VERSION_REVISION  2
-#define VERSION_BUILD     97
+#define VERSION_BUILD     104
