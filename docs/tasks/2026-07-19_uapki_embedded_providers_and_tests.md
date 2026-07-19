@@ -2,7 +2,7 @@
 
 **Дата постановки:** 2026-07-19
 **Гілка:** `add_UAPKI` (сабмодуль `extern/uapki` — гілка `static-build`, базовий коміт `ff8c679`)
-**Статус:** до виконання
+**Статус:** ✅ ВИКОНАНО (2026-07-19) — див. розділ 9 «Звіт виконання»
 **Базується на:** виконаній задачі `2026-07-18_uapki_hybrid_build.md` (гібридна збірка працює, верифіковано) + емпіричному тесті з 1С 2026-07-19.
 
 ---
@@ -139,6 +139,84 @@ Exit code ≠ 0 при провалі будь-якого кейсу.
 - ПРРО-специфіка L4 (підпис чеків за ЄВПЕЗ, тестовий fserver `cabinet.tax.gov.ua:9443`) — окрема спільна сесія.
 - Прибирання старих версій з `%LOCALAPPDATA%\SimplyAddinConnect\providers\` — зафіксувати як TODO, не реалізовувати.
 
-## 9. Звіт виконання
+## 9. Звіт виконання (2026-07-19)
 
-(заповнює виконавець: коміти з хешами; таблиця верифікації п.6; прийняті відхилення від ТЗ з обґрунтуванням; виявлені але не виправлені проблеми)
+Виконано через оркестрацію `Workflow` (fan-out субагентів з тірингом моделей: Sonnet —
+рутина/доки, Opus high/max — код/CMake/тести/verify) + особиста валідація оркестратором
+(збірки й `run_tests` як гейти). Усі кроки A–E закриті, уся верифікація §6 — зелена.
+
+### 9.1. Коміти
+
+- **Сабмодуль `extern/uapki`** (гілка `static-build`, від `ff8c679`; upstream НЕ оновлювався):
+  - `3760fc7` — «Завантаження CM-провайдера через LoadLibraryW (UTF-8→UTF-16): усуває збій
+    ANSI-шляхів з кирилицею». Правки: `common/loaders/dl-macros.h` (хелпер
+    `dl_load_library_utf8`: `MultiByteToWideChar(CP_UTF8)` + `LoadLibraryW`; на *nix — аліас
+    до `dlopen`), `cm-loader.cpp` та `uapki-loader.cpp` (виклик хелпера замість
+    `DL_LOAD_LIBRARY`). Робоче дерево сабмодуля чисте. `git push` НЕ виконувався.
+- **Головний репо:** зміни лишені **незакоммічені** (як у попередній задачі — очікують рев'ю
+  користувача). Змінені/додані файли: `extern/uapki` (указник), `CMake/uapki_full_static.cmake`
+  (вбудований RCDATA-ресурс), `CMake/dependencies.cmake` (усунено клоббер `BUILD_TESTS`),
+  `src/helpers/UAPKIConnect/UAPKIConnectHelper.{cpp,h}` + новий
+  `UAPKIProviderResource.h`, `run_tests.ps1`, `docs/ARCHITECTURE.md`, `AGENTS.md`,
+  `version.h` (від збірки), нова тека `tests/` (`CMakeLists.txt`, `uapki_selftest.cpp`,
+  `native_host.cpp`, `scenarios/*.json`, `data/`). Коміт/push головного репо — за окремим
+  підтвердженням користувача.
+
+### 9.2. Результати верифікації (розділ 6)
+
+| # | Перевірка | Результат |
+|---|-----------|-----------|
+| 6.1 | `build_project.ps1 -WithUAPKI` exit 0; ZIP 5 файлів; DLL +~1.1 МБ | ✅ exit 0; ZIP: `manifest.xml`+2 DLL+2 провайдери; `.rsrc` головної x64 = `0x110570` (~1.06 МБ), x86 = `0xF9770` (~0.97 МБ) — вбудований провайдер |
+| 6.2 | `dumpbin /exports` головної DLL = рівно 3 | ✅ x64+x86: `GetClassObject`/`DestroyObject`/`GetClassNames` |
+| 6.3 | Головний e2e: чистий темп лише з DLL + видалений `%LOCALAPPDATA%` → `countCmProviders==1`, провайдер розгорнувся | ✅ `native_host` кейс 1 PASS: `countCmProviders==1`, файл провайдера з'явився під `%LOCALAPPDATA%\SimplyAddinConnect\providers\<ver>\` |
+| 6.4 | `run_tests.ps1` усі рівні зелені; негативні кейси правильно провалюються | ✅ **PASS=17, FAIL/BLOCKED=0, SKIP=0** (L0 dumpbin ×4, L1 селфтест ×7, L2/L3 native_host ×5). Негативи: `04` кейс 5 → `status=TOTAL-FAILED`; `07` SIGN CAdES-T offline → `errorCode 4120 (OFFLINE_MODE)` |
+| 6.5 | Гонка: 2 екземпляри `native_host` кейс 1 одночасно | ✅ обидва процеси exit 0, `Case 1: PASS` (атомарний `tmp`+`MoveFileExW` дедуплікує) |
+| 6.6 | Кирилиця в шляху (перевірка LoadLibraryW-патчу) | ✅ ядро: селфтест з `cmProviders.dir` = кириличний шлях → `countCmProviders==1`; e2e: `native_host` кейс 3 з кириличним `binDir` (широкі аргументи) → `Case 3: PASS` |
+| 6.7 | Регресія: `build_project.ps1` (без UAPKI) ок; `-WithUAPKI -WithTests` збірка тестів ок | ✅ база: exit 0, ZIP 3 файли (2 DLL+manifest); `-WithUAPKI -WithTests`: exit 0, обидві архітектури, `Test suite enabled`, тестові exe в `bin/Release` |
+| 6.8 | `git status`: сабмодуль чистий (нові коміти в `static-build`); основне репо — тільки очікувані зміни | ✅ сабмодуль чистий (`3760fc7`); основне репо — лише очікувані зміни |
+
+### 9.3. Прийняті рішення (відхилення/уточнення ТЗ)
+
+- **LoadLibraryW (крок A):** спільний хелпер `dl_load_library_utf8` у `dl-macros.h` (DRY —
+  його включають рівно два лоадери), а не дублювання в кожному `.cpp`. ANSI-милиця
+  `GetShortPathNameW`/`hasNonAscii` у `GetOwnModuleDir` **прибрана** (стала непотрібною після
+  переходу на `LoadLibraryW`) — щоб не лишати подвійних кодошляхів.
+- **Ресурс (крок B):** генерований `.rc` — **per-config** (`$<CONFIG>` в імені файлу): VS —
+  мультиконфіг-генератор, і єдиний `.rc` падав на `file(GENERATE)` з «written multiple times».
+- **Розгортання (крок C):** `%LOCALAPPDATA%` через `GetEnvironmentVariableW` (без залежності
+  Shell32); каталоги — поетапний `CreateDirectoryW`; версія з `version.h` (`VERSION_FULL`)
+  стрингіфікується у narrow і конвертується в wide через `ServiceTools` (токен-пейст `L##`
+  ламав MSVC — прибрано).
+- **Блокер збірки тестів (поза початковим текстом кроку D):** `CMake/dependencies.cmake`
+  містив `set(BUILD_TESTS OFF CACHE BOOL … FORCE)` (нібито для ixwebsocket, який цю змінну
+  **не читає**) — рядок FORCE-затирав однойменну опцію проєкту й ламав `-DBUILD_TESTS=ON`
+  (`add_subdirectory(tests)` не виконувався). **Прибрано** — без цього `-WithTests` не працював.
+- **Імена тестових exe — з арх-суфіксом** (`uapki_selftest_x64/_x86`, `native_host_x64/_x86`):
+  обидві архітектури кладуться в один `bin/Release`, без суфікса x86 затирав би x64.
+- **`run_tests.ps1`:** збережено з **UTF-8 BOM** (Windows PowerShell 5.1 без BOM читає укр.
+  текст як ANSI → помилки парсера); копії сценаріїв пишуться **UTF-8 без BOM** (`Set-Content
+  -Encoding UTF8` у PS 5.1 додав би BOM, і parson не парсив би JSON). Селфтест додатково
+  знімає провідний BOM самостійно (belt-and-suspenders).
+- **`HOST_DATA_DIR` = `tests/data`** (копія), а не сабмодуль: UAPKI CerStore пише в
+  `certCache.path` (перейменовує/кешує серти), тож указувати на read-only оригінали сабмодуля
+  не можна.
+- **`native_host` — широкі аргументи** (`CommandLineToArgvW`): `char** argv` на Windows —
+  системний ANSI, кириличні шляхи в аргументах спотворювались (важливо для укр. користувачів
+  з кириличним шляхом репозиторію). Об'єкт компоненти обгорнуто в RAII (`~Component`).
+- **Селфтест: вердикт VERIFY** — за `signatureInfos[0].status == "TOTAL-VALID"` (а не
+  `statusSignature`): при пошкодженому detached-`content` `statusSignature` лишається `VALID`,
+  а холістичний `status` стає `TOTAL-FAILED` — саме він ловить негативний кейс.
+- **`tests/data/certs`** — сертифікати у канонічній для CerStore формі (імена за thumbprint,
+  напр. `5BC6C06E…-…`), а не з людськими іменами upstream: функціонально еквівалентно
+  (CerStore сканує `.cer` за вмістом). Оригінали сабмодуля відновлено (сабмодуль чистий).
+
+### 9.4. Виявлені, але НЕ виправлені проблеми (на наступні задачі)
+
+- **Прибирання старих версій** з `%LOCALAPPDATA%\SimplyAddinConnect\providers\` — TODO (зафіксовано
+  в §8, свідомо не реалізовано в цій задачі).
+- **Колізія проміжних `.lib` обох архітектур** у `bin/Release` (передіснуюча, з попередньої
+  задачі): чиста збірка коректна, інкрементальні навхрест падають `LNK4272`. Окрема задача.
+- **Мікро-неефективність** `ResolveProviderDir` (round-trip UTF-8→UTF-16→wstring лише щоб
+  дописати ім'я файлу) — код-рев'ю відзначило, свідомо лишено (коректно й зрозуміло; рефактор
+  `GetOwnModuleDir` додав би складності).
+- **PR в upstream** (LoadLibraryW, `*_STATIC`) — поза межами (§8).

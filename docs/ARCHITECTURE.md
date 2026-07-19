@@ -32,9 +32,10 @@ flowchart TD
         P --> T["ITransport"]
         T --> T1["COM"] & T2["TCP"] & T3["WS-client"] & T4["WS-server"]
 
-        C2 --> H2["UAPKIConnectHelper"]
+        C2 --> H2["UAPKIConnectHelper<br/>(потрійний пошук каталогу провайдера)"]
         H2 -->|"process() / json_free()"| U["UAPKI ядро<br/>(uapki+uapkic+uapkif, статичний лінк)"]
-        U -.->|"LoadLibraryA у INIT<br/>(cmProviders.dir + арх-суфікс)"| CM["cm-pkcs12_x86/_x64.dll<br/>(окрема самодостатня DLL)"]
+        R["Ресурс RCDATA<br/>cm-pkcs12_x86/_x64<br/>(вбудований у ЦЮ DLL)"] -.->|"1: явний dir<br/>2: поруч із DLL<br/>3: розгорнути в %LOCALAPPDATA%"| H2
+        U -.->|"LoadLibraryW"| CM["cm-pkcs12_x86/_x64.dll<br/>(окрема самодостатня DLL)"]
 
         B -.-> S["ServiceTools<br/>(логування, конвертації)"]
         C1 -.-> S
@@ -242,17 +243,42 @@ cm-pkcs12_x86.dll / cm-pkcs12_x64.dll     (окрема самодостатня
 - **Статично** в головну DLL лінкується лише **ядро UAPKI** (`uapki`, `uapkic`, `uapkif`) —
   див. `CMake/uapki_full_static.cmake` (ціль `uapki_bundle`) та опції в `CMake/options.cmake`
   (`*_STATIC`-дефайни вимикають `dllimport`).
-- Провайдер **`cm-pkcs12` більше не лінкується статично** — це окрема самодостатня SHARED DLL
+- Провайдер **`cm-pkcs12` не лінкується статично** — це окрема самодостатня SHARED DLL
   з арх-суфіксом (`cm-pkcs12_x86.dll` / `cm-pkcs12_x64.dll`, статичні `uapkic`/`uapkif`
-  усередині неї, рівно 7 експортованих CM-API символів). Ядро UAPKI вантажить її в рантаймі
-  через `LoadLibraryA` при виклику методу `INIT` (поле `cmProviders`).
-- `UAPKIConnectHelper` при `method == INIT` автоматично інжектить `cmProviders.dir` — каталог
-  власного модуля DLL (через `GetModuleFileName`) — і дописує до імені провайдера
-  арх-суфікс (`_x86`/`_x64`), тож 1С-скрипту не треба знати шлях чи розрядність.
+  усередині неї, рівно 7 експортованих CM-API символів, `bcrypt`/`crypt32`/`ws2_32` — єдині
+  системні залежності). Ядро UAPKI вантажить її в рантаймі через `LoadLibraryW`
+  (`extern/uapki/library/common/loaders/dl-macros.h::dl_load_library_utf8` — конвертує
+  UTF-8-шлях у UTF-16 перед `LoadLibraryW`, тож кирилиця в `%LOCALAPPDATA%\<Користувач>\...`
+  безпечна) при виклику методу `INIT` (поле `cmProviders`).
+- **Провайдер вбудований ресурсом у саму головну DLL.** `CMake/uapki_full_static.cmake` наприкінці
+  генерує `.rc` (`file(GENERATE)`, бо `$<TARGET_FILE:...>` genex не працює в `configure_file`) і
+  додає його як `target_sources(${TARGET} ...)` + `add_dependencies(${TARGET} cm-pkcs12-provider)` —
+  тож RCDATA-ресурс `CM_PKCS12_PROVIDER` (ім'я — `UAPKI_PROVIDER_RESOURCE_NAME` у
+  `src/helpers/UAPKIConnect/UAPKIProviderResource.h`) містить актуальний бінарник провайдера СВОЄЇ
+  архітектури (x86-DLL несе `cm-pkcs12_x86.dll`, x64-DLL — `cm-pkcs12_x64.dll`); розмір DLL
+  зростає приблизно на розмір провайдера (~1.1 МБ).
+- **`UAPKIConnectHelper` при `method == INIT`** автоматично інжектить `cmProviders`
+  (`InjectProviderConfig`, `UAPKIConnectHelper.cpp`) і визначає каталог провайдера **потрійним
+  пошуком** (`ResolveProviderDir`):
+  1. викликач явно задав непорожній `cmProviders.dir` — використовується як є, нічого не
+     розгортається (лише дописується арх-суфікс до `lib`, якщо його немає);
+  2. інакше — якщо `cm-pkcs12_<arch>.dll` лежить **поруч із власною DLL** (каталог визначається
+     через `GetModuleHandleExW(FROM_ADDRESS)` + `GetModuleFileNameW` на функції-якорі
+     `ModuleAnchor`, а не через `GetModuleFileName` без аргументів — це критично, бо процес-хост
+     1С інакше повернув би шлях до `1cv8.exe`) — використовується цей каталог (покриває тести,
+     ручні/не-1С розгортання);
+  3. інакше — `EnsureProviderDeployed` розгортає вбудований RCDATA-ресурс у
+     `%LOCALAPPDATA%\SimplyAddinConnect\providers\<VERSION_FULL>\` (`FindResourceW`/`LoadResource`/
+     `LockResource` → каталоги поетапно `CreateDirectoryW` → запис у тимчасове ім'я
+     `<файл>.tmp_<PID>` → атомарний `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`, з обробкою програної
+     гонки між процесами 1С; якщо файл цієї версії вже розгорнутий — повторно не пишеться).
+  Це робить компоненту **повністю самодостатньою для 1С**, яка розпаковує в цільовий каталог
+  РІВНО один файл — саму DLL — і жодних інших файлів поруч не кладе.
 - Повний JSON-протокол UAPKI (методи, параметри, коди помилок) — `docs/UAPKI_Protokol.md`.
 
 > Детекція успіху за `errorCode` у цьому стеку вже виправлена; обмежений парсер параметрів —
-> за деталями звіряйся з `docs/UAPKI_Protokol.md`.
+> за деталями звіряйся з `docs/UAPKI_Protokol.md`. Тестовий харнес (L0-L3) для цього стека —
+> `tests/` + `run_tests.ps1`, див. `AGENTS.md` розділ "Тести".
 
 ---
 
@@ -302,8 +328,14 @@ uapki_connect_component        ┘ + uapki_bundle (статичний UAPKI)
 - **з `-WithUAPKI`** — 5 файлів: `manifest.xml` + 2 головні DLL + 2 самодостатні провайдери
   `cm-pkcs12_x86.dll` / `cm-pkcs12_x64.dll`. `manifest.xml` описує лише 2 DLL-файли за
   архітектурами (`i386`/`x86_64`); компоненти-класи (`AddinECRPrivatJSON`, `AddinUAPKIConnect`)
-  реєструються всередині кожної DLL, а провайдери — додаткові файли поруч, у маніфесті
-  не описані.
+  реєструються всередині кожної DLL, а провайдери-файли поруч у маніфесті не описані.
+
+  Ці окремі файли провайдерів **не потрібні для 1С** — 1С розпаковує з ZIP рівно один файл
+  (саму DLL за архітектурою), і кожна головна DLL вже несе провайдер своєї архітектури вбудованим
+  ресурсом та самостійно розгортає його при `INIT` (§6, потрійний пошук). Окремі
+  `cm-pkcs12_x86.dll`/`_x64.dll` лишені в ZIP як корисні для НЕ-1С сценаріїв розгортання
+  (ручний запуск, тестовий харнес `tests/`, діагностика) — компонента підхопить їх з кроку 2
+  потрійного пошуку, якщо покласти поруч із DLL, без звернення до `%LOCALAPPDATA%`.
 
 ---
 

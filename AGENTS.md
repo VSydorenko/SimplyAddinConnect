@@ -24,21 +24,43 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTe
 ```
 - без прапорців — основний проєкт (2 головні DLL + `manifest.xml` у ZIP);
 - `-WithUAPKI` — за один прохід збирає ядро UAPKI (`uapki`+`uapkic`+`uapkif`, статично в
-  головну DLL) і окремо самодостатній провайдер `cm-pkcs12_x86.dll` / `_x64.dll`
-  (вантажиться ядром у рантаймі через `LoadLibraryA`); у підсумковий ZIP потрапляють обидва —
-  разом 5 файлів (див. `docs/ARCHITECTURE.md` §6, §8);
-- `-WithTests` — ⚠️ **зараз падає** (див. нижче).
+  головну DLL) і окремо самодостатній провайдер `cm-pkcs12_x86.dll` / `_x64.dll`; кожна головна
+  DLL додатково вбудовує РЕСУРСОМ (RCDATA) провайдер своєї архітектури й розгортає його сама
+  при `INIT` (потрійний пошук каталогу — див. `docs/ARCHITECTURE.md` §6); у підсумковий ZIP
+  потрапляють обидва варіанти — разом 5 файлів (див. `docs/ARCHITECTURE.md` §6, §8);
+- `-WithTests` — збирає тестові консольні exe (`uapki_selftest`, `native_host`) з `tests/`
+  (працює **лише разом з `-WithUAPKI`** — тести залежать від крипто-ядра; без UAPKI піддиректорію
+  `tests/` тихо пропущено).
 
 Скрипт перегенеровує `version.h` (інкремент build), очищає `build_x86/`, `build_x64/`,
 `bin/Release/`, збирає обидві архітектури в Release і пакує в `bin/Release/SimplyAddinConnectWin.zip`.
 Опції CMake: `-DBUILD_WITH_UAPKI=ON|OFF`, `-DBUILD_TESTS=ON|OFF` (обидві default OFF).
 
-## Тести ⚠️
+## Тести
 
-Теки `tests/` у репозиторії **немає**, хоча `CMakeLists.txt` робить `add_subdirectory(tests)`
-при `BUILD_TESTS=ON`. Тому `-WithTests` і `run_tests.ps1` **наразі падають** на генерації CMake.
-Інфраструктура (ctest, `bin/Debug`) є — самих тестів нема. Не обіцяй робочі тести, поки не
-створено `tests/` з власним `CMakeLists.txt`.
+Тека `tests/` **існує**: `tests/CMakeLists.txt` (окремі консольні exe, лінкуються НЕ в головну
+DLL і НЕ підключають `src/core/pch.h`), `tests/scenarios/*.json` (7 сценаріїв L1),
+`tests/data/` (тестовий контейнер `test-diia.p12`, сертифікати, CRL — read-only вхід).
+
+Дві цілі (лише Windows, лише при `BUILD_WITH_UAPKI=ON`):
+- **`uapki_selftest.exe`** (L1) — лінкує `uapki_bundle` напряму (без 1С, без завантаження DLL) і
+  проганяє JSON-сценарії з `tests/scenarios/` через `process()`/`json_free()` статичного ядра.
+- **`native_host.exe`** (L2/L3) — емулює платформу 1С: вантажить головну DLL через `LoadLibraryW`
+  і викликає компоненту `AddinUAPKIConnect` через `IComponentBase`/`CallUapki`, e2e-кейси 1-4 і
+  крос-валідація ПРРО (кейс 5, потребує `PRRO_DOCS_DIR`, інакше SKIP).
+
+Запуск: `build_project.ps1 -WithUAPKI -WithTests`, потім
+`powershell -File run_tests.ps1 [x64|x86]` (оркестратор: L0 dumpbin-інваріанти → L1 selftest по
+сценаріях → L2/L3 native_host; підсумкова таблиця PASS/FAIL/SKIP/BLOCKED, ненульовий exit при
+провалі).
+
+Тестові exe лягають у `bin/Release` (через `EXECUTABLE_OUTPUT_PATH`, `output_settings.cmake`) —
+саме там їх шукає `run_tests.ps1`.
+
+> Історична примітка: раніше `CMake/dependencies.cmake` містив
+> `set(BUILD_TESTS OFF CACHE BOOL "Build tests" FORCE)` (нібито для ixwebsocket) — але ixwebsocket
+> цю змінну не читає, тож рядок лише FORCE-затирав однойменну опцію проєкту й ламав
+> `-DBUILD_TESTS=ON`. Рядок прибрано; `-WithTests` тепер справді збирає `tests/`.
 
 ## Структура
 
@@ -50,6 +72,7 @@ src/protocols/      # логіка протоколів (ECRPrivatJSON)
 src/helpers/        # ServiceTools (логування/конвертації) + хелпери фіч
 src/transport/      # канали: COM, TCP, WebSocket (client/server)
 include/            # заголовки SDK 1С
+tests/              # uapki_selftest (L1) + native_host (L2/L3) + scenarios/ + data/
 docs/               # ARCHITECTURE.md + специфікації протоколів
 extern/             # сабмодулі: spdlog, nlohmann_json, ixwebsocket, uapki
 ```
