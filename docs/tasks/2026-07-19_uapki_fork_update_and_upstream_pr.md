@@ -94,4 +94,68 @@
 
 ## 9. Звіт виконання
 
-(заповнює виконавець)
+**Дата виконання:** 2026-07-19. **Гілки:** сабмодуль `extern/uapki` — `static-build-v2`,
+`static-export-headers` (PR-A), `loadlibraryw-utf8` (PR-B); основне репо — `uapki-upstream-sync`.
+
+### 9.1. Фактичне відставання форку
+- `static-build..upstream/main` = **52 коміти** (підтверджено; upstream HEAD `69053dc` — Android JNI + HttpHelper).
+- merge-base(`static-build`,`upstream/main`) = `9fbc408` ("update cm-pkcs12 version to 1.0.13").
+- `local main` форку (`9fbc408`) — чистий предок upstream (0 власних комітів); але `origin/main`
+  (remote форку) = 13 комітів ПОПЕРЕДУ upstream (build_uapki.ps1, memleak fix, merges зі specinfo-ua)
+  і 51 позаду → **чистий `--ff-only` для `origin/main` неможливий** (див. 9.6 — рішення за користувачем).
+
+### 9.2. Перенесення наших правок (Крок B)
+- Створено `static-build-v2` від `upstream/main`; cherry-pick `ff8c679` (STATIC export headers) і
+  `3760fc7` (LoadLibraryW UTF-8).
+- **Конфліктів — 0** (точно як прогнозував аналіз). `3760fc7` авто-змержився 3-way з upstream-змінами
+  в loaders: збережено і наш `dl_load_library_utf8` у `CmLoader::load`/`UapkiLoader::load`, і upstream-код
+  (`getDlError()` в uapki-loader, перейменування параметрів `providerInfo/storageInfo→outInfo` у cm-loader).
+- Підсумок `static-build-v2`: рівно 2 наші коміти, рівно 7 файлів vs `upstream/main`.
+
+### 9.3. Чи щось із наших змін уже є в upstream
+- **Ні.** upstream/main не містить ЖОДНОЇ: ні `*_STATIC`-гілок у export-заголовках (усі 4 файли
+  байт-ідентичні merge-base↔upstream; «неопублікований статичний варіант» Віталія в цю гілку не потрапив),
+  ні UTF-8/`LoadLibraryW` у loaders, ні rpath-пошуку провайдера поруч із бібліотекою. **Обидва PR-и лишаються потрібними.**
+
+### 9.4. Сумісність SimplyAddinConnect (Крок C) — одна детермінована адаптація
+- Ядро `uapki/uapkic/uapkif` збирається через `file(GLOB)` → усі нові upstream-файли (5 методів 2.0.16:
+  `BUILD_CMS_2PASS`, `BUILD_CSR_2PASS`, `GENERATE_CERTBUNDLE`, `MODIFY_CMS`, `VERIFY_CSR`;
+  `extnreq-helper.cpp`, `ecdsa-params.c`, `DSTU7624Parameters.c`) підхоплюються автоматично — unresolved у ядрі немає.
+- **Єдина поломка:** ціль `cm-pkcs12-provider` перелічує `common/pkix/*.c` **явним списком**, а upstream
+  оновив `private-key.c` (він у цьому списку) → тепер `#include "ecdsa-params.h"` + виклик
+  `ecdsa_ecparams_get_ecid()` (`private-key.c:37,322`). Без `ecdsa-params.c` провайдер падав би з
+  unresolved external. **Виправлення — один рядок:** додано
+  `library/common/pkix/ecdsa-params.c` до джерел `cm-pkcs12-provider` у `CMake/uapki_full_static.cmake`.
+- Публічні контракти **стабільні**: 7 cm-api символів провайдера незмінні; структура `cm-api`/`cm-loader`
+  без змін; `process()`/`json_free()` без змін; JSON-контракт `cmProviders`/`allowedProviders`/`setup_cm_providers`
+  зворотно сумісний (лише additive-параметр INIT `skipSelfTest` + внутрішній `uapkic_init`). **`UAPKIConnectHelper.cpp` правити не треба.**
+- `http-helper.cpp` (Android-правки upstream) — увесь Android-код під `#if !defined(ANDROID) && !defined(__ANDROID__)`;
+  на Windows тягнеться `curl`, не `jni.h`; `set_jni` — в `#else`-гілці Android, на Windows не компілюється. Безпечно.
+- Новий провайдер `cm-pkcs11` + каталог `common/cryptoki` — нас не зачіпають (не збираємо; ядро cryptoki не інклудить).
+
+### 9.5. Результати збірки й тестів
+- **Збірка `build_project.ps1 -WithUAPKI -WithTests` — ✅ ЗЕЛЕНА** для обох архітектур (x86+x64, Release),
+  0 помилок/unresolved. Провайдери `cm-pkcs12_x64.dll`/`_x86.dll` зібрані чисто (фікс `ecdsa-params.c` спрацював),
+  ZIP `bin/Release/SimplyAddinConnectWin.zip` створено (5 файлів).
+- **`run_tests.ps1` (x64/x86):** L0 (крім x86 `py-provider_info`), **усі 7 L1-сценаріїв**, native_host
+  **case 3/4/5** — PASS. **case 1/2 — FAIL, з ЄДИНОЇ середовищної причини, не регресії:**
+  жива сесія 1С (`1cv8.exe` PID 16784, запущена 0:51) тримає завантаженою СТАРУ версію
+  `%LOCALAPPDATA%\SimplyAddinConnect\providers\3.0.2.104\cm-pkcs12_x64.dll` → `rmrf(appDir)`
+  харнеса не може прибрати каталог (Access denied) → падає precondition/leftover-assertion кейсів 1-2.
+  У самих кейсах INIT успішний (`countCmProviders==1`) — розгортання й завантаження працюють.
+  x86 `py-provider_info` FAIL — 64-бітний системний Python не може `ctypes.CDLL` 32-бітну DLL (WinError 193),
+  теж середовищний артефакт харнеса, не код. **Для чистого PASS=17 треба закрити ту сесію 1С і перезапустити тести.**
+
+### 9.6. Що зроблено / очікує підтвердження
+- **Локально готово (без push):** `static-build-v2` (для інтеграції), `static-export-headers` (PR-A),
+  `loadlibraryw-utf8` (PR-B) у сабмодулі; `uapki-upstream-sync` в основному репо (bump сабмодуля +
+  `ecdsa-params.c` у CMake). Чернетки PR-описів (EN+UA) — `docs/tasks/2026-07-19_uapki_pr_drafts.md`.
+- **Очікує рішення/підтвердження користувача (Крок A, D, обмеження §5):**
+  1. **Оновлення `main` форку:** `origin/main` має 13 власних комітів (build_uapki.ps1 тощо) → не ff.
+     Варіанти: (a) merge `upstream/main` у `origin/main` зі збереженням тулінгу; (b) reset `origin/main`
+     до `upstream/main` (відкинути форк-тулінг); (c) не чіпати `main`, працювати лише з topic-гілками.
+     **PR-и від `main` НЕ залежать** — гілки PR базовані прямо на `upstream/main`.
+  2. **Push topic-гілок PR-A/PR-B у `origin` (форк)** і **відкриття 2 PR у `specinfo-ua/UAPKI`** — лише з дозволу.
+  3. **Закрити сесію 1С (PID 16784)** для чистого прогону `run_tests` (PASS=17), або прийняти пояснення 9.5.
+  4. **Ручний тест у 1С** на оновленому ядрі (INIT → `countCmProviders:1`).
+- **Гілку `add_UAPKI` не чіпано.** Базові гілки `static-build`/`main` збережено.

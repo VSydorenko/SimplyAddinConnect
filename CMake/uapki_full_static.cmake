@@ -144,6 +144,10 @@ add_library(cm-pkcs12-provider SHARED ${CM_PKCS12_SRC}
     # common/pkix файли, яких немає в жодній статичній цілі
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/aid.c
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/dstu4145-params.c
+    # ecdsa-params.c — з оновленням upstream private-key.c інклудить ecdsa-params.h
+    # і викликає ecdsa_ecparams_get_ecid(); без цього файлу провайдер падає з
+    # unresolved external. Ядро uapki підхоплює його через file(GLOB common/pkix/*.c).
+    ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/ecdsa-params.c
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/iconv-utils.c
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/iso15946.c
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/pkix/key-wrap.c
