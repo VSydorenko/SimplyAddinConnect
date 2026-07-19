@@ -147,15 +147,21 @@
   теж середовищний артефакт харнеса, не код. **Для чистого PASS=17 треба закрити ту сесію 1С і перезапустити тести.**
 
 ### 9.6. Що зроблено / очікує підтвердження
-- **Локально готово (без push):** `static-build-v2` (для інтеграції), `static-export-headers` (PR-A),
-  `loadlibraryw-utf8` (PR-B) у сабмодулі; `uapki-upstream-sync` в основному репо (bump сабмодуля +
-  `ecdsa-params.c` у CMake). Чернетки PR-описів (EN+UA) — `docs/tasks/2026-07-19_uapki_pr_drafts.md`.
-- **Очікує рішення/підтвердження користувача (Крок A, D, обмеження §5):**
-  1. **Оновлення `main` форку:** `origin/main` має 13 власних комітів (build_uapki.ps1 тощо) → не ff.
-     Варіанти: (a) merge `upstream/main` у `origin/main` зі збереженням тулінгу; (b) reset `origin/main`
-     до `upstream/main` (відкинути форк-тулінг); (c) не чіпати `main`, працювати лише з topic-гілками.
-     **PR-и від `main` НЕ залежать** — гілки PR базовані прямо на `upstream/main`.
-  2. **Push topic-гілок PR-A/PR-B у `origin` (форк)** і **відкриття 2 PR у `specinfo-ua/UAPKI`** — лише з дозволу.
-  3. **Закрити сесію 1С (PID 16784)** для чистого прогону `run_tests` (PASS=17), або прийняти пояснення 9.5.
-  4. **Ручний тест у 1С** на оновленому ядрі (INIT → `countCmProviders:1`).
-- **Гілку `add_UAPKI` не чіпано.** Базові гілки `static-build`/`main` збережено.
+**Рішення користувача (2026-07-19, друга ітерація) і виконані дії:**
+- **Форк `main` — варіант (b):** `origin/main` **зресетовано** до `upstream/main` (`d58243a`→`69053dc`,
+  force). Форк-тулінг (build_uapki.ps1, merged-DLL опція) відкинуто; форк — лише транслятор PR в upstream.
+  UAPKI локально окремо не збираємо (гібрид у головному репо через `uapki_full_static.cmake` лишається).
+- **Push у форк виконано:** `static-build-v2` (`cb39ea9`, ціль сабмодуля), `static-export-headers`
+  (`a3e7a70`, PR-A), `loadlibraryw-utf8` (`010a5fc`, PR-B). Стара `static-build` (`3760fc7`) лишена в форку.
+- **PR у upstream — драфти готові, гілки запушені; надсилання за користувачем.** URL порівняння:
+  - PR-A: `https://github.com/specinfo-ua/UAPKI/compare/main...VSydorenko:UAPKI:static-export-headers?expand=1`
+  - PR-B: `https://github.com/specinfo-ua/UAPKI/compare/main...VSydorenko:UAPKI:loadlibraryw-utf8?expand=1`
+  - Тексти — `docs/tasks/2026-07-19_uapki_pr_drafts.md`.
+- **Серти — прийнято канонічний неймінг upstream v2.0.16.** `tests/data/certs` перезбережено в канонічну
+  форму `<subjKeyId8>-<issuer8>-<sha1>.cer` (ті самі 6 сертів); повторне сканування CerStore ідемпотентне
+  (перевірено). Тимчасовий temp-copy-workaround у `run_tests.ps1` прибрано — обробка не потрібна.
+- **Інтеграція в `add_UAPKI` виконана:** `add_UAPKI` fast-forward'нуто до синхронізації (указник сабмодуля
+  → `cb39ea9`, включно з супутніми комітами й раніше незакоміченими WIP-файлами). `run_tests x64` на
+  `add_UAPKI` = **PASS=17**, дерево чисте. `add_UAPKI` **не запушено** — PR у `main` робить користувач.
+- **Лишилось за користувачем:** надіслати 2 PR у specinfo-ua; push `add_UAPKI` + PR у `main`; ручний тест
+  у реальній 1С на оновленому ядрі (INIT → `countCmProviders:1`).
