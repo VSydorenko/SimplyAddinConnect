@@ -287,17 +287,11 @@ elseif (-not (Test-Path $MainDll)) {
     Add-Result 'L2/L3' 'native_host' 'SKIP' "немає головної DLL $MainDll"
 }
 else {
-    # native_host case4/5 указують UAPKI CerStore на dataDir\certs; CerStore ПЕРЕЙМЕНОВУЄ/кешує
-    # серти прямо в цьому каталозі при завантаженні (сканування за вмістом). Щоб НЕ мутувати
-    # відстежувані git'ом tests/data/certs, працюємо на одноразовій копії в %TEMP% — так само,
-    # як L1 selftest вище (ЕТАП 2). tests/data лишається read-only входом (див. коментар зверху).
-    $HostData = Join-Path ([System.IO.Path]::GetTempPath()) ("sac_hostdata_" + [guid]::NewGuid().ToString('N').Substring(0,8))
-    New-Item -ItemType Directory -Force -Path $HostData | Out-Null
-    $cleanup += $HostData
-    Copy-Item -Path (Join-Path $DataDir '*') -Destination $HostData -Recurse -Force
-
+    # native_host case4/5 указують UAPKI CerStore на dataDir\certs. CerStore іменує серти за
+    # вмістом (thumbprint) — tests/data/certs зберігаються ВЖЕ в канонічній формі upstream,
+    # тож повторне сканування ідемпотентне (не перейменовує, git-diff не зʼявляється).
     foreach ($kase in 1..4) {
-        $argList = @("$kase", "`"$MainDll`"", "`"$HostData`"", "`"$BinRelease`"")
+        $argList = @("$kase", "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"")
         $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_${kase}_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
         $p = Start-Process -FilePath $NativeHostExe -ArgumentList $argList `
                 -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
@@ -316,7 +310,7 @@ else {
         Add-Result 'L2/L3' 'native_host case 5' 'SKIP' 'немає PRRO_DOCS_DIR і R:/github/prro_docs'
     }
     else {
-        $argList = @('5', "`"$MainDll`"", "`"$HostData`"", "`"$BinRelease`"", "`"$prro`"")
+        $argList = @('5', "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"", "`"$prro`"")
         $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_5_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
         $p = Start-Process -FilePath $NativeHostExe -ArgumentList $argList `
                 -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
