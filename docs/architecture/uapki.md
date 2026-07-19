@@ -120,8 +120,8 @@ DLL, а провайдер `cm-pkcs12` збирається як окрема с
 і без `.def` — інакше експортувалися б тисячі символів (`uapki_full_static.cmake:171-174`).
 Мінімальний обов'язковий набір перевіряється при завантаженні в `CmLoader::load`:
 `provider_info`, `provider_init`, `provider_deinit`, `provider_open`, `provider_close`,
-`block_free`, `bytearray_free` (`extern/uapki/library/common/loaders/cm-loader.cpp:77-90`;
-перевірка наявності — `cm-loader.cpp:89-93`). Символи `list_storages` / `storage_info` /
+`block_free`, `bytearray_free` (`extern/uapki/library/common/loaders/cm-loader.cpp:77-86`;
+перевірка наявності — `cm-loader.cpp:89-90`). Символи `list_storages` / `storage_info` /
 `format` — опціональні.
 
 Таким чином `bcrypt` / `crypt32` / `ws2_32` — єдині системні залежності провайдера, а сам
