@@ -10,16 +10,22 @@ TransportWSClient::TransportWSClient(const std::string& url, const std::vector<s
       m_webSocket(std::make_unique<ix::WebSocket>()),
       m_isOpen(false),
       m_isConnecting(false),
+      m_started(false),
       m_timeoutSecs(60)
 {
     NEUTRAL_REPORT_DEBUG("Transport_WSClient", "Создан объект WebSocket-клиента: " + m_url);
-    
+
     // Инициализация сетевой подсистемы
     ix::initNetSystem();
-    
+
     // Настройка WebSocket
     m_webSocket->setUrl(m_url);
-    
+
+    // Реконектом управляет супервизор DeviceSession (Close+Open), а не сам ix:
+    // встроенный авто-реконект ix (по умолчанию ВКЛ) конфликтовал бы с нашим
+    // жизненным циклом и ломал exactly-once state (§9.1, §4.1).
+    m_webSocket->disableAutomaticReconnection();
+
     // Добавление протоколов, если они указаны
     for (const auto& protocol : m_protocols)
     {
@@ -58,18 +64,34 @@ bool TransportWSClient::Open()
     }
     
     NEUTRAL_REPORT_INFO("Transport_WSClient", "Подключение к " + m_url);
-    
+
+    // Сброс флагов цикла соединения ДО start() (иначе доставленный воркером Open
+    // мог бы прийти раньше сброса и «потеряться»).
+    {
+        std::lock_guard<std::mutex> lk(m_connMutex);
+        m_upDelivered = false;
+        m_downDelivered = false;
+        m_openFailed = false;
+    }
+
     m_isConnecting = true;
-    
+
     try
     {
         // Установка таймаута подключения
         m_webSocket->setHandshakeTimeout(m_timeoutSecs);
-        
-        // Запуск соединения асинхронно
+
+        // #W1 (§4.1): Open для WS — НЕблокирующий. Возвращаем true СРАЗУ после start()
+        // (конект ИНИЦИИРОВАН), не ожидая хендшейка. Иначе поток 1С мёрзнул бы до
+        // m_timeoutSecs (~60с) на m_connCv против недостижимого/black-hole хоста, а
+        // Stop() (джойнит супервизор ДО Close()) вис бы, и connectDeadlineMs
+        // становился неэффективным. Фактический конект подтверждается АСИНХРОННО через
+        // Open-сообщение воркера → OnMessageCallback → ConnectionState(true); гейтит его
+        // уже DeviceSession по connectDeadlineMs (Start/ReconnectLoop). m_started
+        // фиксирует, что ресурс (воркер) существует — именно по нему Close() решает
+        // вызывать stop() (а не по m_isOpen).
         m_webSocket->start();
-        
-        // Соединение будет установлено асинхронно, статус изменится в OnMessageCallback
+        m_started = true;
         return true;
     }
     catch (const std::exception& e)
@@ -77,47 +99,88 @@ bool TransportWSClient::Open()
         m_isConnecting = false;
         std::string errorMsg = "Ошибка при открытии WebSocket-соединения: " + std::string(e.what());
         NEUTRAL_REPORT_ERROR("Transport_WSClient", errorMsg);
-        
+
         if (m_errorCallback)
         {
             m_errorCallback(errorMsg, -1);
         }
-        
+
         return false;
     }
 }
 
 bool TransportWSClient::Close()
 {
-    if (!m_isOpen && !m_isConnecting)
+    // §4.1 п.1: идемпотентность по ВАЛИДНОСТИ ресурса (ix-воркер = m_started), а НЕ по
+    // m_isOpen. После remote-close m_isOpen==false, но воркер ещё запущен — stop() всё
+    // равно нужен, иначе последующий Open (reopen) не перезапустит соединение (§9.1).
+    if (!m_started.exchange(false))
     {
-        NEUTRAL_REPORT_WARN("Transport_WSClient", "Попытка закрыть неоткрытое соединение");
-        return true;
+        return true;  // start() не вызывался (или уже остановлен) — нечего закрывать
     }
-    
+
     NEUTRAL_REPORT_INFO("Transport_WSClient", "Закрытие соединения WebSocket");
-    
+
     try
     {
-        // Остановка WebSocket
-        m_webSocket->stop();
-        
+        // §4.1 п.2: синхронизация с Send через m_sendMutex — не остановить воркер
+        // посреди активной отправки. stop() джойнит ix-воркер: после его возврата ни
+        // один OnMessageCallback больше не стартует (§4.1 п.4).
+        {
+            std::lock_guard<std::mutex> lk(m_sendMutex);
+            StopWebSocket();
+        }
+
         m_isOpen = false;
         m_isConnecting = false;
-        
+
+        // §4.1 п.5: exactly-once state(false). Если stop() уже прогнал OnMessageCallback
+        // с Close/Error, тот доставил state(false) — здесь будет no-op (гейт m_downDelivered).
+        EmitStateDownIfNeeded();
+
         return true;
     }
     catch (const std::exception& e)
     {
         std::string errorMsg = "Ошибка при закрытии WebSocket-соединения: " + std::string(e.what());
         NEUTRAL_REPORT_ERROR("Transport_WSClient", errorMsg);
-        
+
         if (m_errorCallback)
         {
             m_errorCallback(errorMsg, -1);
         }
-        
+
         return false;
+    }
+}
+
+void TransportWSClient::StopWebSocket()
+{
+    if (m_stopHookForTest)
+    {
+        m_stopHookForTest();  // тестовый шов: считаем вызов, реальный stop не трогаем
+        return;
+    }
+    m_webSocket->stop();
+}
+
+void TransportWSClient::EmitStateDownIfNeeded()
+{
+    bool emit = false;
+    ConnectionStateCallback cb;
+    {
+        std::lock_guard<std::mutex> lk(m_connMutex);
+        if (m_upDelivered && !m_downDelivered)
+        {
+            m_downDelivered = true;
+            emit = true;
+        }
+        cb = m_connectionStateCallback;
+    }
+    m_connCv.notify_all();  // разбудить ожидающего в Open (если разрыв на этапе конекта)
+    if (emit && cb)
+    {
+        cb(false);  // ВНЕ лока (§4.1: колбеки не из-под внутреннего лока)
     }
 }
 
@@ -237,35 +300,51 @@ void TransportWSClient::OnMessageCallback(const ix::WebSocketMessagePtr& msgPtr)
     {
         case ix::WebSocketMessageType::Open:
         {
-            m_isOpen = true;
-            m_isConnecting = false;
-            
-            NEUTRAL_REPORT_INFO("Transport_WSClient", "WebSocket-соединение открыто");
-            
-            if (m_connectionStateCallback)
+            // state(true) РОВНО один раз на цикл (§4.1 п.5). Флаги — под m_connMutex,
+            // колбек — вне лока. Разбудить ожидающего в Open (state-based успех).
+            bool emit = false;
+            ConnectionStateCallback cb;
             {
-                m_connectionStateCallback(true);
+                std::lock_guard<std::mutex> lk(m_connMutex);
+                m_isOpen = true;
+                m_isConnecting = false;
+                if (!m_upDelivered)
+                {
+                    m_upDelivered = true;
+                    emit = true;
+                }
+                cb = m_connectionStateCallback;
+            }
+            m_connCv.notify_all();
+
+            NEUTRAL_REPORT_INFO("Transport_WSClient", "WebSocket-соединение открыто");
+
+            if (emit && cb)
+            {
+                cb(true);
             }
             break;
         }
-        
+
         case ix::WebSocketMessageType::Close:
         {
-            m_isOpen = false;
-            m_isConnecting = false;
-            
-            std::string closeMsg = "WebSocket-соединение закрыто. Код: " + 
-                                  std::to_string(msgPtr->closeInfo.code) + 
+            std::string closeMsg = "WebSocket-соединение закрыто. Код: " +
+                                  std::to_string(msgPtr->closeInfo.code) +
                                   ", причина: " + msgPtr->closeInfo.reason;
             NEUTRAL_REPORT_INFO("Transport_WSClient", closeMsg);
-            
-            if (m_connectionStateCallback)
+
+            // m_openFailed=true будит Open, если разрыв случился на этапе конекта.
             {
-                m_connectionStateCallback(false);
+                std::lock_guard<std::mutex> lk(m_connMutex);
+                m_isOpen = false;
+                m_isConnecting = false;
+                m_openFailed = true;
             }
+            // exactly-once state(false): только если было state(true) в этом цикле.
+            EmitStateDownIfNeeded();
             break;
         }
-        
+
         case ix::WebSocketMessageType::Message:
         {
             if (m_dataReceivedCallback)
@@ -276,31 +355,52 @@ void TransportWSClient::OnMessageCallback(const ix::WebSocketMessagePtr& msgPtr)
             }
             break;
         }
-        
+
         case ix::WebSocketMessageType::Error:
         {
-            m_isOpen = false;
-            m_isConnecting = false;
-            
             std::string errorMsg = "Ошибка WebSocket: " + msgPtr->errorInfo.reason;
             NEUTRAL_REPORT_ERROR("Transport_WSClient", errorMsg);
-            
-            if (m_errorCallback)
+
+            ErrorCallback ecb;
             {
-                m_errorCallback(errorMsg, msgPtr->errorInfo.retries);
+                std::lock_guard<std::mutex> lk(m_connMutex);
+                m_isOpen = false;
+                m_isConnecting = false;
+                m_openFailed = true;  // разбудить Open — конект не удался
+                ecb = m_errorCallback;
             }
-            
-            if (m_connectionStateCallback)
+            m_connCv.notify_all();
+
+            if (ecb)
             {
-                m_connectionStateCallback(false);
+                ecb(errorMsg, msgPtr->errorInfo.retries);
             }
+            // state(false) — только если ранее было state(true) (§4.1 п.5).
+            EmitStateDownIfNeeded();
             break;
         }
-        
+
         case ix::WebSocketMessageType::Ping:
         case ix::WebSocketMessageType::Pong:
         case ix::WebSocketMessageType::Fragment:
             // Эти сообщения обрабатываются автоматически библиотекой
             break;
     }
+}
+
+// --- Тестовые швы ------------------------------------------------------------
+
+bool TransportWSClient::IsAutomaticReconnectionEnabledForTest() const
+{
+    return m_webSocket->isAutomaticReconnectionEnabled();
+}
+
+void TransportWSClient::ForceStartedForTest(bool started)
+{
+    m_started = started;
+}
+
+void TransportWSClient::SetStopHookForTest(std::function<void()> hook)
+{
+    m_stopHookForTest = std::move(hook);
 }

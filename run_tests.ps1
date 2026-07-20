@@ -7,11 +7,20 @@
             python-ctypes smoke provider_info (SKIP, якщо немає python).
       L1  — uapki_selftest.exe: JSON-сценарії напряму через статичне крипто-ядро
             (tests/scenarios/*.json), кожен — окремий процес у тимч. робочому каталозі.
+        L0.6 — wire_selftest.exe: device-facing ядро (framer/classifier/DeviceSession
+            над LoopbackTransport + TCP-echo смоук). Не залежить від UAPKI —
+            збирається завжди при BUILD_TESTS=ON. Задокументовані [SKIP] (напр.
+            ComRoundtrip: потрібна пара com0com) — це НЕ FAIL.
       L2/L3 — native_host.exe: e2e поверх ГОЛОВНОЇ DLL через IComponentBase (кейси 1..4),
             крос-валідація ПРРО (кейс 5) — лише за наявності еталонів.
 
-    Запуск:  powershell -ExecutionPolicy Bypass -File run_tests.ps1 [x64|x86]
+    Запуск:  powershell -ExecutionPolicy Bypass -File run_tests.ps1 [x64|x86] [-NoUapki]
     Дефолт архітектури — x64. Ненульовий код виходу, якщо будь-що впало.
+
+    Режим -NoUapki: збирає/ганяє лише ядро без крипто-стеку (core_selftest L0.5 +
+    wire_selftest L0.6). Провайдер (L0.2), L1 та L2/L3 → SKIP (не FAIL); збірка
+    БЕЗ -DBUILD_WITH_UAPKI=ON. Головна DLL без UAPKI все одно експортує рівно 3
+    символи (L0.1 лишається активним).
 
     Тестові дані (tests/data) — read-only вхід; сценарії пишуть лише в тимч. каталог.
 #>
@@ -19,7 +28,8 @@
 [CmdletBinding()]
 param(
     [ValidateSet('x64', 'x86')]
-    [string]$Arch = 'x64'
+    [string]$Arch = 'x64',
+    [switch]$NoUapki
 )
 
 $ErrorActionPreference = 'Continue'
@@ -39,6 +49,7 @@ $ProviderDll  = Join-Path $BinRelease "$ProviderName.dll"
 $SelfTestExe  = Join-Path $BinRelease "uapki_selftest$ArchSuffix.exe"
 $NativeHostExe= Join-Path $BinRelease "native_host$ArchSuffix.exe"
 $CoreSelftestExe = Join-Path $BinRelease ("core_selftest" + $ArchSuffix + ".exe")
+$WireSelftestExe = Join-Path $BinRelease ("wire_selftest" + $ArchSuffix + ".exe")
 $DataDir      = Join-Path $Root 'tests/data'
 $ScenDir      = Join-Path $Root 'tests/scenarios'
 
@@ -58,7 +69,8 @@ function Section([string]$Title) {
     Write-Host "==== $Title ====" -ForegroundColor Cyan
 }
 
-Write-Host "run_tests: архітектура=$Arch, корінь=$Root" -ForegroundColor White
+$modeLabel = if ($NoUapki) { 'без UAPKI (core+wire)' } else { 'повний (UAPKI L0-L3 + wire L0.6)' }
+Write-Host "run_tests: архітектура=$Arch, режим=$modeLabel, корінь=$Root" -ForegroundColor White
 
 # =====================================================================
 # ЕТАП 0 (L0): статичні інваріанти постачання через dumpbin
@@ -133,7 +145,10 @@ else {
     }
 
     # --- L0.2: провайдер — 7 обовʼязкових експортів, лише системні залежності ---
-    if (-not (Test-Path $ProviderDll)) {
+    if ($NoUapki) {
+        Add-Result 'L0' 'provider-exports' 'SKIP' 'режим -NoUapki: провайдер cm-pkcs12 не збирається'
+    }
+    elseif (-not (Test-Path $ProviderDll)) {
         Add-Result 'L0' 'provider-exports' 'FAIL' "немає файлу: $ProviderDll"
     }
     else {
@@ -172,7 +187,11 @@ if (-not $python) { $python = (Get-Command py -ErrorAction SilentlyContinue) }
 # може завантажити 32-біт DLL (WinError 193) — це середовищне обмеження, а не
 # дефект провайдера, тож при розбіжності — SKIP, а не FAIL.
 $pyBits = $null
-if ($python) { $pyBits = "$(& $python.Source -c 'import struct;print(struct.calcsize("P")*8)' 2>$null)".Trim() }
+# Розрядність python. БЕЗ рядкових літералів у -c: під Windows PowerShell 5.1 (саме нею
+# запускається `powershell -File run_tests.ps1`) вкладені подвійні лапки в аргументі
+# нативного виклику зʼїдаються, і `struct.calcsize("P")` ламався → $pyBits порожній →
+# guard розрядності не спрацьовував і x86-смоук падав WinError 193. c_void_p лапок не має.
+if ($python) { $pyBits = "$(& $python.Source -c 'import ctypes;print(ctypes.sizeof(ctypes.c_void_p)*8)' 2>$null)".Trim() }
 $wantBits = if ($Arch -eq 'x86') { '32' } else { '64' }
 if (-not $python) {
     Add-Result 'L0' 'py-provider_info' 'SKIP' 'python не в PATH'
@@ -215,23 +234,38 @@ sys.exit(0)
 # =====================================================================
 Section 'ЕТАП 1 (build): тестові виконувані файли'
 
-$haveExes = (Test-Path $SelfTestExe) -and (Test-Path $NativeHostExe)
-if ($haveExes) {
-    Add-Result 'build' 'test-exes' 'PASS' 'uapki_selftest.exe та native_host.exe вже зібрані'
+# У режимі -NoUapki потрібні лише ядрові exe (core+wire); UAPKI-стек не збирається.
+if ($NoUapki) {
+    $haveExes = (Test-Path $CoreSelftestExe) -and (Test-Path $WireSelftestExe)
+    $exeLabel = 'core_selftest.exe та wire_selftest.exe'
 }
 else {
-    Write-Host "  Тестові exe відсутні — конфігурую+збираю build_$Arch (BUILD_WITH_UAPKI=ON, BUILD_TESTS=ON)..." -ForegroundColor Yellow
+    $haveExes = (Test-Path $SelfTestExe) -and (Test-Path $NativeHostExe)
+    $exeLabel = 'uapki_selftest.exe та native_host.exe'
+}
+if ($haveExes) {
+    Add-Result 'build' 'test-exes' 'PASS' "$exeLabel вже зібрані"
+}
+else {
+    # Список опцій CMake: під -NoUapki НЕ форсуємо BUILD_WITH_UAPKI (провайдер/крипто-ядро
+    # свідомо не збираються), лише BUILD_TESTS — core_selftest+wire_selftest збираються завжди.
+    $cmakeArgs = @('-S', $Root, '-B', $null, '-A', $CmakePlatform, '-DBUILD_TESTS=ON')
+    if (-not $NoUapki) { $cmakeArgs += '-DBUILD_WITH_UAPKI=ON' }
     $buildDir = Join-Path $Root "build_$Arch"
-    & cmake -S $Root -B $buildDir -A $CmakePlatform -DBUILD_WITH_UAPKI=ON -DBUILD_TESTS=ON | Out-Host
+    $cmakeArgs[3] = $buildDir
+    $uapkiNote = if ($NoUapki) { 'BUILD_TESTS=ON (без UAPKI)' } else { 'BUILD_WITH_UAPKI=ON, BUILD_TESTS=ON' }
+    Write-Host "  Тестові exe відсутні — конфігурую+збираю build_$Arch ($uapkiNote)..." -ForegroundColor Yellow
+    & cmake @cmakeArgs | Out-Host
     & cmake --build $buildDir --config Release | Out-Host
 
-    $haveExes = (Test-Path $SelfTestExe) -and (Test-Path $NativeHostExe)
+    if ($NoUapki) { $haveExes = (Test-Path $CoreSelftestExe) -and (Test-Path $WireSelftestExe) }
+    else          { $haveExes = (Test-Path $SelfTestExe) -and (Test-Path $NativeHostExe) }
     if ($haveExes) {
         Add-Result 'build' 'test-exes' 'PASS' 'зібрано'
     }
     else {
         Add-Result 'build' 'test-exes' 'BLOCKED' `
-            "exe не зʼявилися після збірки. Перевірте, що конфіг пройшов з -DBUILD_WITH_UAPKI=ON -DBUILD_TESTS=ON і що add_subdirectory(tests) виконався (у виводі CMake має бути 'Test suite enabled')."
+            "exe ($exeLabel) не зʼявилися після збірки. Перевірте, що конфіг пройшов з $uapkiNote і що add_subdirectory(tests) виконався (у виводі CMake має бути 'Test suite enabled')."
     }
 }
 
@@ -263,6 +297,38 @@ else {
 }
 
 # =====================================================================
+# ЕТАП 0.6 (L0.6): wire_selftest — device-facing ядро (framer/classifier/session).
+# Не залежить від -WithUAPKI: збирається завжди при BUILD_TESTS=ON. Задокументовані
+# [SKIP]-рядки (напр. ComRoundtrip — потрібна пара com0com) — це НЕ FAIL: критерій
+# лише exit-код 0 (усі активні CHECK — PASS).
+# =====================================================================
+Section 'ЕТАП 0.6 (L0.6): wire_selftest device-ядра'
+
+if (-not (Test-Path $WireSelftestExe)) {
+    Add-Result 'L0.6' 'wire_selftest' 'FAIL' `
+        "немає wire_selftest.exe: $WireSelftestExe — зберіть з -WithTests (wire_selftest збирається завжди при BUILD_TESTS=ON, без UAPKI)"
+}
+else {
+    $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("wire_selftest_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+    $p = Start-Process -FilePath $WireSelftestExe `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+    $txt = ''
+    if (Test-Path $outF) { $txt = Get-Content -Raw $outF }
+    $nSkipLines = ([regex]::Matches($txt, '\[SKIP\]')).Count
+    if ($p.ExitCode -eq 0) {
+        $lastLine = ($txt -split "`n" | Where-Object { $_ -match '===' } | Select-Object -Last 1)
+        $detail = "$lastLine".Trim()
+        if ($nSkipLines -gt 0) { $detail += "  (задокументованих SKIP: $nSkipLines)" }
+        Add-Result 'L0.6' 'wire_selftest' 'PASS' $detail
+    }
+    else {
+        $fails = ($txt -split "`n" | Where-Object { $_ -match '\[FAIL\]' }) -join ' | '
+        Add-Result 'L0.6' 'wire_selftest' 'FAIL' "exit=$($p.ExitCode) $fails"
+    }
+    Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
+}
+
+# =====================================================================
 # ЕТАП 2 (L1): uapki_selftest на кожному сценарії (окремий процес)
 # =====================================================================
 Section 'ЕТАП 2 (L1): uapki_selftest сценарії'
@@ -270,7 +336,10 @@ Section 'ЕТАП 2 (L1): uapki_selftest сценарії'
 $WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) ("sac_tests_" + [guid]::NewGuid().ToString('N').Substring(0,8))
 $cleanup = @()
 
-if (-not (Test-Path $SelfTestExe)) {
+if ($NoUapki) {
+    Add-Result 'L1' 'uapki_selftest' 'SKIP' 'режим -NoUapki: крипто-стек UAPKI не збирається'
+}
+elseif (-not (Test-Path $SelfTestExe)) {
     Add-Result 'L1' 'uapki_selftest' 'SKIP' 'немає uapki_selftest.exe (див. ЕТАП 1)'
 }
 elseif (-not (Test-Path $ProviderDll)) {
@@ -317,7 +386,10 @@ else {
 # =====================================================================
 Section 'ЕТАП 3 (L2/L3): native_host кейси'
 
-if (-not (Test-Path $NativeHostExe)) {
+if ($NoUapki) {
+    Add-Result 'L2/L3' 'native_host' 'SKIP' 'режим -NoUapki: головна DLL без UAPKI, e2e-кейси не застосовні'
+}
+elseif (-not (Test-Path $NativeHostExe)) {
     Add-Result 'L2/L3' 'native_host' 'SKIP' 'немає native_host.exe (див. ЕТАП 1)'
 }
 elseif (-not (Test-Path $MainDll)) {
@@ -368,9 +440,12 @@ foreach ($d in $cleanup) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyC
 Section 'ПІДСУМОК'
 $Results | Format-Table -AutoSize Level, Status, Name, Detail | Out-Host
 
-$nFail = ($Results | Where-Object { $_.Status -in @('FAIL', 'BLOCKED') }).Count
-$nPass = ($Results | Where-Object { $_.Status -eq 'PASS' }).Count
-$nSkip = ($Results | Where-Object { $_.Status -eq 'SKIP' }).Count
+# @(...) обовʼязково: під Windows PowerShell 5.1 `(Where-Object ...).Count` на ОДНОМУ збігу
+# повертає порожньо (не 1), тож `$nFail -gt 0` було б False і гейт зеленів би з реальним
+# провалом. Масив-субвираз гарантує числовий .Count і для одного, і для нуля елементів.
+$nFail = @($Results | Where-Object { $_.Status -in @('FAIL', 'BLOCKED') }).Count
+$nPass = @($Results | Where-Object { $_.Status -eq 'PASS' }).Count
+$nSkip = @($Results | Where-Object { $_.Status -eq 'SKIP' }).Count
 Write-Host ''
 Write-Host ("Разом: PASS=$nPass  FAIL/BLOCKED=$nFail  SKIP=$nSkip") -ForegroundColor White
 

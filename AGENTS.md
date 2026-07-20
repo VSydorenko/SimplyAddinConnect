@@ -7,8 +7,14 @@
 
 **SimplyAddinConnect** — нативна зовнішня компонента для **1С:Підприємство** (Windows, C++17).
 Збирається в одну DLL (x86 і x64), що реєструє кілька компонент:
-- **AddinECRPrivatJSON** — платіжний термінал ПриватБанку (JSON-протокол, COM/TCP/WebSocket);
-- **AddinUAPKIConnect** — ЕЦП/крипто через бібліотеку UAPKI.
+- **AddinUAPKIConnect** — ЕЦП/крипто через бібліотеку UAPKI;
+- **TestComponent** — демо/приклад реєстрації.
+
+Старий драйвер **AddinECRPrivatJSON** (платіжний термінал ПриватБанку) на гілці `device-core`
+**видалено як непрацездатний** — його заміняє **фундамент device-core** у `src/transport/`
+(байтовий транспорт `ITransport` → кадрування `IFramer`/`NullTerminatedFramer` → класифікація
+`IFrameClassifier` → сесія запит/відповідь `DeviceSession`), основа для майбутніх драйверів
+обладнання. Конкретних компонент-драйверів поки нема.
 
 Репозиторій: `github.com/VSydorenko/SimplyAddinConnect`. Версія — `VERSION.txt` + `version.h`.
 
@@ -40,15 +46,23 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTe
 ## Тести
 
 Тека `tests/` **існує**: `tests/CMakeLists.txt` (окремі консольні exe, лінкуються НЕ в головну
-DLL і НЕ підключають `src/core/pch.h`), `tests/core_selftest.cpp` (харнес ядра), `tests/scenarios/*.json`
+DLL і НЕ підключають `src/core/pch.h`), `tests/core_selftest.cpp` (харнес ядра),
+`tests/wire_selftest.cpp` (харнес device-ядра), `tests/scenarios/*.json`
 (7 сценаріїв L1), `tests/data/` (тестовий контейнер `test-diia.p12`, сертифікати, CRL — read-only вхід).
 
-Три цілі (лише Windows; окремі цілі мають власні умови):
+Чотири цілі (лише Windows; окремі цілі мають власні умови):
 - **`core_selftest.exe`** (L0.5) — **збирається завжди при `BUILD_TESTS=ON`, без UAPKI**. Лінкує
   OBJECT-бібліотеки ядра (`base_component`+`helpers_component`) напряму й ганяє перевірки ядра
   `AddInNative` через мок платформи 1С (`MockConnect : IAddInDefBase`, `MockMemory : IMemoryManager`):
   реєстр компонент, життєвий цикл, `Ret()`, `REGISTER_COMPONENT`, базовий `EnableLogging`, валідація
   `ParamSpec`, потокобезпечний `PostExternalEvent`, захист індексів, `ShutdownLogging` без дедлоку.
+- **`wire_selftest.exe`** (L0.6) — **збирається завжди при `BUILD_TESTS=ON`, без UAPKI** (лінкує
+  `wire_component`+`transport_component`+`helpers`+`base`). Ганяє device-facing ядро без обладнання:
+  байтові вектори `NullTerminatedFramer`, `IFrameClassifier`-подвійники, `DeviceSession` над
+  детермінованим `LoopbackTransport` (happy/timeout/desync/reconnect/reentrancy/precedence/
+  wire-trace, §14-інваріанти) + смоук реального `TransportTCP` (localhost-echo). Задокументовані
+  `[SKIP]`-рядки (напр. `ComRoundtrip` — потрібна пара com0com, ручний смоук) — це НЕ FAIL: гейт
+  дивиться лише exit-код 0.
 - **`uapki_selftest.exe`** (L1, лише при `BUILD_WITH_UAPKI=ON`) — лінкує `uapki_bundle` напряму
   (без 1С, без завантаження DLL) і проганяє JSON-сценарії з `tests/scenarios/` через
   `process()`/`json_free()` статичного ядра.
@@ -58,9 +72,15 @@ DLL і НЕ підключають `src/core/pch.h`), `tests/core_selftest.cpp` 
   `PRRO_DOCS_DIR`, інакше SKIP).
 
 Запуск: `build_project.ps1 -WithUAPKI -WithTests`, потім
-`powershell -File run_tests.ps1 [x64|x86]` (оркестратор: L0 dumpbin-інваріанти → L0.5 core_selftest
-ядра → L1 selftest по сценаріях → L2/L3 native_host; підсумкова таблиця PASS/FAIL/SKIP/BLOCKED,
-ненульовий exit при провалі). L0.5 проходить і без `-WithUAPKI`.
+`powershell -File run_tests.ps1 [x64|x86] [-NoUapki]` (оркестратор: L0 dumpbin-інваріанти →
+L0.5 core_selftest ядра → L0.6 wire_selftest device-ядра → L1 selftest по сценаріях →
+L2/L3 native_host; підсумкова таблиця PASS/FAIL/SKIP/BLOCKED, ненульовий exit при провалі).
+L0.5 і L0.6 проходять і без `-WithUAPKI`.
+
+**Режим без UAPKI (`-NoUapki`):** ганяє лише ядрові рівні (L0.5 core + L0.6 wire) — збирає
+з `-DBUILD_TESTS=ON` **без** `-DBUILD_WITH_UAPKI=ON`; провайдер (L0.2), L1 та L2/L3 → SKIP
+(не FAIL). L0.1 (рівно 3 експорти головної DLL) лишається активним. Швидкий гейт device-ядра
+без важкої статичної збірки крипто-стеку: `powershell -File run_tests.ps1 -NoUapki [x64|x86]`.
 
 Тестові exe лягають у `bin/Release` (через `EXECUTABLE_OUTPUT_PATH`, `output_settings.cmake`) —
 саме там їх шукає `run_tests.ps1`.
@@ -76,11 +96,11 @@ DLL і НЕ підключають `src/core/pch.h`), `tests/core_selftest.cpp` 
 CMake/              # модульна збірка; components.cmake — джерело правди щодо складу DLL
 src/core/           # ядро AddInNative (міст до SDK 1С) + pch.h
 src/components/     # компоненти-фасади для 1С
-src/protocols/      # логіка протоколів (ECRPrivatJSON)
 src/helpers/        # ServiceTools (логування/конвертації) + хелпери фіч
-src/transport/      # канали: COM, TCP, WebSocket (client/server)
+src/transport/      # канали COM/TCP/WS-client + device-core (IFramer/NullTerminatedFramer/
+                    #   IFrameClassifier/DeviceSession — фундамент драйверів обладнання)
 include/            # заголовки SDK 1С
-tests/              # uapki_selftest (L1) + native_host (L2/L3) + scenarios/ + data/
+tests/              # core_selftest (L0.5) + wire_selftest (L0.6) + uapki_selftest (L1) + native_host (L2/L3) + scenarios/ + data/
 docs/architecture/    # архітектура по підсистемах (README + 01..04)
 docs/               # специфікації протоколів (ECR/UAPKI), tasks/
 extern/             # сабмодулі: spdlog, nlohmann_json, ixwebsocket, uapki
