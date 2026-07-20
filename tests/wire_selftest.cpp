@@ -1580,6 +1580,223 @@ static void TestWsReopen() {
     ix::uninitNetSystem();
 }
 
+// === Task 8b: регресії код-рев'ю TransportTCP (#T5/#T7/#T9/#T-sym) ================
+
+// #T5: колбек помилки Send викликається ПОЗА m_sendMutex. Реентрантний Close із
+// error-колбека НЕ повинен self-deadlock (до фіксу колбек ішов з-під m_sendMutex,
+// а Close бере той самий мьютекс). Транспорт не відкрито → Send бʼє closed-гілку.
+// Watchdog RunGuarded ловить дедлок як FAIL.
+static void TestTcpErrorCallbackOutsideLock() {
+    TransportTCP transport("127.0.0.1", 1);   // НЕ відкриваємо
+    std::atomic<int> errs{ 0 };
+    transport.SetErrorCallback([&](const std::string&, int) {
+        errs.fetch_add(1);
+        transport.Close();   // реентрантний Close із колбека — не має заблокуватись
+    });
+
+    int r = transport.Send(B("X"));   // closed-гілка → error-колбек (вже поза локом)
+    CHECK(r == -1, "TcpErrorCbLock: Send на закритому з'єднанні → -1");
+    CHECK(errs.load() == 1, "TcpErrorCbLock: error-колбек викликано рівно раз");
+    CHECK(true, "TcpErrorCbLock: реентрантний Close із колбека не призвів до дедлоку");
+}
+
+// Ехо-сервер із стабільним портом, що приймає ПОСЛІДОВНІ з'єднання й уміє
+// «скинути» поточного клієнта (емуляція remote-close), продовжуючи слухати той
+// самий порт — потрібно для re-Open проти незмінного host:port.
+class ReopenTcpEchoServer {
+public:
+    ~ReopenTcpEchoServer() { Stop(); }
+
+    bool Start() {
+        WSADATA w;
+        if (WSAStartup(MAKEWORD(2, 2), &w) != 0) return false;
+        started_ = true;
+        SOCKET l = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (l == INVALID_SOCKET) return false;
+        listen_.store(l);
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        a.sin_port = 0;
+        if (bind(l, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == SOCKET_ERROR) return false;
+        int len = sizeof(a);
+        if (getsockname(l, reinterpret_cast<sockaddr*>(&a), &len) == SOCKET_ERROR) return false;
+        port_ = ntohs(a.sin_port);
+        if (listen(l, 4) == SOCKET_ERROR) return false;
+        running_.store(true);
+        thread_ = std::thread([this] { Run(); });
+        return true;
+    }
+
+    int Port() const { return port_; }
+
+    // Закрити поточне клієнтське з'єднання (remote-close), продовжуючи слухати.
+    void DropClient() {
+        SOCKET c = client_.exchange(INVALID_SOCKET);
+        if (c != INVALID_SOCKET) { shutdown(c, SD_BOTH); closesocket(c); }
+    }
+
+    void Stop() {
+        running_.store(false);
+        SOCKET l = listen_.exchange(INVALID_SOCKET);
+        if (l != INVALID_SOCKET) { shutdown(l, SD_BOTH); closesocket(l); }
+        SOCKET c = client_.exchange(INVALID_SOCKET);
+        if (c != INVALID_SOCKET) { shutdown(c, SD_BOTH); closesocket(c); }
+        if (thread_.joinable()) thread_.join();
+        if (started_) { WSACleanup(); started_ = false; }
+    }
+
+private:
+    void Run() {
+        while (running_.load()) {
+            SOCKET c = accept(listen_.load(), nullptr, nullptr);
+            if (c == INVALID_SOCKET) break;
+            client_.store(c);
+            std::vector<uint8_t> buf;
+            char tmp[4096];
+            while (running_.load()) {
+                int n = recv(c, tmp, static_cast<int>(sizeof(tmp)), 0);
+                if (n <= 0) break;
+                for (int i = 0; i < n; ++i) {
+                    if (tmp[i] == 0) {
+                        std::vector<uint8_t> frame = buf;
+                        frame.push_back(0);
+                        int off = 0, total = static_cast<int>(frame.size());
+                        while (off < total) {
+                            int s = ::send(c, reinterpret_cast<const char*>(frame.data()) + off,
+                                           total - off, 0);
+                            if (s <= 0) break;
+                            off += s;
+                        }
+                        buf.clear();
+                    } else {
+                        buf.push_back(static_cast<uint8_t>(tmp[i]));
+                    }
+                }
+            }
+            // Клієнт відпав (DropClient/remote): прибираємо й чекаємо наступного.
+            SOCKET cur = client_.exchange(INVALID_SOCKET);
+            if (cur != INVALID_SOCKET) closesocket(cur);
+        }
+    }
+
+    std::atomic<SOCKET> listen_{ INVALID_SOCKET };
+    std::atomic<SOCKET> client_{ INVALID_SOCKET };
+    std::thread thread_;
+    std::atomic<bool> running_{ false };
+    bool started_ = false;
+    int port_ = 0;
+};
+
+// #T7: re-Open БЕЗ Close після remote-close має знову підняти reader. До фіксу
+// reader при remote-close не скидав m_readThreadRunning → StartReadThread бачив
+// running==true й не стартував приймач → приймання після reopen тихо не працювало.
+static void TestTcpReopenReaderReset() {
+    ReopenTcpEchoServer server;
+    CHECK(server.Start(), "TcpReopen: сервер піднявся");
+
+    TransportTCP transport("127.0.0.1", server.Port());
+    std::mutex m;
+    std::condition_variable cv;
+    std::vector<std::vector<uint8_t>> got;
+    int downs = 0;
+    transport.SetDataReceivedCallback([&](const std::vector<uint8_t>& b) {
+        std::lock_guard<std::mutex> lk(m); got.push_back(b); cv.notify_all();
+    });
+    transport.SetConnectionStateCallback([&](bool up) {
+        std::lock_guard<std::mutex> lk(m); if (!up) ++downs; cv.notify_all();
+    });
+
+    NullTerminatedFramer fr;
+    CHECK(transport.Open(), "TcpReopen: перший Open підключився");
+
+    transport.Send(fr.Wrap(B("A")));
+    {
+        std::unique_lock<std::mutex> lk(m);
+        CHECK(cv.wait_for(lk, std::chrono::seconds(3), [&] { return !got.empty(); }),
+              "TcpReopen: перший roundtrip прийнято");
+    }
+
+    // remote-close: сервер закриває клієнта → наш reader виходить (state down).
+    server.DropClient();
+    {
+        std::unique_lock<std::mutex> lk(m);
+        CHECK(cv.wait_for(lk, std::chrono::seconds(3), [&] { return downs >= 1; }),
+              "TcpReopen: reader побачив remote-close (state down)");
+    }
+
+    // re-Open БЕЗ Close: до фіксу приймання тут не піднялося б.
+    { std::lock_guard<std::mutex> lk(m); got.clear(); }
+    CHECK(transport.Open(), "TcpReopen: re-Open без Close успішний");
+
+    transport.Send(fr.Wrap(B("B")));
+    {
+        std::unique_lock<std::mutex> lk(m);
+        CHECK(cv.wait_for(lk, std::chrono::seconds(3), [&] { return !got.empty(); }),
+              "TcpReopen: приймання працює після re-Open (reader перезапущено)");
+    }
+
+    transport.Close();
+    server.Stop();
+}
+
+// #T9: чистий локальний Close НЕ породжує фантомний error-колбек. Reader висить у
+// recv; Close закриває сокет і скидає m_isOpen (m_readThreadRunning — пізніше). Гейт
+// у reader'і (додано !m_isOpen) глушить recv-помилку на щойно закритому сокеті.
+static void TestTcpCleanCloseNoPhantomError() {
+    RawTcpEchoServer server;
+    CHECK(server.Start(/*echoEnabled=*/true), "TcpCleanClose: ехо-сервер піднявся");
+
+    TransportTCP transport("127.0.0.1", server.Port());
+    std::mutex m;
+    std::condition_variable cv;
+    std::atomic<int> errors{ 0 };
+    std::vector<std::vector<uint8_t>> got;
+    transport.SetErrorCallback([&](const std::string&, int) { errors.fetch_add(1); });
+    transport.SetDataReceivedCallback([&](const std::vector<uint8_t>& b) {
+        std::lock_guard<std::mutex> lk(m); got.push_back(b); cv.notify_all();
+    });
+
+    NullTerminatedFramer fr;
+    CHECK(transport.Open(), "TcpCleanClose: Open підключився");
+
+    // Roundtrip, щоб reader гарантовано був у recv на момент Close.
+    transport.Send(fr.Wrap(B("A")));
+    {
+        std::unique_lock<std::mutex> lk(m);
+        CHECK(cv.wait_for(lk, std::chrono::seconds(3), [&] { return !got.empty(); }),
+              "TcpCleanClose: roundtrip прийнято (reader знову у recv)");
+    }
+
+    transport.Close();   // локальний Close на сокеті, де висить reader
+    CHECK(errors.load() == 0,
+          "TcpCleanClose: жодного фантомного error-колбека на чистому Close");
+    server.Stop();
+}
+
+// #T-sym: невдалий Open (порт без слухача) НЕ повинен дати state(false) без
+// попереднього state(true). До фіксу наступний Close/деструктор емітив фантомний
+// state(false) (m_stateDownEmitted стартував false). Тепер гейтить m_upDelivered.
+static void TestTcpStateUpGate() {
+    int deadPort = ProbeFreePort();   // порт звільнено — ніхто не слухає
+    if (deadPort == 0) {
+        std::printf("[SKIP] TcpStateUpGate: не вдалося отримати вільний порт\n");
+        return;
+    }
+
+    std::atomic<int> ups{ 0 }, downs{ 0 };
+    {
+        TransportTCP transport("127.0.0.1", deadPort);
+        transport.SetConnectionStateCallback([&](bool up) { (up ? ups : downs).fetch_add(1); });
+        CHECK(!transport.Open(), "TcpStateUpGate: Open на мертвий порт провалився");
+        CHECK(ups.load() == 0, "TcpStateUpGate: жодного state(true) на невдалому Open");
+        transport.Close();   // явний Close після невдалого Open
+        CHECK(downs.load() == 0,
+              "TcpStateUpGate: немає фантомного state(false) без попереднього state(true)");
+    }   // деструктор → Close() ще раз
+    CHECK(downs.load() == 0, "TcpStateUpGate: state(false) не зʼявився і після деструкції");
+}
+
 int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     TestClassifierDoubles();
     TestLoopbackTransport();
@@ -1609,6 +1826,10 @@ int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     RunGuarded("TestTcpEchoRoundtrip", TestTcpEchoRoundtrip);
     RunGuarded("TestTcpCloseNoHang", TestTcpCloseNoHang);
     RunGuarded("TestTcpPartialSend", TestTcpPartialSend);
+    RunGuarded("TestTcpErrorCallbackOutsideLock", TestTcpErrorCallbackOutsideLock);
+    RunGuarded("TestTcpReopenReaderReset", TestTcpReopenReaderReset);
+    RunGuarded("TestTcpCleanCloseNoPhantomError", TestTcpCleanCloseNoPhantomError);
+    RunGuarded("TestTcpStateUpGate", TestTcpStateUpGate);
     RunGuarded("TestComSendAllOrError", TestComSendAllOrError);
     RunGuarded("TestComCloseCleansHandle", TestComCloseCleansHandle);
     TestComRoundtripSkip();

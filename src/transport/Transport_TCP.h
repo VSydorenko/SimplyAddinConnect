@@ -90,7 +90,11 @@ private:
     // Флаги состояния
     std::atomic<bool> m_isOpen;
     std::atomic<bool> m_readThreadRunning;
-    std::atomic<bool> m_stateDownEmitted;
+    // #T-sym: гейт симметрии state(true)/state(false). Ставится true прямо перед
+    // доставкой state(true); EmitStateDown эмитит state(false) ТОЛЬКО если up был
+    // доставлен (exchange даёт и гейт, и exactly-once). Неудачный Open/reader-fail
+    // (без state(true)) не даёт фантомный state(false).
+    std::atomic<bool> m_upDelivered;
 
     // Потоки и синхронизация
     std::thread m_readThread;

@@ -10,7 +10,7 @@ TransportTCP::TransportTCP(const std::string& host, int port)
       m_socket(INVALID_SOCKET),
       m_isOpen(false),
       m_readThreadRunning(false),
-      m_stateDownEmitted(false),
+      m_upDelivered(false),
       m_sendFn([](SOCKET s, const char* buf, int len) { return ::send(s, buf, len, 0); })
 {
     NEUTRAL_REPORT_DEBUG("TransportTCP", "Создан объект TCP-клиента: " + m_host + ":" + std::to_string(m_port));
@@ -86,7 +86,9 @@ bool TransportTCP::ResolveWithDeadline(std::vector<ResolvedAddr>& out)
     }
 
     // 2) Имя хоста → DNS с дедлайном через cancellable GetAddrInfoExW.
-    std::wstring wHost(m_host.begin(), m_host.end());
+    // #T8: корректная конвертация UTF-8 → wide через ServiceTools (наивное
+    // widening m_host.begin()..end() ломало non-ASCII/IDN-хосты). Порт — ASCII.
+    std::wstring wHost = ServiceTools::U16StringToWString(ServiceTools::SafeMB2WCHAR(m_host.c_str()));
     std::wstring wPort(portStr.begin(), portStr.end());
 
     ADDRINFOEXW hintsEx = {0};
@@ -236,7 +238,17 @@ bool TransportTCP::ConnectAsClient()
     }
 
     m_socket = sock;
-    m_stateDownEmitted = false;   // новое соединение — разрешаем следующий state(false)
+
+    // #T7: идемпотентность reader-lifecycle. Reader предыдущего соединения при
+    // remote-close НЕ сбрасывает m_readThreadRunning; дожинаем завершившийся поток
+    // (StopReadThread по m_readThread.joinable() задоинит его и сбросит флаг) ДО
+    // запуска нового reader, иначе повторный Open() без Close() увидел бы
+    // m_readThreadRunning==true → StartReadThread вернул бы true БЕЗ reader →
+    // тихий deadlock приёма. Join также сериализует нас с трейлером старого reader
+    // (его EmitStateDown завершится ДО возврата join), поэтому m_upDelivered ниже
+    // выставляется поверх уже потреблённого прошлого значения — без гонки.
+    StopReadThread();
+
     m_isOpen = true;
 
     // Запускаем поток чтения
@@ -249,7 +261,11 @@ bool TransportTCP::ConnectAsClient()
 
     NEUTRAL_REPORT_INFO("TransportTCP", "Успешно подключено к: " + m_host + ":" + portStr);
 
-    // Уведомляем о изменении состояния соединения
+    // Уведомляем о изменении состояния соединения. #T-sym: помечаем «up доставлен»
+    // РОВНО перед доставкой state(true), чтобы EmitStateDown эмитил парный state(false)
+    // только для реально поднятого соединения (StartReadThread уже успел — фейл выше
+    // ушёл в Close ещё до этой пометки, без ложного state(false)).
+    m_upDelivered = true;
     if (m_connectionStateCallback)
     {
         m_connectionStateCallback(true);
@@ -292,8 +308,11 @@ bool TransportTCP::Close()
 
 void TransportTCP::EmitStateDown()
 {
-    bool expected = false;
-    if (m_stateDownEmitted.compare_exchange_strong(expected, true))
+    // #T-sym: state(false) ровно один раз И только если ранее доставлен state(true).
+    // exchange(false) даёт и гейт «up был доставлен», и exactly-once (лишь один
+    // вызывающий увидит true) — симметрия контракта §4.1 п.5. Неудачный первый
+    // Open / reader-fail до пометки m_upDelivered не породит фантомный state(false).
+    if (m_upDelivered.exchange(false))
     {
         if (m_connectionStateCallback)
         {
@@ -315,7 +334,14 @@ int TransportTCP::Send(const std::vector<uint8_t>& data)
         return 0;
     }
 
-    bool needClose = false;   // фатальный обрыв: Close() ПОСЛЕ снятия m_sendMutex
+    bool needClose = false;      // фатальный обрыв: Close() ПОСЛЕ снятия m_sendMutex
+    // #T5: колбек ошибки НЕ вызываем из-под m_sendMutex (§4.1 «колбеки не из-под
+    // внутреннего лока»), иначе реентрантный Close/Send из колбека → self-deadlock
+    // (Close берёт тот же m_sendMutex). Зеркалим needClose-deferral: под локом лишь
+    // сохраняем сообщение/код + флаг, вызываем колбек ПОСЛЕ выхода из скоупа.
+    bool needErrorCb = false;
+    std::string cbErrorMsg;
+    int cbErrorCode = 0;
     int result = -1;
     {
         // Блокируем mutex: сериализация Send и синхронизация с Close (§4.1 п.2).
@@ -324,47 +350,56 @@ int TransportTCP::Send(const std::vector<uint8_t>& data)
         SOCKET sock = m_socket.load();
         if (!m_isOpen || sock == INVALID_SOCKET)
         {
-            std::string errorMsg = "Попытка отправить данные через закрытое соединение";
-            NEUTRAL_REPORT_ERROR("TransportTCP", errorMsg);
-            if (m_errorCallback) m_errorCallback(errorMsg, -1);
-            return -1;
+            cbErrorMsg = "Попытка отправить данные через закрытое соединение";
+            NEUTRAL_REPORT_ERROR("TransportTCP", cbErrorMsg);
+            needErrorCb = true;
+            cbErrorCode = -1;
+            // result остаётся -1; колбек — после снятия m_sendMutex (см. ниже).
         }
-
-        // ALL-OR-ERROR (§4.1, §14): дописываем остаток в цикле; partial → продолжаем,
-        // любая ошибка → -1 (никогда не «успех» на частичной записи).
-        const char* buf = reinterpret_cast<const char*>(data.data());
-        const size_t total = data.size();
-        size_t written = 0;
-        bool failed = false;
-        while (written < total)
+        else
         {
-            int n = m_sendFn(sock, buf + written, static_cast<int>(total - written));
-            if (n == SOCKET_ERROR || n <= 0)
+            // ALL-OR-ERROR (§4.1, §14): дописываем остаток в цикле; partial → продолжаем,
+            // любая ошибка → -1 (никогда не «успех» на частичной записи).
+            const char* buf = reinterpret_cast<const char*>(data.data());
+            const size_t total = data.size();
+            size_t written = 0;
+            bool failed = false;
+            while (written < total)
             {
-                int error = (n == SOCKET_ERROR) ? WSAGetLastError() : -1;
-                std::string errorMsg = "Ошибка при отправке данных. Ошибка: " + std::to_string(error);
-                NEUTRAL_REPORT_ERROR("TransportTCP", errorMsg);
-                if (m_errorCallback) m_errorCallback(errorMsg, error);
-
-                if (error == WSAECONNRESET || error == WSAECONNABORTED)
+                int n = m_sendFn(sock, buf + written, static_cast<int>(total - written));
+                if (n == SOCKET_ERROR || n <= 0)
                 {
-                    NEUTRAL_REPORT_WARN("TransportTCP", "Соединение разорвано удаленной стороной");
-                    needClose = true;   // синхронный обрыв — детект в вызове (§5.3 precedence)
-                }
-                failed = true;
-                break;
-            }
-            written += static_cast<size_t>(n);
-        }
+                    int error = (n == SOCKET_ERROR) ? WSAGetLastError() : -1;
+                    cbErrorMsg = "Ошибка при отправке данных. Ошибка: " + std::to_string(error);
+                    NEUTRAL_REPORT_ERROR("TransportTCP", cbErrorMsg);
+                    needErrorCb = true;
+                    cbErrorCode = error;
 
-        if (!failed)
-        {
-            NEUTRAL_REPORT_DEBUG("TransportTCP", "Отправлено " + std::to_string(written) + " байт");
-            result = static_cast<int>(written);   // == data.size()
+                    if (error == WSAECONNRESET || error == WSAECONNABORTED)
+                    {
+                        NEUTRAL_REPORT_WARN("TransportTCP", "Соединение разорвано удаленной стороной");
+                        needClose = true;   // синхронный обрыв — детект в вызове (§5.3 precedence)
+                    }
+                    failed = true;
+                    break;
+                }
+                written += static_cast<size_t>(n);
+            }
+
+            if (!failed)
+            {
+                NEUTRAL_REPORT_DEBUG("TransportTCP", "Отправлено " + std::to_string(written) + " байт");
+                result = static_cast<int>(written);   // == data.size()
+            }
         }
     }
 
-    // Close вызывается вне m_sendMutex — иначе self-deadlock (Close тоже берёт мьютекс).
+    // Колбеки — ВНЕ m_sendMutex (§4.1). Порядок: сначала errorCallback, затем Close;
+    // оба безопасны для реентрантного Close/Send из колбека (лок уже снят).
+    if (needErrorCb && m_errorCallback)
+    {
+        m_errorCallback(cbErrorMsg, cbErrorCode);
+    }
     if (needClose)
     {
         Close();
@@ -509,8 +544,13 @@ void TransportTCP::ReadThreadFunction()
             // Ошибка приема данных
             int error = WSAGetLastError();
             
-            // Игнорируем ошибку, если поток был остановлен извне
-            if (!m_readThreadRunning)
+            // Игнорируем ошибку, если поток был остановлен извне.
+            // #T9 (TOCTOU): локальный Close закрывает сокет и сбрасывает m_isOpen
+            // ПОД m_sendMutex, а m_readThreadRunning — позже (в StopReadThread).
+            // recv на уже закрытом сокете вернёт ошибку раньше, чем сбросится
+            // m_readThreadRunning → фантомный m_errorCallback(WSAENOTSOCK) для
+            // чистого закрытия. Гейтим и по m_isOpen: закрытие уже помечено.
+            if (!m_readThreadRunning || !m_isOpen)
             {
                 break;
             }
