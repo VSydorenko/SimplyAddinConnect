@@ -156,6 +156,8 @@ add_library(wire_component OBJECT
     src/transport/NullTerminatedFramer.h
     src/transport/NullTerminatedFramer.cpp
     src/transport/IFrameClassifier.h
+    src/transport/DeviceSession.h
+    src/transport/DeviceSession.cpp
 )
 set_target_properties(wire_component PROPERTIES
     POSITION_INDEPENDENT_CODE ON

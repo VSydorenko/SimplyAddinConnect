@@ -4,12 +4,16 @@
 #include "../src/transport/NullTerminatedFramer.h"
 #include "../src/transport/IFrameClassifier.h"
 #include "../src/transport/Transport.h"
+#include "../src/transport/DeviceSession.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <functional>
+#include <future>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -369,7 +373,109 @@ static void TestLoopbackTransport() {
           "Loopback(Inline): Close delivers state(false) synchronously");
 }
 
+// --- DeviceSession над LoopbackTransport (§4.4/§5/§6 дизайну) ---------------
+
+// Кадр із термінатором 0x00 (те, що доставляє транспорт у OnBytes → framer зніме 0x00).
+static std::vector<uint8_t> NT(const std::string& s) {
+    auto v = B(s); v.push_back(0); return v;
+}
+
+// Watchdog: тест зі стелею часу. Якщо всередині DeviceSession дедлок/lost-wakeup —
+// процес не має зависати назавжди: фіксуємо FAIL і аварійно виходимо (як core_selftest).
+static void RunGuarded(const char* name, std::function<void()> fn, int seconds = 10) {
+    auto fut = std::async(std::launch::async, std::move(fn));
+    if (fut.wait_for(std::chrono::seconds(seconds)) != std::future_status::ready) {
+        std::printf("[FAIL] %s (timeout %ds — можливий дедлок)\n", name, seconds);
+        std::fflush(stdout);
+        std::_Exit(3);
+    }
+    fut.get();
+}
+
+// Транспорт, що СИНХРОННО ехо-ить відправлений кадр назад у data-колбек ще ДО
+// повернення Send — модель «відповідь надійшла до входу очікувача в wait».
+// Дає детермінований repro відсутності lost-wakeup (predicate у cv_.wait_for).
+class EchoOnSendTransport : public ITransport {
+public:
+    bool Open() override {
+        open_ = true;
+        if (stateCb_) stateCb_(true);   // Inline-подібна доставка state(true)
+        return true;
+    }
+    bool Close() override { open_ = false; return true; }
+    bool IsOpen() const override { return open_; }
+    int Send(const std::vector<uint8_t>& data) override {
+        if (open_ && dataCb_) dataCb_(data);   // ехо ДО повернення Send (reader-роль)
+        return static_cast<int>(data.size());
+    }
+    void SetDataReceivedCallback(DataReceivedCallback cb) override { dataCb_ = std::move(cb); }
+    void SetErrorCallback(ErrorCallback cb) override { errCb_ = std::move(cb); }
+    void SetConnectionStateCallback(ConnectionStateCallback cb) override { stateCb_ = std::move(cb); }
+private:
+    bool open_ = false;
+    DataReceivedCallback dataCb_;
+    ErrorCallback errCb_;
+    ConnectionStateCallback stateCb_;
+};
+
+// happy-path: Start → RequestPrimary у окремому потоці → WaitForSend →
+// InjectRecv(ехо) → {Response, "REQ"}.
+static void TestSessionPrimaryHappy() {
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<EchoClassifier>());
+    CHECK(session.Start(), "PrimaryHappy: Start connects");
+
+    RequestResult result{};
+    std::thread req([&] { result = session.RequestPrimary(B("REQ")); });
+
+    CHECK(tp->WaitForSend(), "PrimaryHappy: request reached transport");
+    tp->InjectRecv(NT("REQ"));   // EchoClassifier → PrimaryResponse
+
+    req.join();
+    CHECK(result.status == RequestStatus::Response && result.frame == B("REQ"),
+          "PrimaryHappy: result {Response, REQ}");
+    session.Stop();
+}
+
+// response-before-wait: транспорт ехо-ить синхронно в Send — відповідь виставляє
+// pending.done ДО того, як очікувач входить у wait. Predicate ловить, lost-wakeup нема.
+static void TestResponseBeforeWait() {
+    DeviceSession session(std::make_unique<EchoOnSendTransport>(),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<EchoClassifier>());
+    CHECK(session.Start(), "ResponseBeforeWait: Start connects");
+
+    RequestResult result = session.RequestPrimary(B("REQ"));
+    CHECK(result.status == RequestStatus::Response && result.frame == B("REQ"),
+          "ResponseBeforeWait: result {Response, REQ} (no lost-wakeup)");
+    session.Stop();
+}
+
+// stop-during-pending: Start → RequestPrimary без відповіді → Stop() → {Stopped}.
+static void TestStopDuringPending() {
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<EchoClassifier>());
+    CHECK(session.Start(), "StopDuringPending: Start connects");
+
+    RequestResult result{};
+    std::thread req([&] { result = session.RequestPrimary(B("REQ")); });
+    CHECK(tp->WaitForSend(), "StopDuringPending: request pending");
+
+    session.Stop();   // pending → Stopped
+    req.join();
+    CHECK(result.status == RequestStatus::Stopped, "StopDuringPending: result {Stopped}");
+}
+
 int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     TestClassifierDoubles();
     TestLoopbackTransport();
+    RunGuarded("TestSessionPrimaryHappy", TestSessionPrimaryHappy);
+    RunGuarded("TestResponseBeforeWait", TestResponseBeforeWait);
+    RunGuarded("TestStopDuringPending", TestStopDuringPending);
     std::printf("=== %s (failed:%d) ===\n", g_failed?"FAIL":"OK", g_failed); return g_failed?1:0; }
