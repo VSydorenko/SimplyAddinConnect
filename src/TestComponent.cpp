@@ -95,32 +95,32 @@ TestComponent::TestComponent()
 		
 	AddFunction(
 		u"CheckPortExists", u"ПроверитьСуществованиеПорта",
-		[&](VH portName) {
+		Ret([&](VH portName) {
 			std::u16string port = portName;
 			return this->CheckPortExists(port);
-		});
-		
+		}));
+
 	AddFunction(
 		u"IsPortAvailable", u"ДоступенПорт",
-		[&](VH portName) {
+		Ret([&](VH portName) {
 			std::u16string port = portName;
 			return this->IsPortAvailable(port);
-		});
-		
+		}));
+
 	AddFunction(
 		u"OpenPort", u"ОткрытьПорт",
-		[&](VH portName, VH baudRate) {
+		Ret([&](VH portName, VH baudRate) {
 			std::u16string port = portName;
 			std::u16string baud = baudRate;
 			return this->OpenPort(port, baud);
-		});
-		
+		}));
+
 	AddFunction(
 		u"ClosePort", u"ЗакрытьПорт",
-		[&](VH portName) {
+		Ret([&](VH portName) {
 			std::u16string port = portName;
 			return this->ClosePort(port);
-		});
+		}));
 		
 	// Свойство состояния порта
 	AddProperty(

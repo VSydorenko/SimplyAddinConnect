@@ -10,6 +10,7 @@
 #include <variant>
 #include <string_view>
 #include <functional>
+#include <type_traits>
 
 #include "ComponentBase.h"
 #include "AddInDefBase.h"
@@ -110,6 +111,32 @@ protected:
 	void AddProperty(const std::u16string& nameEn, const std::u16string& nameRu, const PropFunction &getter, const PropFunction &setter = nullptr);
 	void AddProcedure(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction &handler, const MethDefaults &defs = {});
 	void AddFunction(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction &handler, const MethDefaults &defs = {});
+
+	// Обгортає value-повертаючу лямбду у void-хендлер, який присвоює this->result.
+	// Потрібно, бо MethFunction — це std::function<void(...)>: значення, повернуте
+	// лямбдою напряму, мовчки відкидається і НЕ потрапляє в 1С.
+	template <typename F>
+	MethFunction Ret(F f) { return WrapRet(std::function(std::move(f))); }
+
+private:
+	template <typename R, typename... A>
+	MethFunction WrapRet(std::function<R(A...)> f)
+	{
+		static_assert(!std::is_void_v<R>,
+			"Ret(): лямбда мусить повертати значення; для void використовуйте AddProcedure");
+		return MethFunction(std::function<void(A...)>(
+			[this, f = std::move(f)](A... a) {
+				if constexpr (std::is_same_v<R, bool>)
+					this->result = f(a...);
+				else if constexpr (std::is_integral_v<R>)
+					this->result = static_cast<int64_t>(f(a...));
+				else if constexpr (std::is_floating_point_v<R>)
+					this->result = static_cast<double>(f(a...));
+				else
+					this->result = f(a...);
+			}));
+	}
+protected:
 public:
 	static std::u16string AddComponent(const std::u16string& name, CompFunction creator);
 	// Фабрика компонент за ім'ям. Публічна — потрібна L1-харнесу core_selftest

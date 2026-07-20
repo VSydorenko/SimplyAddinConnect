@@ -97,10 +97,49 @@ static void TestBootFixes() {
     CHECK(AddInNative::upper(s) == u"ABCXYZ123", "upper() ASCII");
 }
 
+// ---- Конвенція повернення значень: Ret() ----
+static void TestRetConvention() {
+    struct RetProbe : public AddInNative {
+        RetProbe() {
+            AddFunction(u"EchoBool",   u"ЭхоБул",    Ret([](VH v) { return (bool)v; }));
+            AddFunction(u"EchoString", u"ЭхоСтрока", Ret([]() { return std::string("hello"); }));
+            AddFunction(u"EchoInt",    u"ЭхоЧисло",  Ret([]() { return 42; }));
+        }
+    };
+    AddInNative::AddComponent(u"RetProbe", []() -> AddInNative* { return new RetProbe; });
+    AddInNative* comp = AddInNative::CreateObject(u"RetProbe");
+    MockConnect connect; MockMemory memory;
+    comp->Init(&connect); comp->setMemManager(&memory);
+
+    // EchoString: без аргументів, повертає "hello"
+    long m = comp->FindMethod((WCHAR_T*)u"EchoString");
+    CHECK(m >= 0, "FindMethod(EchoString)");
+    tVariant ret{}; std::memset(&ret, 0, sizeof(ret)); ret.vt = VTYPE_EMPTY;
+    CHECK(comp->CallAsFunc(m, &ret, nullptr, 0), "CallAsFunc(EchoString)");
+    CHECK(ret.vt == VTYPE_PWSTR && ret.wstrLen == 5, "EchoString returned 'hello'");
+
+    // EchoBool(true)
+    long mb = comp->FindMethod((WCHAR_T*)u"EchoBool");
+    tVariant arg{}; std::memset(&arg, 0, sizeof(arg));
+    arg.vt = VTYPE_BOOL; arg.bVal = true;
+    tVariant rb{}; std::memset(&rb, 0, sizeof(rb)); rb.vt = VTYPE_EMPTY;
+    CHECK(comp->CallAsFunc(mb, &rb, &arg, 1), "CallAsFunc(EchoBool)");
+    CHECK(rb.vt == VTYPE_BOOL && rb.bVal == true, "EchoBool returned true");
+
+    // EchoInt → int64
+    long mi = comp->FindMethod((WCHAR_T*)u"EchoInt");
+    tVariant ri{}; std::memset(&ri, 0, sizeof(ri)); ri.vt = VTYPE_EMPTY;
+    CHECK(comp->CallAsFunc(mi, &ri, nullptr, 0), "CallAsFunc(EchoInt)");
+    CHECK((ri.vt == VTYPE_I8 || ri.vt == VTYPE_I4) , "EchoInt returned integer");
+
+    comp->Done(); delete comp;
+}
+
 int main() {
     std::printf("=== core_selftest ===\n");
     TestSmokeLifecycle();
     TestBootFixes();
+    TestRetConvention();
     std::printf("=== %s (failed: %d) ===\n", g_failed ? "FAIL" : "OK", g_failed);
     return g_failed ? 1 : 0;
 }
