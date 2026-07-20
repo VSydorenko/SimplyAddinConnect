@@ -4,6 +4,7 @@
 #include "../src/transport/NullTerminatedFramer.h"
 #include "../src/transport/IFrameClassifier.h"
 #include "../src/transport/Transport.h"
+#include "../src/transport/Transport_TCP.h"   // реальний транспорт для TCP-смоук (Task 8)
 #include "../src/transport/DeviceSession.h"
 #include <atomic>
 #include <chrono>
@@ -1079,6 +1080,163 @@ static void TestWireTraceOrder() {
     }
 }
 
+// === Task 8: смоук реального TransportTCP через DeviceSession (localhost-echo) ======
+
+// RawTcpEchoServer — in-process ехо-сервер на СИРОМУ Winsock (НЕ серверний режим
+// TransportTCP, який видалено). bind(127.0.0.1:0)+getsockname → ефемерний порт;
+// accept-потік читає байти й ехо-ить кожен кадр із 0x00-термінатором назад.
+// echoEnabled=false → «мовчазний» сервер (приймає, читає, але не відповідає) —
+// для TestTcpCloseNoHang. Сокети атомарні: Stop() закриває їх і розблоковує
+// accept/recv ДО join (детермінований teardown без sleep).
+class RawTcpEchoServer {
+public:
+    ~RawTcpEchoServer() { Stop(); }
+
+    bool Start(bool echoEnabled) {
+        WSADATA w;
+        if (WSAStartup(MAKEWORD(2, 2), &w) != 0) return false;
+        started_ = true;
+
+        SOCKET l = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (l == INVALID_SOCKET) return false;
+        listen_.store(l);
+
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0;   // ефемерний порт
+        if (bind(l, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) return false;
+
+        int len = sizeof(addr);
+        if (getsockname(l, reinterpret_cast<sockaddr*>(&addr), &len) == SOCKET_ERROR) return false;
+        port_ = ntohs(addr.sin_port);
+
+        if (listen(l, 1) == SOCKET_ERROR) return false;
+
+        echo_ = echoEnabled;
+        running_.store(true);
+        thread_ = std::thread([this] { Run(); });
+        return true;
+    }
+
+    int Port() const { return port_; }
+
+    void Stop() {
+        running_.store(false);
+        SOCKET l = listen_.exchange(INVALID_SOCKET);
+        if (l != INVALID_SOCKET) { shutdown(l, SD_BOTH); closesocket(l); }
+        SOCKET c = client_.exchange(INVALID_SOCKET);
+        if (c != INVALID_SOCKET) { shutdown(c, SD_BOTH); closesocket(c); }
+        if (thread_.joinable()) thread_.join();
+        if (started_) { WSACleanup(); started_ = false; }
+    }
+
+private:
+    void Run() {
+        SOCKET c = accept(listen_.load(), nullptr, nullptr);
+        if (c == INVALID_SOCKET) return;
+        client_.store(c);
+        if (!running_.load()) { closesocket(c); client_.store(INVALID_SOCKET); return; }
+
+        std::vector<uint8_t> buf;
+        char tmp[4096];
+        while (running_.load()) {
+            int n = recv(c, tmp, static_cast<int>(sizeof(tmp)), 0);
+            if (n <= 0) break;
+            if (!echo_) continue;   // мовчазний сервер: читає, але не відповідає
+            for (int i = 0; i < n; ++i) {
+                if (tmp[i] == 0) {
+                    std::vector<uint8_t> frame = buf;
+                    frame.push_back(0);   // ехо кадру з термінатором
+                    int off = 0, total = static_cast<int>(frame.size());
+                    while (off < total) {
+                        int s = ::send(c, reinterpret_cast<const char*>(frame.data()) + off,
+                                       total - off, 0);
+                        if (s <= 0) break;
+                        off += s;
+                    }
+                    buf.clear();
+                } else {
+                    buf.push_back(static_cast<uint8_t>(tmp[i]));
+                }
+            }
+        }
+    }
+
+    std::atomic<SOCKET> listen_{ INVALID_SOCKET };
+    std::atomic<SOCKET> client_{ INVALID_SOCKET };
+    std::thread thread_;
+    std::atomic<bool> running_{ false };
+    bool echo_ = true;
+    bool started_ = false;
+    int port_ = 0;
+};
+
+// Ехо-roundtrip: DeviceSession над реальним TransportTCP робить RequestPrimary,
+// сирий ехо-сервер вертає кадр → {Response, payload}.
+static void TestTcpEchoRoundtrip() {
+    RawTcpEchoServer server;
+    CHECK(server.Start(/*echoEnabled=*/true), "TcpEcho: echo server started");
+
+    DeviceSession session(std::make_unique<TransportTCP>("127.0.0.1", server.Port()),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<EchoClassifier>());
+    CHECK(session.Start(), "TcpEcho: session connected to echo server");
+
+    RequestResult r = session.RequestPrimary(B("PING"));
+    CHECK(r.status == RequestStatus::Response && r.frame == B("PING"),
+          "TcpEcho: RequestPrimary round-trips {Response, PING}");
+    session.Stop();
+    server.Stop();
+}
+
+// Close без hang: сервер мовчить → reader висить у recv; Stop()/Close() мусить
+// закрити сокет (shutdown+closesocket ДО join) і повернутися. Watchdog ловить дедлок.
+static void TestTcpCloseNoHang() {
+    RawTcpEchoServer server;
+    CHECK(server.Start(/*echoEnabled=*/false), "TcpCloseNoHang: silent server started");
+
+    DeviceSession session(std::make_unique<TransportTCP>("127.0.0.1", server.Port()),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<EchoClassifier>());
+    CHECK(session.Start(), "TcpCloseNoHang: session connected");
+
+    session.Stop();   // reader у recv → Close має розблокувати й не зависнути
+    CHECK(true, "TcpCloseNoHang: Stop() returned without hang");
+    server.Stop();
+}
+
+// Partial-send: injectable write-seam пише лише половину за виклик — Send мусить
+// дописати залишок у циклі (all-or-error). Повний payload доходить (roundtrip),
+// а лічильник підтверджує, що шов реально розбив відправку.
+static void TestTcpPartialSend() {
+    RawTcpEchoServer server;
+    CHECK(server.Start(/*echoEnabled=*/true), "TcpPartialSend: echo server started");
+
+    auto transport = std::make_unique<TransportTCP>("127.0.0.1", server.Port());
+    TransportTCP* tp = transport.get();
+
+    std::atomic<int> writeCalls{ 0 };
+    tp->SetSendFunctionForTest([&writeCalls](SOCKET s, const char* buf, int len) -> int {
+        writeCalls.fetch_add(1);
+        int chunk = (len > 1) ? (len / 2) : len;   // половина → примусовий partial
+        return ::send(s, buf, chunk, 0);
+    });
+
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<EchoClassifier>());
+    CHECK(session.Start(), "TcpPartialSend: session connected");
+
+    const std::string big(5000, 'Z');   // великий payload → кілька half-ітерацій
+    RequestResult r = session.RequestPrimary(B(big));
+    CHECK(r.status == RequestStatus::Response && r.frame == B(big),
+          "TcpPartialSend: full payload round-trips despite partial writes (all-or-error дописує)");
+    CHECK(writeCalls.load() > 1, "TcpPartialSend: seam split the send into multiple writes");
+    session.Stop();
+    server.Stop();
+}
+
 int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     TestClassifierDoubles();
     TestLoopbackTransport();
@@ -1102,4 +1260,7 @@ int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     RunGuarded("TestSendFailedVsDisconnected", TestSendFailedVsDisconnected);
     RunGuarded("TestCallbackQuiescenceAfterClose", TestCallbackQuiescenceAfterClose);
     RunGuarded("TestWireTraceOrder", TestWireTraceOrder);
+    RunGuarded("TestTcpEchoRoundtrip", TestTcpEchoRoundtrip);
+    RunGuarded("TestTcpCloseNoHang", TestTcpCloseNoHang);
+    RunGuarded("TestTcpPartialSend", TestTcpPartialSend);
     std::printf("=== %s (failed:%d) ===\n", g_failed?"FAIL":"OK", g_failed); return g_failed?1:0; }

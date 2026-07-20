@@ -53,6 +53,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_executable(wire_selftest wire_selftest.cpp
     $<TARGET_OBJECTS:wire_component>
+    $<TARGET_OBJECTS:transport_component>   # реальні TransportTCP/COM/WSClient для смоук-тестів
     $<TARGET_OBJECTS:helpers_component>
     $<TARGET_OBJECTS:base_component>
 )
@@ -65,9 +66,11 @@ target_include_directories(wire_selftest PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
     ${SPDLOG_INCLUDE_DIR}
+    ${IXWEBSOCKET_INCLUDE_DIR}            # transport_component тягне ixwebsocket-заголовки
 )
 target_compile_definitions(wire_selftest PRIVATE _WINDOWS UNICODE _UNICODE)
-target_link_libraries(wire_selftest PRIVATE spdlog::spdlog)
+# ixwebsocket+ws2_32 — символи, які тягне transport_component (WSClient/WSServer, Winsock).
+target_link_libraries(wire_selftest PRIVATE spdlog::spdlog ixwebsocket ws2_32)
 if(MSVC)
     target_compile_options(wire_selftest PRIVATE /utf-8)
 endif()
