@@ -16,7 +16,10 @@ TransportCOM::TransportCOM(
       m_stopBits(stopBits),
       m_portHandle(INVALID_HANDLE_VALUE),
       m_isOpen(false),
-      m_threadRunning(false)
+      m_threadRunning(false),
+      m_stateDownEmitted(false),
+      m_writeFn([](HANDLE h, const void* buf, DWORD n, DWORD* written)
+                { return WriteFile(h, buf, n, written, NULL); })
 {
     NEUTRAL_REPORT_DEBUG("TransportCOM", "Создан объект COM-порта: " + m_portName);
 }
@@ -35,11 +38,14 @@ bool TransportCOM::Open()
         return true;
     }
 
+    // Префикс \\.\ + имя порта. Имя COM-порта всегда ASCII, поэтому расширяем
+    // побайтово в широкую строку для CreateFileW (без кодировочных проблем).
     std::string fullPortName = "\\\\.\\" + m_portName;
+    std::wstring widePortName(fullPortName.begin(), fullPortName.end());
     NEUTRAL_REPORT_INFO("TransportCOM", "Открытие порта: " + m_portName);
 
-    m_portHandle = CreateFileA(
-        fullPortName.c_str(),
+    HANDLE handle = CreateFileW(
+        widePortName.c_str(),
         GENERIC_READ | GENERIC_WRITE,
         0,                // Не разделять
         NULL,             // Атрибуты безопасности по умолчанию
@@ -47,8 +53,9 @@ bool TransportCOM::Open()
         FILE_ATTRIBUTE_NORMAL, // Нормальные атрибуты файла
         NULL              // Шаблон не используется
     );
+    m_portHandle = handle;
 
-    if (m_portHandle == INVALID_HANDLE_VALUE)
+    if (handle == INVALID_HANDLE_VALUE)
     {
         DWORD error = GetLastError();
         std::string errorMsg = "Не удалось открыть порт: " + m_portName + 
@@ -78,6 +85,7 @@ bool TransportCOM::Open()
 
     // Устанавливаем флаг "открыт"
     m_isOpen = true;
+    m_stateDownEmitted = false;   // новое соединение — разрешаем следующий state(false)
 
     // Запускаем поток чтения
     if (!StartReadThread())
@@ -100,45 +108,64 @@ bool TransportCOM::Open()
 
 bool TransportCOM::Close()
 {
-    if (!m_isOpen)
+    // Контракт §4.1: идемпотентный; освобождает ресурсы ПО ВАЛИДНОСТИ хендла,
+    // а НЕ по флагу m_isOpen — чтобы дочистить порт и после ошибки в reader.
+
+    // 1) Синхронизация с Send (§4.1 п.2): под тем же m_writeMutex сбрасываем хендл,
+    //    чтобы не закрыть его посреди активной записи. Порядок §4.1 п.3:
+    //    сбросить handle → прервать read-цикл → join → закрыть хендл.
+    HANDLE handle;
     {
-        return true;
+        std::lock_guard<std::mutex> lock(m_writeMutex);
+        handle = m_portHandle.exchange(INVALID_HANDLE_VALUE);
+        m_isOpen = false;
     }
 
-    NEUTRAL_REPORT_INFO("TransportCOM", "Закрытие порта: " + m_portName);
+    if (handle != INVALID_HANDLE_VALUE)
+    {
+        NEUTRAL_REPORT_INFO("TransportCOM", "Закрытие порта: " + m_portName);
+        // CancelIoEx разблокирует блокирующий ReadFile в reader ДО join.
+        CancelIoEx(handle, NULL);
+    }
 
-    // Останавливаем поток чтения
+    // 2) Останавливаем reader (ReadFile прерван) и join — до CloseHandle,
+    //    чтобы ни один поток не использовал хендл в момент его закрытия.
     StopReadThread();
 
-    // Закрываем хендл порта
-    if (m_portHandle != INVALID_HANDLE_VALUE)
+    if (handle != INVALID_HANDLE_VALUE)
     {
-        if (!CloseHandle(m_portHandle))
+        if (!CloseHandle(handle))
         {
             DWORD error = GetLastError();
-            std::string errorMsg = "Ошибка при закрытии порта: " + m_portName + 
+            std::string errorMsg = "Ошибка при закрытии порта: " + m_portName +
                                    ". Ошибка: " + std::to_string(error);
             NEUTRAL_REPORT_ERROR("TransportCOM", errorMsg);
-            
+
             if (m_errorCallback)
             {
                 m_errorCallback(errorMsg, error);
             }
         }
-        m_portHandle = INVALID_HANDLE_VALUE;
     }
 
-    m_isOpen = false;
+    // 3) state(false) ровно один раз (§4.1 п.5): если reader уже сообщил разрыв —
+    //    здесь no-op; после возврата Close колбеков больше нет (§4.1 п.4).
+    EmitStateDown();
 
     NEUTRAL_REPORT_INFO("TransportCOM", "Порт закрыт: " + m_portName);
-    
-    // Уведомляем о изменении состояния соединения
-    if (m_connectionStateCallback)
-    {
-        m_connectionStateCallback(false);
-    }
-    
     return true;
+}
+
+void TransportCOM::EmitStateDown()
+{
+    bool expected = false;
+    if (m_stateDownEmitted.compare_exchange_strong(expected, true))
+    {
+        if (m_connectionStateCallback)
+        {
+            m_connectionStateCallback(false);
+        }
+    }
 }
 
 bool TransportCOM::IsOpen() const
@@ -315,11 +342,22 @@ bool TransportCOM::SetTimeouts(
 
 int TransportCOM::Send(const std::vector<uint8_t>& data)
 {
-    if (!m_isOpen || m_portHandle == INVALID_HANDLE_VALUE)
+    if (data.empty())
+    {
+        NEUTRAL_REPORT_WARN("TransportCOM", "Попытка отправить пустые данные");
+        return 0;
+    }
+
+    // Блокируем mutex: сериализация Send и синхронизация с Close (§4.1 п.2) —
+    // хендл проверяем и используем под тем же локом, что сбрасывает его Close.
+    std::lock_guard<std::mutex> lock(m_writeMutex);
+
+    HANDLE handle = m_portHandle.load();
+    if (!m_isOpen || handle == INVALID_HANDLE_VALUE)
     {
         std::string errorMsg = "Попытка отправить данные в закрытый порт: " + m_portName;
         NEUTRAL_REPORT_ERROR("TransportCOM", errorMsg);
-        
+
         if (m_errorCallback)
         {
             m_errorCallback(errorMsg, -1);
@@ -327,49 +365,58 @@ int TransportCOM::Send(const std::vector<uint8_t>& data)
         return -1;
     }
 
-    if (data.empty())
+    // ALL-OR-ERROR (§4.1, §14): дописываем остаток в цикле; partial → продолжаем,
+    // любая ошибка/нулевая запись → -1 (никогда не «успех» на частичной записи).
+    const uint8_t* buf = data.data();
+    const size_t total = data.size();
+    size_t written = 0;
+    while (written < total)
     {
-        NEUTRAL_REPORT_WARN("TransportCOM", "Попытка отправить пустые данные");
-        return 0;
-    }
-
-    DWORD bytesWritten = 0;
-    
-    // Блокируем mutex для безопасной записи
-    std::lock_guard<std::mutex> lock(m_writeMutex);
-
-    if (!WriteFile(
-        m_portHandle,
-        data.data(),
-        static_cast<DWORD>(data.size()),
-        &bytesWritten,
-        NULL))
-    {
-        DWORD error = GetLastError();
-        std::string errorMsg = "Ошибка при отправке данных в порт: " + m_portName +
-                              ". Ошибка: " + std::to_string(error);
-        NEUTRAL_REPORT_ERROR("TransportCOM", errorMsg);
-        
-        if (m_errorCallback)
+        DWORD chunk = 0;
+        if (!m_writeFn(handle, buf + written, static_cast<DWORD>(total - written), &chunk))
         {
-            m_errorCallback(errorMsg, error);
+            DWORD error = GetLastError();
+            std::string errorMsg = "Ошибка при отправке данных в порт: " + m_portName +
+                                  ". Ошибка: " + std::to_string(error);
+            NEUTRAL_REPORT_ERROR("TransportCOM", errorMsg);
+
+            if (m_errorCallback)
+            {
+                m_errorCallback(errorMsg, error);
+            }
+            return -1;
         }
-        return -1;
+
+        if (chunk == 0)
+        {
+            // Ноль записанных байт при непустом остатке — обрыв/ошибка порта.
+            std::string errorMsg = "Запись 0 байт в порт: " + m_portName + " (обрыв?)";
+            NEUTRAL_REPORT_ERROR("TransportCOM", errorMsg);
+
+            if (m_errorCallback)
+            {
+                m_errorCallback(errorMsg, -1);
+            }
+            return -1;
+        }
+
+        written += chunk;
     }
 
-    if (bytesWritten != data.size())
-    {
-        std::string warnMsg = "Отправлено меньше данных, чем запрошено: " + 
-                             std::to_string(bytesWritten) + " из " + 
-                             std::to_string(data.size()) + " байт";
-        NEUTRAL_REPORT_WARN("TransportCOM", warnMsg);
-    }
-    else
-    {
-        NEUTRAL_REPORT_DEBUG("TransportCOM", "Отправлено " + std::to_string(bytesWritten) + " байт");
-    }
+    NEUTRAL_REPORT_DEBUG("TransportCOM", "Отправлено " + std::to_string(written) + " байт");
+    return static_cast<int>(written);   // == data.size()
+}
 
-    return static_cast<int>(bytesWritten);
+void TransportCOM::SetWriteFunctionForTest(WriteFn fn)
+{
+    m_writeFn = std::move(fn);
+}
+
+void TransportCOM::AttachHandleForTest(HANDLE h)
+{
+    m_portHandle = h;
+    m_isOpen = true;
+    m_stateDownEmitted = false;
 }
 
 bool TransportCOM::StartReadThread()
@@ -422,62 +469,69 @@ void TransportCOM::StopReadThread()
 void TransportCOM::ReadThreadFunction()
 {
     std::vector<uint8_t> buffer(READ_BUFFER_SIZE);
-    
+
     while (m_threadRunning && m_isOpen)
     {
+        HANDLE handle = m_portHandle.load();
+        if (handle == INVALID_HANDLE_VALUE)
+        {
+            break;   // Close сбросил хендл — тихий выход
+        }
+
         DWORD bytesRead = 0;
-        
-        // Чтение данных из порта
+
+        // Чтение из порта. Таймаут (SetTimeouts) → ReadFile возвращает TRUE с
+        // bytesRead==0, поэтому цикл не крутит CPU и реагирует на m_threadRunning.
         BOOL readResult = ReadFile(
-            m_portHandle,
+            handle,
             buffer.data(),
             static_cast<DWORD>(buffer.size()),
             &bytesRead,
             NULL
         );
-        
+
         if (!readResult)
         {
             DWORD error = GetLastError();
-            
-            // Игнорируем ошибку, если поток был остановлен извне
-            if (!m_threadRunning)
+
+            // Остановлен извне (Close сбросил хендл/флаг) — тихий выход, без колбеков.
+            if (!m_threadRunning || m_portHandle.load() == INVALID_HANDLE_VALUE)
             {
                 break;
             }
-            
+
+            // Неустранимая ошибка/обрыв порта: сообщаем и завершаем reader (§9.1).
+            // Выход из цикла → state(false) ниже разбудит супервизор ровно один раз.
             std::string errorMsg = "Ошибка чтения из порта: " + m_portName +
                                   ". Ошибка: " + std::to_string(error);
             NEUTRAL_REPORT_ERROR("TransportCOM", errorMsg);
-            
+
             if (m_errorCallback)
             {
                 m_errorCallback(errorMsg, error);
             }
-            
-            // Небольшая пауза, чтобы избежать 100% загрузки CPU при повторяющихся ошибках
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            continue;
+            break;
         }
-        
+
         // Если данные получены, вызываем callback
         if (bytesRead > 0)
         {
             NEUTRAL_REPORT_DEBUG("TransportCOM", "Получено " + std::to_string(bytesRead) + " байт");
-            
+
             if (m_dataReceivedCallback)
             {
                 std::vector<uint8_t> receivedData(buffer.begin(), buffer.begin() + bytesRead);
                 m_dataReceivedCallback(receivedData);
             }
         }
-        
-        // Если данных нет, даем CPU отдохнуть
-        if (bytesRead == 0)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+        // bytesRead==0 → таймаут чтения (нет данных); цикл продолжается.
     }
-    
+
+    // Выход = разрыв/ошибка/локальный Close. Помечаем закрытым и сообщаем
+    // state(false) РОВНО один раз (§4.1 п.5): при локальном Close его уже сделает
+    // Close (EmitStateDown идемпотентен), при обрыве — здесь (будит супервизор).
+    m_isOpen = false;
+    EmitStateDown();
+
     NEUTRAL_REPORT_DEBUG("TransportCOM", "Поток чтения завершен для порта: " + m_portName);
 }

@@ -5,6 +5,7 @@
 #include "../src/transport/IFrameClassifier.h"
 #include "../src/transport/Transport.h"
 #include "../src/transport/Transport_TCP.h"   // реальний транспорт для TCP-смоук (Task 8)
+#include "../src/transport/Transport_COM.h"   // реальний транспорт для COM-фіксів (Task 9)
 #include "../src/transport/DeviceSession.h"
 #include <atomic>
 #include <chrono>
@@ -1237,6 +1238,77 @@ static void TestTcpPartialSend() {
     server.Stop();
 }
 
+// === Task 9: фікси реального TransportCOM =========================================
+// COM round-trip проти реального обладнання неможливий у CI (немає порту/com0com),
+// тому логіку Send (all-or-error) і Close-cleanup перевіряємо через тестові шви:
+//  • m_writeFn (SetWriteFunctionForTest) моделює partial/failed WriteFile;
+//  • AttachHandleForTest дає валідний хендл-приймач (NUL) без реального COM-порту.
+
+// All-or-error Send: partial-write шов дописує залишок у циклі; помилка/0-байт → -1.
+static void TestComSendAllOrError() {
+    // NUL-приймач: валідний writable-хендл, що відкидає записи (шов handle ігнорує).
+    HANDLE nul = CreateFileW(L"\\\\.\\NUL", GENERIC_WRITE, 0, NULL,
+                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    CHECK(nul != INVALID_HANDLE_VALUE, "ComSendAllOrError: NUL sink opened");
+
+    TransportCOM com("COM-TEST");
+    com.AttachHandleForTest(nul);   // хендл закриє Close()/деструктор
+
+    // Шов #1 — примусовий partial: пише половину залишку за виклик.
+    std::atomic<int> writeCalls{ 0 };
+    com.SetWriteFunctionForTest(
+        [&writeCalls](HANDLE, const void*, DWORD n, DWORD* written) -> BOOL {
+            writeCalls.fetch_add(1);
+            DWORD chunk = (n > 1) ? (n / 2) : n;   // половина → примусовий partial
+            *written = chunk;
+            return TRUE;
+        });
+
+    std::vector<uint8_t> big(5000, 'Z');
+    int r = com.Send(big);
+    CHECK(r == static_cast<int>(big.size()),
+          "ComSendAllOrError: all-or-error дописує повний payload попри partial");
+    CHECK(writeCalls.load() > 1, "ComSendAllOrError: шов розбив запис на кілька викликів");
+
+    // Шов #2 — WriteFile повертає FALSE → Send == -1 (не «успіх»).
+    com.SetWriteFunctionForTest([](HANDLE, const void*, DWORD, DWORD*) -> BOOL {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    });
+    CHECK(com.Send(big) == -1, "ComSendAllOrError: помилка WriteFile → -1");
+
+    // Шов #3 — 0 записаних байт при непустому залишку (обрив) → -1.
+    com.SetWriteFunctionForTest([](HANDLE, const void*, DWORD, DWORD* written) -> BOOL {
+        *written = 0;
+        return TRUE;
+    });
+    CHECK(com.Send(big) == -1, "ComSendAllOrError: запис 0 байт → -1");
+    // com деструктор → Close() → CloseHandle(nul)
+}
+
+// Close-cleanup: Open з невдалим ConfigurePort (NUL — не comm-девайс) не має
+// лишати відкритий хендл. Перевіряємо: Open==false, !IsOpen, хендл скинуто в INVALID.
+static void TestComCloseCleansHandle() {
+    // portName="NUL" → Open будує \\.\NUL: CreateFileW успішний, але GetCommState
+    // на NUL провалиться → ConfigurePort=false → Open викликає Close і повертає false.
+    TransportCOM com("NUL");
+    bool opened = com.Open();
+    CHECK(!opened, "ComCloseCleansHandle: Open провалюється на не-comm девайсі");
+    CHECK(!com.IsOpen(), "ComCloseCleansHandle: не open після невдалого ConfigurePort");
+    CHECK(com.GetHandleForTest() == INVALID_HANDLE_VALUE,
+          "ComCloseCleansHandle: хендл звільнено (без витоку) після невдалого Open");
+    // Ідемпотентність Close (§4.1 п.1): повторний Close на вже прибраному — no-op.
+    CHECK(com.Close(), "ComCloseCleansHandle: повторний Close ідемпотентний");
+}
+
+// Реальний COM round-trip проти com0com — ручний крок (у CI пропущено, НЕ FAIL).
+// Ручна перевірка: створити віртуальну пару com0com (напр. COM5<->COM6), запустити
+// ехо-заглушку на одному кінці, і DeviceSession над TransportCOM("COM5") має
+// пройти RequestPrimary. Автоматизувати в CI без обладнання/драйвера неможливо.
+static void TestComRoundtripSkip() {
+    std::printf("[SKIP] ComRoundtrip: потрібна пара com0com + ехо-заглушка (ручний смоук)\n");
+}
+
 int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     TestClassifierDoubles();
     TestLoopbackTransport();
@@ -1263,4 +1335,7 @@ int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     RunGuarded("TestTcpEchoRoundtrip", TestTcpEchoRoundtrip);
     RunGuarded("TestTcpCloseNoHang", TestTcpCloseNoHang);
     RunGuarded("TestTcpPartialSend", TestTcpPartialSend);
+    RunGuarded("TestComSendAllOrError", TestComSendAllOrError);
+    RunGuarded("TestComCloseCleansHandle", TestComCloseCleansHandle);
+    TestComRoundtripSkip();
     std::printf("=== %s (failed:%d) ===\n", g_failed?"FAIL":"OK", g_failed); return g_failed?1:0; }
