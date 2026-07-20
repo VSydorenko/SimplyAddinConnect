@@ -4,16 +4,24 @@
 
 #include <chrono>
 
+// Мапінг classifier-локального RejectReason у публічний RequestStatus (§4.3, §7).
+static RequestStatus MapReject(RejectReason reason) {
+    return reason == RejectReason::Unsupported ? RequestStatus::Unsupported
+                                               : RequestStatus::Busy;
+}
+
 /**
  * @file DeviceSession.cpp
  * @brief Реалізація device-сесії (§4.4, §5, §6, §7 дизайну).
  *
- * У ЦІЙ фазі (Task 4) реалізовано: каркас; Start (Open + підписка колбеків +
+ * У ЦІЙ фазі (Task 4-5) реалізовано: каркас; Start (Open + підписка колбеків +
  * dispatcher-потік); Stop (базовий teardown §6 кроки 1-6); RequestPrimary/
  * RequestService (алгоритм §5 — send→wait→precedence) через спільний DoRequest;
- * OnBytes → PrimaryResponse. Reject-гілки, Unsolicited, service-класифікація, реконект,
- * таймаут-desync, epoch-guard проти stale, повний reentrancy-teardown —
- * дороблюються в Task 5-7.
+ * OnBytes — усі гілки Classify: PrimaryResponse/ServiceResponse (дві доріжки,
+ * service паралельно primary), RejectPrimary/RejectService (мапінг RejectReason→
+ * RequestStatus негайно, без таймауту), RejectBoth (обидві доріжки + desync +
+ * reconnectRequested_), Unsolicited (кадр у dispatch-чергу). Реконект, таймаут-desync,
+ * epoch-guard проти stale, повний reentrancy-teardown — дороблюються в Task 6-7.
  */
 
 DeviceSession::DeviceSession(std::unique_ptr<ITransport> transport,
@@ -242,12 +250,54 @@ void DeviceSession::OnBytes(const std::vector<uint8_t>& chunk) {
             }
             break;
         case FrameClass::ServiceResponse:
+            // Доріжка service серіалізована серед service, але паралельна primary.
+            if (pendingService_.active && !pendingService_.done) {
+                pendingService_.result = { RequestStatus::Response, frame };
+                pendingService_.done = true;
+                cv_.notify_all();
+            }
+            break;
         case FrameClass::RejectPrimary:
+            // Явний reject primary → завершити НЕГАЙНО (без таймауту) з мапінгом reason.
+            if (pendingPrimary_.active && !pendingPrimary_.done) {
+                pendingPrimary_.result = { MapReject(cls.reason), {} };
+                pendingPrimary_.done = true;
+                cv_.notify_all();
+            }
+            break;
         case FrameClass::RejectService:
+            if (pendingService_.active && !pendingService_.done) {
+                pendingService_.result = { MapReject(cls.reason), {} };
+                pendingService_.done = true;
+                cv_.notify_all();
+            }
+            break;
         case FrameClass::RejectBoth:
+            // Неоднозначний reject при обох pending: немає причинного ID, який запит
+            // відхилено → завершити ОБИДВІ доріжки + перевести сесію в desync (§7).
+            if (pendingPrimary_.active && !pendingPrimary_.done) {
+                pendingPrimary_.result = { MapReject(cls.reason), {} };
+                pendingPrimary_.done = true;
+            }
+            if (pendingService_.active && !pendingService_.done) {
+                pendingService_.result = { MapReject(cls.reason), {} };
+                pendingService_.done = true;
+            }
+            desynchronized_ = true;
+            reconnectRequested_ = true;   // будити супервізор (Task 6)
+            cv_.notify_all();
+            break;
         case FrameClass::Unsolicited:
         default:
-            // Доробляється в Task 5 (service-доріжка, Reject*, unsolicited).
+            // Кадр без прив'язки до доріжки → user-хендлер на dispatcher-потоці (не тут).
+            {
+                std::vector<uint8_t> f = frame;
+                Enqueue([this, f = std::move(f)]() mutable {
+                    std::function<void(std::vector<uint8_t>)> h;
+                    { std::lock_guard<std::mutex> lk(m_); h = unsolicitedHandler_; }
+                    if (h) h(std::move(f));
+                });
+            }
             break;
         }
     }

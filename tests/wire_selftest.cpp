@@ -472,10 +472,178 @@ static void TestStopDuringPending() {
     CHECK(result.status == RequestStatus::Stopped, "StopDuringPending: result {Stopped}");
 }
 
+// service-доріжка виконується ПАРАЛЕЛЬНО з primary: обидва запити in-flight,
+// кожен отримує свою відповідь (ScriptedClassifier: PrimaryResponse, потім ServiceResponse
+// — у порядку інжекту кадрів). Перевіряє, що доріжки незалежні.
+static void TestServiceParallelToPrimary() {
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<ScriptedClassifier>(std::deque<Classification>{
+                              { FrameClass::PrimaryResponse, RejectReason::Busy },
+                              { FrameClass::ServiceResponse, RejectReason::Busy }
+                          }));
+    CHECK(session.Start(), "ServiceParallel: Start connects");
+
+    RequestResult pr{}, sr{};
+    std::thread pth([&] { pr = session.RequestPrimary(B("PRI")); });
+    CHECK(tp->WaitForSend(), "ServiceParallel: primary sent");
+    std::thread sth([&] { sr = session.RequestService(B("SRV")); });
+    CHECK(tp->WaitForSend(), "ServiceParallel: service sent (parallel to primary)");
+
+    tp->InjectRecv(NT("PRI"));   // ScriptedClassifier[0] → PrimaryResponse
+    tp->InjectRecv(NT("SRV"));   // ScriptedClassifier[1] → ServiceResponse
+
+    pth.join();
+    sth.join();
+    CHECK(pr.status == RequestStatus::Response && pr.frame == B("PRI"),
+          "ServiceParallel: primary got its own response");
+    CHECK(sr.status == RequestStatus::Response && sr.frame == B("SRV"),
+          "ServiceParallel: service got its own response");
+    session.Stop();
+}
+
+// deviceBusy-кадр на primary → {Busy} НЕГАЙНО (без очікування таймауту).
+static void TestRejectPrimaryBusy() {
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<ScriptedClassifier>(std::deque<Classification>{
+                              { FrameClass::RejectPrimary, RejectReason::Busy }
+                          }));
+    CHECK(session.Start(), "RejectPrimaryBusy: Start connects");
+
+    RequestResult r{};
+    std::thread th([&] { r = session.RequestPrimary(B("REQ")); });
+    CHECK(tp->WaitForSend(), "RejectPrimaryBusy: primary sent");
+    tp->InjectRecv(NT("busy"));   // → RejectPrimary/Busy
+    th.join();
+    CHECK(r.status == RequestStatus::Busy, "RejectPrimaryBusy: result {Busy} immediately");
+    session.Stop();
+}
+
+// RejectService з reason=Unsupported → service завершується {Unsupported}.
+static void TestRejectService() {
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<ScriptedClassifier>(std::deque<Classification>{
+                              { FrameClass::RejectService, RejectReason::Unsupported }
+                          }));
+    CHECK(session.Start(), "RejectService: Start connects");
+
+    RequestResult r{};
+    std::thread th([&] { r = session.RequestService(B("SRV")); });
+    CHECK(tp->WaitForSend(), "RejectService: service sent");
+    tp->InjectRecv(NT("notimpl"));   // → RejectService/Unsupported
+    th.join();
+    CHECK(r.status == RequestStatus::Unsupported, "RejectService: result {Unsupported}");
+    session.Stop();
+}
+
+// RejectBoth (неоднозначний reject при обох pending) → обидві доріжки завершуються
+// + сесія в desync (IsDesynchronized()).
+static void TestRejectBoth() {
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<ScriptedClassifier>(std::deque<Classification>{
+                              { FrameClass::RejectBoth, RejectReason::Unsupported }
+                          }));
+    CHECK(session.Start(), "RejectBoth: Start connects");
+
+    RequestResult pr{}, sr{};
+    std::thread pth([&] { pr = session.RequestPrimary(B("PRI")); });
+    CHECK(tp->WaitForSend(), "RejectBoth: primary sent");
+    std::thread sth([&] { sr = session.RequestService(B("SRV")); });
+    CHECK(tp->WaitForSend(), "RejectBoth: service sent");
+
+    tp->InjectRecv(NT("ambiguous"));   // → RejectBoth → обидві + desync
+
+    pth.join();
+    sth.join();
+    CHECK(pr.status == RequestStatus::Unsupported, "RejectBoth: primary completed");
+    CHECK(sr.status == RequestStatus::Unsupported, "RejectBoth: service completed");
+    CHECK(session.IsDesynchronized(), "RejectBoth: session desynchronized");
+    session.Stop();
+}
+
+// Unsolicited-кадр → unsolicited-хендлер на dispatcher-потоці (НЕ на потоці інжектора).
+static void TestUnsolicitedToHandler() {
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    auto session = std::make_unique<DeviceSession>(
+        std::move(transport),
+        std::make_unique<NullTerminatedFramer>(),
+        std::make_unique<ScriptedClassifier>(std::deque<Classification>{
+            { FrameClass::Unsolicited, RejectReason::Busy }
+        }));
+
+    std::mutex umtx;
+    std::condition_variable ucv;
+    std::vector<std::vector<uint8_t>> unsol;
+    std::thread::id handlerThread;
+    session->SetUnsolicitedHandler([&](std::vector<uint8_t> f) {
+        std::lock_guard<std::mutex> lk(umtx);
+        handlerThread = std::this_thread::get_id();
+        unsol.push_back(std::move(f));
+        ucv.notify_all();
+    });
+    CHECK(session->Start(), "Unsolicited: Start connects");
+
+    const std::thread::id injectorThread = std::this_thread::get_id();
+    tp->InjectRecv(NT("EVENT"));   // → Unsolicited → у dispatch-чергу
+
+    {
+        std::unique_lock<std::mutex> lk(umtx);
+        CHECK(ucv.wait_for(lk, std::chrono::seconds(2), [&] { return !unsol.empty(); }),
+              "Unsolicited: handler invoked");
+        CHECK(unsol.size() == 1 && unsol[0] == B("EVENT"),
+              "Unsolicited: frame delivered to handler");
+        CHECK(handlerThread != injectorThread,
+              "Unsolicited: handler runs on dispatcher thread, not injector/reader");
+    }
+    session->Stop();
+}
+
+// Другий primary під час активного першого → {Concurrent} (без відправки в мережу).
+static void TestSecondPrimaryConcurrent() {
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<EchoClassifier>());
+    CHECK(session.Start(), "SecondPrimaryConcurrent: Start connects");
+
+    RequestResult first{};
+    std::thread th([&] { first = session.RequestPrimary(B("REQ")); });
+    CHECK(tp->WaitForSend(), "SecondPrimaryConcurrent: first primary pending");
+
+    RequestResult second = session.RequestPrimary(B("REQ2"));
+    CHECK(second.status == RequestStatus::Concurrent,
+          "SecondPrimaryConcurrent: second primary {Concurrent}");
+    CHECK(tp->SentCount() == 1, "SecondPrimaryConcurrent: concurrent request not sent to wire");
+
+    session.Stop();   // звільнити перший
+    th.join();
+    CHECK(first.status == RequestStatus::Stopped,
+          "SecondPrimaryConcurrent: first released by Stop");
+}
+
 int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     TestClassifierDoubles();
     TestLoopbackTransport();
     RunGuarded("TestSessionPrimaryHappy", TestSessionPrimaryHappy);
     RunGuarded("TestResponseBeforeWait", TestResponseBeforeWait);
     RunGuarded("TestStopDuringPending", TestStopDuringPending);
+    RunGuarded("TestServiceParallelToPrimary", TestServiceParallelToPrimary);
+    RunGuarded("TestRejectPrimaryBusy", TestRejectPrimaryBusy);
+    RunGuarded("TestRejectService", TestRejectService);
+    RunGuarded("TestRejectBoth", TestRejectBoth);
+    RunGuarded("TestUnsolicitedToHandler", TestUnsolicitedToHandler);
+    RunGuarded("TestSecondPrimaryConcurrent", TestSecondPrimaryConcurrent);
     std::printf("=== %s (failed:%d) ===\n", g_failed?"FAIL":"OK", g_failed); return g_failed?1:0; }
