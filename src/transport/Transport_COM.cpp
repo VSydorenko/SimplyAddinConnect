@@ -83,6 +83,16 @@ bool TransportCOM::Open()
         return false;
     }
 
+    // #C7 (симметрия с TCP #T7): идемпотентность reader-lifecycle. Reader предыдущего
+    // цикла при обрыве порта НЕ сбрасывает m_threadRunning (сброс в reader ломал бы
+    // гейт StopReadThread `if (!m_threadRunning) return;` — тот пропустил бы join
+    // завершившегося, но ещё joinable-потока → std::terminate при переприсваивании/
+    // разрушении). Поэтому reopen БЕЗ Close увидел бы m_threadRunning==true →
+    // StartReadThread вернул бы true БЕЗ запуска reader (тихий deadlock приёма).
+    // Дожинаем прежний поток ДО старта нового: StopReadThread по m_readThread.joinable()
+    // задоинит его и сбросит флаг. Первый Open (потока нет) — no-op.
+    StopReadThread();
+
     // Устанавливаем флаг "открыт". #C10: m_upDelivered сбрасываем в false ЗДЕСЬ (новый
     // цикл соединения) — до этой точки неудачный Open (CreateFileW успел, но
     // ConfigurePort/SetTimeouts провалились → Close → EmitStateDown) НЕ породит
@@ -359,63 +369,81 @@ int TransportCOM::Send(const std::vector<uint8_t>& data)
         return 0;
     }
 
-    // Блокируем mutex: сериализация Send и синхронизация с Close (§4.1 п.2) —
-    // хендл проверяем и используем под тем же локом, что сбрасывает его Close.
-    std::lock_guard<std::mutex> lock(m_writeMutex);
-
-    HANDLE handle = m_portHandle.load();
-    if (!m_isOpen || handle == INVALID_HANDLE_VALUE)
+    // #C-sym (§4.1): колбек ошибки НЕ вызываем из-под m_writeMutex («колбеки не из-под
+    // внутреннего лока»), иначе реентрантный Close/Send из колбека → self-deadlock
+    // (Close берёт тот же m_writeMutex). Зеркалим TCP-deferral: под локом лишь
+    // фиксируем сообщение/код + флаг и сохраняем return-значение, вызываем колбек
+    // ПОСЛЕ выхода из скоупа lock_guard(m_writeMutex).
+    bool needErrorCb = false;
+    std::string cbErrorMsg;
+    int cbErrorCode = 0;
+    int result = -1;
     {
-        std::string errorMsg = "Попытка отправить данные в закрытый порт: " + m_portName;
-        NEUTRAL_REPORT_ERROR("TransportCOM", errorMsg);
+        // Блокируем mutex: сериализация Send и синхронизация с Close (§4.1 п.2) —
+        // хендл проверяем и используем под тем же локом, что сбрасывает его Close.
+        std::lock_guard<std::mutex> lock(m_writeMutex);
 
-        if (m_errorCallback)
+        HANDLE handle = m_portHandle.load();
+        if (!m_isOpen || handle == INVALID_HANDLE_VALUE)
         {
-            m_errorCallback(errorMsg, -1);
+            cbErrorMsg = "Попытка отправить данные в закрытый порт: " + m_portName;
+            NEUTRAL_REPORT_ERROR("TransportCOM", cbErrorMsg);
+            needErrorCb = true;
+            cbErrorCode = -1;
+            // result остаётся -1; колбек — после снятия m_writeMutex (см. ниже).
         }
-        return -1;
+        else
+        {
+            // ALL-OR-ERROR (§4.1, §14): дописываем остаток в цикле; partial → продолжаем,
+            // любая ошибка/нулевая запись → -1 (никогда не «успех» на частичной записи).
+            const uint8_t* buf = data.data();
+            const size_t total = data.size();
+            size_t written = 0;
+            bool failed = false;
+            while (written < total)
+            {
+                DWORD chunk = 0;
+                if (!m_writeFn(handle, buf + written, static_cast<DWORD>(total - written), &chunk))
+                {
+                    DWORD error = GetLastError();
+                    cbErrorMsg = "Ошибка при отправке данных в порт: " + m_portName +
+                                 ". Ошибка: " + std::to_string(error);
+                    NEUTRAL_REPORT_ERROR("TransportCOM", cbErrorMsg);
+                    needErrorCb = true;
+                    cbErrorCode = static_cast<int>(error);
+                    failed = true;
+                    break;
+                }
+
+                if (chunk == 0)
+                {
+                    // Ноль записанных байт при непустом остатке — обрыв/ошибка порта.
+                    cbErrorMsg = "Запись 0 байт в порт: " + m_portName + " (обрыв?)";
+                    NEUTRAL_REPORT_ERROR("TransportCOM", cbErrorMsg);
+                    needErrorCb = true;
+                    cbErrorCode = -1;
+                    failed = true;
+                    break;
+                }
+
+                written += chunk;
+            }
+
+            if (!failed)
+            {
+                NEUTRAL_REPORT_DEBUG("TransportCOM", "Отправлено " + std::to_string(written) + " байт");
+                result = static_cast<int>(written);   // == data.size()
+            }
+        }
     }
 
-    // ALL-OR-ERROR (§4.1, §14): дописываем остаток в цикле; partial → продолжаем,
-    // любая ошибка/нулевая запись → -1 (никогда не «успех» на частичной записи).
-    const uint8_t* buf = data.data();
-    const size_t total = data.size();
-    size_t written = 0;
-    while (written < total)
+    // Колбек ошибки — ВНЕ m_writeMutex (§4.1); безопасен для реентрантного Close/Send
+    // из колбека (лок уже снят). Семантика сохранена: -1 при любой ошибке, ==size при успехе.
+    if (needErrorCb && m_errorCallback)
     {
-        DWORD chunk = 0;
-        if (!m_writeFn(handle, buf + written, static_cast<DWORD>(total - written), &chunk))
-        {
-            DWORD error = GetLastError();
-            std::string errorMsg = "Ошибка при отправке данных в порт: " + m_portName +
-                                  ". Ошибка: " + std::to_string(error);
-            NEUTRAL_REPORT_ERROR("TransportCOM", errorMsg);
-
-            if (m_errorCallback)
-            {
-                m_errorCallback(errorMsg, error);
-            }
-            return -1;
-        }
-
-        if (chunk == 0)
-        {
-            // Ноль записанных байт при непустом остатке — обрыв/ошибка порта.
-            std::string errorMsg = "Запись 0 байт в порт: " + m_portName + " (обрыв?)";
-            NEUTRAL_REPORT_ERROR("TransportCOM", errorMsg);
-
-            if (m_errorCallback)
-            {
-                m_errorCallback(errorMsg, -1);
-            }
-            return -1;
-        }
-
-        written += chunk;
+        m_errorCallback(cbErrorMsg, cbErrorCode);
     }
-
-    NEUTRAL_REPORT_DEBUG("TransportCOM", "Отправлено " + std::to_string(written) + " байт");
-    return static_cast<int>(written);   // == data.size()
+    return result;
 }
 
 void TransportCOM::SetWriteFunctionForTest(WriteFn fn)

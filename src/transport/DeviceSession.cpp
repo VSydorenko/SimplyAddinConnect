@@ -271,6 +271,17 @@ void DeviceSession::OnBytes(const std::vector<uint8_t>& chunk) {
 
         // Guard проти stale-кадрів (§14): доріжку завершує лише відповідь ТІЄЇ Ж генерації.
         // Кадр старого epoch (пізня відповідь до реконекту) не завершує новий запит.
+        //
+        // ПРИМІТКА про рівні захисту: `epoch == epoch_` тут — ВТОРИННий (belt-and-suspenders)
+        // захист. Основний захист від пізньої відповіді таймаутнутого primary — це
+        // desync + реконект + закриття сокета: при таймауті DoRequest ЗВІЛЬНЯЄ доріжку
+        // (active=false), а реконект закриває/перевідкриває транспорт, тож стара відповідь
+        // або взагалі не долітає, або долітає, коли `active==false` і відкидається на цьому.
+        // Стан "active && !done && epoch != epoch_" через чорний ящик недосяжний: epoch_
+        // росте лише в OnTransportState(false), і той самий обрив будить очікувача за
+        // предикатом !connected_ (та finish'ить pending у супервізорі), тож активний-pending
+        // не «переживає» зміну генерації. Саме цей основний шлях і перевіряє
+        // TestStaleFrameAfterReconnect у wire_selftest.
         const bool primaryLive =
             pendingPrimary_.active && !pendingPrimary_.done && pendingPrimary_.epoch == epoch_;
         const bool serviceLive =

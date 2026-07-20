@@ -203,43 +203,54 @@ int TransportWSClient::Send(const std::vector<uint8_t>& data)
         return 0;
     }
     
-    try
+    // §4.1: колбек ошибки НЕ вызываем из-под m_sendMutex (Close берёт тот же лок →
+    // реентрантный Close/Send из колбека дал бы self-deadlock). Зеркалим defer-паттерн
+    // TransportTCP::Send: под локом лишь сохраняем сообщение/код + флаг, а m_errorCallback
+    // вызываем ПОСЛЕ выхода из скоупа lock_guard(m_sendMutex).
+    bool needErrorCb = false;
+    std::string cbErrorMsg;
+    int cbErrorCode = 0;
+    int result = -1;
     {
         std::lock_guard<std::mutex> lock(m_sendMutex);
-        
-        // Создаем копию данных для отправки
-        std::string buffer(reinterpret_cast<const char*>(data.data()), data.size());
-        
-        // Отправляем данные как бинарные
-        auto result = m_webSocket->sendBinary(buffer);
-        
-        if (!result.success)
+
+        try
         {
-            std::string errorMsg = "Ошибка при отправке данных";
-            NEUTRAL_REPORT_ERROR("Transport_WSClient", errorMsg);
-            
-            if (m_errorCallback)
+            // Создаем копию данных для отправки
+            std::string buffer(reinterpret_cast<const char*>(data.data()), data.size());
+
+            // Отправляем данные как бинарные
+            auto sendResult = m_webSocket->sendBinary(buffer);
+
+            if (!sendResult.success)
             {
-                m_errorCallback(errorMsg, -1);
+                cbErrorMsg = "Ошибка при отправке данных";
+                NEUTRAL_REPORT_ERROR("Transport_WSClient", cbErrorMsg);
+                needErrorCb = true;
+                cbErrorCode = -1;
+                // result остаётся -1; колбек — после снятия m_sendMutex.
             }
-            
-            return -1;
+            else
+            {
+                result = static_cast<int>(data.size());
+            }
         }
-        
-        return static_cast<int>(data.size());
-    }
-    catch (const std::exception& e)
-    {
-        std::string errorMsg = "Исключение при отправке данных: " + std::string(e.what());
-        NEUTRAL_REPORT_ERROR("Transport_WSClient", errorMsg);
-        
-        if (m_errorCallback)
+        catch (const std::exception& e)
         {
-            m_errorCallback(errorMsg, -1);
+            cbErrorMsg = "Исключение при отправке данных: " + std::string(e.what());
+            NEUTRAL_REPORT_ERROR("Transport_WSClient", cbErrorMsg);
+            needErrorCb = true;
+            cbErrorCode = -1;
+            // result остаётся -1.
         }
-        
-        return -1;
     }
+
+    // Колбек — ВНЕ m_sendMutex (§4.1): безопасно для реентрантного Close/Send из колбека.
+    if (needErrorCb && m_errorCallback)
+    {
+        m_errorCallback(cbErrorMsg, cbErrorCode);
+    }
+    return result;
 }
 
 void TransportWSClient::SetDataReceivedCallback(DataReceivedCallback callback)
