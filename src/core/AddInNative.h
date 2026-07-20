@@ -5,6 +5,7 @@
 #endif //_WINDOWS
 
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <variant>
@@ -219,6 +220,11 @@ public:
 	// Перенесено из private в public
 	bool AddError(const std::u16string& descr, long scode = 0);
 
+	// Потокобезпечний міст подій у 1С: викликається з БУДЬ-ЯКОГО потоку
+	// (фонові reader-потоки транспортів). source = ім'я компоненти (this->name).
+	// Повертає false, якщо зв'язку з 1С немає (до Init або після Done).
+	bool PostExternalEvent(const std::u16string& message, const std::u16string& data);
+
 	// IInitDoneBase
 	virtual bool ADDIN_API Init(void*) override final;
 	virtual bool ADDIN_API setMemManager(void* mem) override final;
@@ -250,6 +256,8 @@ public:
 private:
 	IMemoryManager* m_iMemory = nullptr;
 	IAddInDefBase* m_iConnect = nullptr;
+	// Захищає m_iConnect від гонки між фоновими PostExternalEvent/AddError і Done().
+	std::mutex connectMutex_;
 };
 
 // Реєстрація компоненти в реєстрі DLL + захист від відкидання лінкером.

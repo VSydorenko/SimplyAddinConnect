@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 static int g_failed = 0;
@@ -241,6 +242,31 @@ static void TestIndexHardening() {
     comp->Done(); delete comp;
 }
 
+// ---- EventBridge: потокобезпечний PostExternalEvent з відсіканням після Done ----
+static void TestEventBridge() {
+    AddInNative* comp = AddInNative::CreateObject(u"CoreProbe");
+    CHECK(comp != nullptr, "CreateObject(CoreProbe) for EventBridge");
+    if (!comp) return;
+    MockConnect connect; MockMemory memory;
+    comp->Init(&connect); comp->setMemManager(&memory);
+
+    // Постинг з фонового потоку доставляє подію в IAddInDefBase
+    std::thread t([&] { comp->PostExternalEvent(u"OnData", u"payload123"); });
+    t.join();
+    CHECK(connect.events.size() == 1, "event delivered from background thread");
+    CHECK(connect.events[0].find(u"OnData") != std::u16string::npos &&
+          connect.events[0].find(u"payload123") != std::u16string::npos,
+          "event carries message and data");
+
+    // Після Done() постинг безпечний і повертає false, без доставки
+    comp->Done();
+    CHECK(!comp->PostExternalEvent(u"OnData", u"late"), "post after Done returns false");
+    CHECK(connect.events.size() == 1, "no delivery after Done");
+    // AddError після Done() теж безпечний (той самий м'ютекс + null-guard)
+    CHECK(!comp->AddError(u"Тест після Done"), "AddError after Done returns false");
+    delete comp;
+}
+
 int main() {
     // Небуферизований stdout: щоб при аварійному завершенні (AV) не втратити
     // останні рядки й точно локалізувати місце падіння.
@@ -255,6 +281,7 @@ int main() {
     TestBaseEnableLogging();
     TestParamValidation();
     TestIndexHardening();
+    TestEventBridge();
     std::printf("=== %s (failed: %d) ===\n", g_failed ? "FAIL" : "OK", g_failed);
     return g_failed ? 1 : 0;
 }

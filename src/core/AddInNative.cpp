@@ -108,6 +108,7 @@ std::string AddInNative::version()
 
 bool AddInNative::Init(void* pConnection)
 {
+	std::lock_guard<std::mutex> lock(connectMutex_);
 	m_iConnect = static_cast<IAddInDefBase*>(pConnection);
 	if (m_iConnect) m_iConnect->SetEventBufferDepth(100);
 	return m_iConnect != nullptr;
@@ -125,6 +126,23 @@ long AddInNative::GetInfo()
 
 void AddInNative::Done()
 {
+	// Зв'язок з 1С далі недійсний: відсікаємо фонові PostExternalEvent/AddError
+	std::lock_guard<std::mutex> lock(connectMutex_);
+	m_iConnect = nullptr;
+}
+
+bool AddInNative::PostExternalEvent(const std::u16string& message, const std::u16string& data)
+{
+	// ExternalEvent приймає WCHAR_T* без const — віддаємо mutable-буфери
+	// локальних копій (u16string::data() не-const з C++17); платформа копіює
+	// їх синхронно всередині виклику
+	std::u16string src = name, msg = message, dat = data;
+	std::lock_guard<std::mutex> lock(connectMutex_);
+	if (!m_iConnect) return false;
+	return m_iConnect->ExternalEvent(
+		reinterpret_cast<WCHAR_T*>(src.data()),
+		reinterpret_cast<WCHAR_T*>(msg.data()),
+		reinterpret_cast<WCHAR_T*>(dat.data()));
 }
 
 bool AddInNative::RegisterExtensionAs(WCHAR_T** wsLanguageExt)
@@ -661,6 +679,9 @@ AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::u16
 bool AddInNative::AddError(const std::u16string& descr, long scode)
 {
 	std::u16string info = u"AddIn." + name;
+	// Синхронізація з Done()/фоновими потоками: читання m_iConnect під тим самим
+	// м'ютексом (жоден шлях не викликає AddError, тримаючи connectMutex_)
+	std::lock_guard<std::mutex> lock(connectMutex_);
 	return m_iConnect && m_iConnect->AddError(ADDIN_E_IMPORTANT, (WCHAR_T*)info.c_str(), (WCHAR_T*)descr.c_str(), scode);
 }
 
