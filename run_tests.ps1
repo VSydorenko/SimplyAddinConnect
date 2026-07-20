@@ -38,6 +38,7 @@ $ProviderName = "cm-pkcs12$ArchSuffix"
 $ProviderDll  = Join-Path $BinRelease "$ProviderName.dll"
 $SelfTestExe  = Join-Path $BinRelease "uapki_selftest$ArchSuffix.exe"
 $NativeHostExe= Join-Path $BinRelease "native_host$ArchSuffix.exe"
+$CoreSelftestExe = Join-Path $BinRelease ("core_selftest" + $ArchSuffix + ".exe")
 $DataDir      = Join-Path $Root 'tests/data'
 $ScenDir      = Join-Path $Root 'tests/scenarios'
 
@@ -223,6 +224,33 @@ else {
         Add-Result 'build' 'test-exes' 'BLOCKED' `
             "exe не зʼявилися після збірки. Перевірте, що конфіг пройшов з -DBUILD_WITH_UAPKI=ON -DBUILD_TESTS=ON і що add_subdirectory(tests) виконався (у виводі CMake має бути 'Test suite enabled')."
     }
+}
+
+# =====================================================================
+# ЕТАП 0.5 (L0.5): core_selftest — L1-харнес ядра AddInNative (без 1С, без UAPKI)
+# Проходить незалежно від -WithUAPKI: не потребує провайдера чи крипто-екзешників.
+# =====================================================================
+Section 'ЕТАП 0.5 (L0.5): core_selftest ядра'
+
+if (-not (Test-Path $CoreSelftestExe)) {
+    Add-Result 'L0.5' 'core_selftest' 'FAIL' `
+        "немає core_selftest.exe: $CoreSelftestExe — зберіть з -WithTests (core_selftest збирається завжди при BUILD_TESTS=ON, без UAPKI)"
+}
+else {
+    $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("core_selftest_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+    $p = Start-Process -FilePath $CoreSelftestExe `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+    $txt = ''
+    if (Test-Path $outF) { $txt = Get-Content -Raw $outF }
+    if ($p.ExitCode -eq 0) {
+        $lastLine = ($txt -split "`n" | Where-Object { $_ -match '===' } | Select-Object -Last 1)
+        Add-Result 'L0.5' 'core_selftest' 'PASS' ("$lastLine".Trim())
+    }
+    else {
+        $fails = ($txt -split "`n" | Where-Object { $_ -match '\[FAIL\]' }) -join ' | '
+        Add-Result 'L0.5' 'core_selftest' 'FAIL' "exit=$($p.ExitCode) $fails"
+    }
+    Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
 }
 
 # =====================================================================
