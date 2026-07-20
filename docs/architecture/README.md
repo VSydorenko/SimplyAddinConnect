@@ -4,7 +4,7 @@
 на детальні підсистемні доки. Тут навмисно стисло — усі подробиці (сигнатури, file:line,
 особливості поведінки) винесені в окремі розділи.
 
-> Стан коду відповідає гілці `add_UAPKI`.
+> Стан коду відповідає гілці `device-core`.
 
 ---
 
@@ -17,14 +17,18 @@
 Усередині однієї DLL живе **кілька компонент** (кожна доступна в 1С під власним іменем),
 що стоять на спільному ядрі-мості до SDK 1С:
 
-- `AddinECRPrivatJSON` — драйвер платіжного термінала ПриватБанку (найзріліша підсистема);
 - `AddinUAPKIConnect` — доступ до ЕЦП/криптографії через бібліотеку UAPKI;
 - `TestComponent` — демо/приклад реєстрації (імена `AddInNative` / `SimplyAddinConnect` / `SimplyConnect`).
 
-UAPKI — **лише одна з підсистем**, а не суть усього проєкту. Драйвер обладнання (платіжний
-термінал через COM/TCP/WebSocket) — рівноцінна й найповніше реалізована частина (оцінка за
-обсягом коду). Архітектура шарова: верхні шари не знають про деталі нижніх, зв'язок — через
-інтерфейси (`IComponentBase`, `ITransport`) і хелпери.
+> **Драйвери обладнання (device-core).** Старий драйвер `AddinECRPrivatJSON` (платіжний
+> термінал ПриватБанку) на гілці `device-core` **видалено як непрацездатний** — його
+> заміняє **фундамент device-core** у `src/transport/`: байтовий транспорт `ITransport` →
+> кадрування `IFramer`/`NullTerminatedFramer` → класифікація `IFrameClassifier` → сесія
+> запит/відповідь `DeviceSession`. Це основа для майбутніх драйверів; конкретних компонент-
+> драйверів (Privat тощо) поки нема.
+
+UAPKI — **лише одна з підсистем**, а не суть усього проєкту. Архітектура шарова: верхні шари
+не знають про деталі нижніх, зв'язок — через інтерфейси (`IComponentBase`, `ITransport`) і хелпери.
 
 ---
 
@@ -33,7 +37,7 @@ UAPKI — **лише одна з підсистем**, а не суть усьо
 | # | Підсистема | Документ | Про що |
 |---|---|---|---|
 | 01 | Ядро (`AddInNative`) | [core.md](core.md) | Міст до SDK 1С, реєстр компонент, `VariantHelper`, модель методів/властивостей |
-| 02 | ECRPrivatJSON | [ecrprivatjson.md](ecrprivatjson.md) | Драйвер платіжного термінала: протокол, хелпер, транспорт (COM/TCP/WS) |
+| 02 | ECRPrivatJSON (історичне) | [ecrprivatjson.md](ecrprivatjson.md) | Опис ВИДАЛЕНОГО старого драйвера термінала; заміняється фундаментом device-core (`src/transport/`) |
 | 03 | UAPKI | [uapki.md](uapki.md) | ЕЦП/крипто: JSON-API `process()`, провайдер `cm-pkcs12`, потрійний пошук каталогу |
 | 04 | Збірка й пакування | [build-and-packaging.md](build-and-packaging.md) | Модульний CMake, `build_project.ps1`, ZIP + `manifest.xml`, доставка в 1С |
 
@@ -47,14 +51,12 @@ flowchart TD
 
     subgraph DLL["SimplyAddinConnectWin_x64.dll / _x86.dll"]
         B["Ядро: AddInNative<br/>міст до SDK 1С + реєстр компонент"]
-        B --> C1["AddinECRPrivatJSON"]
         B --> C2["AddinUAPKIConnect"]
         B --> C3["TestComponent"]
 
-        C1 --> P["ECRPrivatJSONProtocol<br/>(логіка протоколу)"]
-        P --> H1["ECRPrivatJSONHelper<br/>(JSON, буфери, синхронізація)"]
-        P --> T["ITransport"]
-        T --> T1["COM"] & T2["TCP"] & T3["WS-client"] & T4["WS-server"]
+        W["device-core (фундамент драйверів)<br/>DeviceSession → IFramer → IFrameClassifier → ITransport"]
+        W --> T["ITransport"]
+        T --> T1["COM"] & T2["TCP"] & T3["WS-client"]
 
         C2 --> H2["UAPKIConnectHelper<br/>(потрійний пошук каталогу провайдера)"]
         H2 -->|"process() / json_free()"| U["UAPKI ядро<br/>(uapki+uapkic+uapkif, статичний лінк)"]
@@ -62,11 +64,10 @@ flowchart TD
         U -.->|"LoadLibraryW"| CM["cm-pkcs12_x86/_x64.dll<br/>(окрема самодостатня DLL)"]
 
         B -.-> S["ServiceTools<br/>(логування, конвертації)"]
-        C1 -.-> S
         C2 -.-> S
     end
 
-    T1 --> D1["Платіжний термінал"]
+    T1 --> D1["Обладнання (майбутні драйвери)"]
     T2 --> D1
     T3 --> D1
     U --> D2["НКІ / сертифікати / ЕЦП"]
@@ -81,9 +82,9 @@ flowchart TD
 |---|---|---|
 | Ядро (bridge) | `src/core/AddInNative.*` | Реалізація SDK 1С, реєстр компонент, `VariantHelper` |
 | Компоненти | `src/components/*` | Фасади, що реєструють методи для 1С |
-| Протоколи | `src/protocols/*` | Бізнес-логіка взаємодії з пристроєм |
+| Device-core | `src/transport/{IFramer,NullTerminatedFramer,IFrameClassifier,DeviceSession}` | Фундамент драйверів: кадрування → класифікація → сесія запит/відповідь |
 | Хелпери | `src/helpers/*` | Допоміжна логіка (JSON, буфери, обгортки бібліотек) |
-| Транспорт | `src/transport/*` | Канали зв'язку (COM/TCP/WebSocket) |
+| Транспорт | `src/transport/*` | Канали зв'язку (COM/TCP/WebSocket-client) |
 | Сервіси | `src/helpers/ServiceTools*` | Наскрізне логування та конвертації рядків |
 
 Компонента — **тонка**: у конструкторі логує старт і викликає `RegisterMethods()`, у

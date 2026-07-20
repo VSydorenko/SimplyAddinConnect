@@ -23,11 +23,9 @@ ZIP. Останній розділ спирається на **емпіричн�
 ```
 base_component ─────────────┐
 helpers_component ──────────┤
-transport_component ────────┤ (+ ixwebsocket)
-privat_json_helper_component┤
-ecr_privat_json_component ──┤
-protocols_component ────────┼─► add_library(SimplyAddinConnect SHARED ...)  →  .dll
-test_component ─────────────┤
+transport_component ────────┤ (+ ixwebsocket; COM/TCP/WS-client)
+wire_component ─────────────┼─► add_library(SimplyAddinConnect SHARED ...)  →  .dll
+test_component ─────────────┤   (wire_component — device-core: framer/classifier/DeviceSession)
                             │
 uapki_connect_helper_component ┐  (лише при BUILD_WITH_UAPKI)
 uapki_connect_component        ┘  + uapki_bundle (статичне ядро UAPKI)
@@ -211,7 +209,7 @@ ITS документує лише один спосіб доставити до�
 - **Провайдери `cm-pkcs12_*.dll` у маніфесті НЕ описані**, незалежно від `-WithUAPKI`.
   Це прямий наслідок §4.3: описувати їх немає сенсу, бо додаткові файли 1С однаково не
   розпаковує, а самі провайдери постачаються всередині головної DLL ресурсом.
-- Компоненти-класи (напр. `AddinECRPrivatJSON`, `AddinUAPKIConnect`) реєструються
+- Компоненти-класи (напр. `AddinUAPKIConnect`, `TestComponent`) реєструються
   **всередині** кожної DLL; маніфест перелічує лише файли-бінарники за архітектурами.
 
 ---

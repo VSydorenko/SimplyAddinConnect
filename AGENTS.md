@@ -7,8 +7,14 @@
 
 **SimplyAddinConnect** — нативна зовнішня компонента для **1С:Підприємство** (Windows, C++17).
 Збирається в одну DLL (x86 і x64), що реєструє кілька компонент:
-- **AddinECRPrivatJSON** — платіжний термінал ПриватБанку (JSON-протокол, COM/TCP/WebSocket);
-- **AddinUAPKIConnect** — ЕЦП/крипто через бібліотеку UAPKI.
+- **AddinUAPKIConnect** — ЕЦП/крипто через бібліотеку UAPKI;
+- **TestComponent** — демо/приклад реєстрації.
+
+Старий драйвер **AddinECRPrivatJSON** (платіжний термінал ПриватБанку) на гілці `device-core`
+**видалено як непрацездатний** — його заміняє **фундамент device-core** у `src/transport/`
+(байтовий транспорт `ITransport` → кадрування `IFramer`/`NullTerminatedFramer` → класифікація
+`IFrameClassifier` → сесія запит/відповідь `DeviceSession`), основа для майбутніх драйверів
+обладнання. Конкретних компонент-драйверів поки нема.
 
 Репозиторій: `github.com/VSydorenko/SimplyAddinConnect`. Версія — `VERSION.txt` + `version.h`.
 
@@ -76,9 +82,9 @@ DLL і НЕ підключають `src/core/pch.h`), `tests/core_selftest.cpp` 
 CMake/              # модульна збірка; components.cmake — джерело правди щодо складу DLL
 src/core/           # ядро AddInNative (міст до SDK 1С) + pch.h
 src/components/     # компоненти-фасади для 1С
-src/protocols/      # логіка протоколів (ECRPrivatJSON)
 src/helpers/        # ServiceTools (логування/конвертації) + хелпери фіч
-src/transport/      # канали: COM, TCP, WebSocket (client/server)
+src/transport/      # канали COM/TCP/WS-client + device-core (IFramer/NullTerminatedFramer/
+                    #   IFrameClassifier/DeviceSession — фундамент драйверів обладнання)
 include/            # заголовки SDK 1С
 tests/              # uapki_selftest (L1) + native_host (L2/L3) + scenarios/ + data/
 docs/architecture/    # архітектура по підсистемах (README + 01..04)

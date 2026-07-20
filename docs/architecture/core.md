@@ -2,11 +2,11 @@
 
 Цей документ описує базовий шар SimplyAddinConnect — ядро `AddInNative` і
 наскрізні сервіси `ServiceTools`. Це фундамент, спільний для **будь-якої**
-підсистеми (ECRPrivatJSON, UAPKI тощо): кожна компонента успадковує `AddInNative`,
+підсистеми (UAPKI, майбутні драйвери обладнання на device-core тощо): кожна компонента успадковує `AddInNative`,
 а весь прикладний код логує та конвертує рядки через `ServiceTools`.
 
 Усі шляхи наведено відносно `R:/github/SimplyAddinConnect/`. Наведені імена
-файлів, функцій і полів звірені з кодом гілки `add_UAPKI`.
+файлів, функцій і полів звірені з кодом гілки `device-core`.
 
 ---
 
@@ -64,7 +64,6 @@ static AddInNative* CreateObject(const std::u16string& name);          // при
 `names = { AddComponent(...), ... }` + окремий анти-стрип:
 
 - `src/components/AddinUAPKIConnect.cpp:7` — `REGISTER_COMPONENT(u"AddinUAPKIConnect", …)`.
-- `src/components/AddinECRPrivatJSON.cpp` — `REGISTER_COMPONENT(u"AddinECRPrivatJSON", …)`.
 - `src/TestComponent.cpp` — ручний `TestComponent::names` (`u"AddInNative"`,
   `u"SimplyAddinConnect"`, `u"SimplyConnect"`) + анти-стрип `_forceTestComponentNames`.
 
@@ -82,9 +81,10 @@ static AddInNative* CreateObject(const std::u16string& name);          // при
 namespace { [[maybe_unused]] auto& _forceTestComponentNames = TestComponent::names; }
 ```
 
-Наразі зареєстровані імена: `AddinECRPrivatJSON`, `AddinUAPKIConnect`,
+Наразі зареєстровані імена: `AddinUAPKIConnect`,
 `AddInNative` / `SimplyAddinConnect` / `SimplyConnect` (останні три — через
-`TestComponent`).
+`TestComponent`). Старий `AddinECRPrivatJSON` видалено на гілці `device-core`
+(непрацездатний драйвер; заміняється фундаментом device-core у `src/transport/`).
 
 ---
 
@@ -419,8 +419,7 @@ REGISTER_COMPONENT(u"AddinUAPKIConnect", AddinUAPKIConnect)   // AddinUAPKIConne
 властивості `Version`, спільну для всіх компонент функцію
 `EnableLogging`/`ИспользоватьЛогирование(рівень="info", шлях="")` — делегат у
 `ServiceTools::EnableComponentLogging(this, level, path)`, обгорнутий `Ret()` і
-`try/catch`. Дублікати з `AddinUAPKIConnect`, `AddinECRPrivatJSON`,
-`TestComponent` прибрані. `DisableComponentLogging` лишається в деструкторах
+`try/catch`. Дублікати з `AddinUAPKIConnect`, `TestComponent` прибрані. `DisableComponentLogging` лишається в деструкторах
 похідних (RTTI-ім'я в базовому деструкторі вже некоректне).
 
 ### 6.4. Декларативні параметри: `ParamSpec` + валідація

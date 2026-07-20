@@ -70,7 +70,7 @@ target_include_directories(wire_selftest PRIVATE
     ${IXWEBSOCKET_INCLUDE_DIR}            # transport_component тягне ixwebsocket-заголовки
 )
 target_compile_definitions(wire_selftest PRIVATE _WINDOWS UNICODE _UNICODE)
-# ixwebsocket+ws2_32 — символи, які тягне transport_component (WSClient/WSServer, Winsock).
+# ixwebsocket+ws2_32 — символи, які тягне transport_component (WSClient, Winsock).
 target_link_libraries(wire_selftest PRIVATE spdlog::spdlog ixwebsocket ws2_32)
 if(MSVC)
     target_compile_options(wire_selftest PRIVATE /utf-8)
