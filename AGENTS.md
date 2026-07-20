@@ -28,9 +28,10 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTe
   DLL додатково вбудовує РЕСУРСОМ (RCDATA) провайдер своєї архітектури й розгортає його сама
   при `INIT` (потрійний пошук каталогу — див. `docs/architecture/uapki.md`); у підсумковий ZIP
   потрапляють обидва варіанти — разом 5 файлів (див. `docs/architecture/uapki.md`, `build-and-packaging.md`);
-- `-WithTests` — збирає тестові консольні exe (`uapki_selftest`, `native_host`) з `tests/`
-  (працює **лише разом з `-WithUAPKI`** — тести залежать від крипто-ядра; без UAPKI піддиректорію
-  `tests/` тихо пропущено).
+- `-WithTests` — збирає тестові консольні exe з `tests/`. **`core_selftest` збирається завжди при
+  `-WithTests`** (L1-харнес ядра `AddInNative` без 1С і без UAPKI); а `uapki_selftest`/`native_host`
+  — **лише разом з `-WithUAPKI`** (залежать від крипто-ядра; без UAPKI ці дві цілі тихо пропущено,
+  тека `tests/` на Windows конфігурується завжди).
 
 Скрипт перегенеровує `version.h` (інкремент build), очищає `build_x86/`, `build_x64/`,
 `bin/Release/`, збирає обидві архітектури в Release і пакує в `bin/Release/SimplyAddinConnectWin.zip`.
@@ -39,20 +40,27 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTe
 ## Тести
 
 Тека `tests/` **існує**: `tests/CMakeLists.txt` (окремі консольні exe, лінкуються НЕ в головну
-DLL і НЕ підключають `src/core/pch.h`), `tests/scenarios/*.json` (7 сценаріїв L1),
-`tests/data/` (тестовий контейнер `test-diia.p12`, сертифікати, CRL — read-only вхід).
+DLL і НЕ підключають `src/core/pch.h`), `tests/core_selftest.cpp` (харнес ядра), `tests/scenarios/*.json`
+(7 сценаріїв L1), `tests/data/` (тестовий контейнер `test-diia.p12`, сертифікати, CRL — read-only вхід).
 
-Дві цілі (лише Windows, лише при `BUILD_WITH_UAPKI=ON`):
-- **`uapki_selftest.exe`** (L1) — лінкує `uapki_bundle` напряму (без 1С, без завантаження DLL) і
-  проганяє JSON-сценарії з `tests/scenarios/` через `process()`/`json_free()` статичного ядра.
-- **`native_host.exe`** (L2/L3) — емулює платформу 1С: вантажить головну DLL через `LoadLibraryW`
-  і викликає компоненту `AddinUAPKIConnect` через `IComponentBase`/`CallUapki`, e2e-кейси 1-4 і
-  крос-валідація ПРРО (кейс 5, потребує `PRRO_DOCS_DIR`, інакше SKIP).
+Три цілі (лише Windows; окремі цілі мають власні умови):
+- **`core_selftest.exe`** (L0.5) — **збирається завжди при `BUILD_TESTS=ON`, без UAPKI**. Лінкує
+  OBJECT-бібліотеки ядра (`base_component`+`helpers_component`) напряму й ганяє перевірки ядра
+  `AddInNative` через мок платформи 1С (`MockConnect : IAddInDefBase`, `MockMemory : IMemoryManager`):
+  реєстр компонент, життєвий цикл, `Ret()`, `REGISTER_COMPONENT`, базовий `EnableLogging`, валідація
+  `ParamSpec`, потокобезпечний `PostExternalEvent`, захист індексів, `ShutdownLogging` без дедлоку.
+- **`uapki_selftest.exe`** (L1, лише при `BUILD_WITH_UAPKI=ON`) — лінкує `uapki_bundle` напряму
+  (без 1С, без завантаження DLL) і проганяє JSON-сценарії з `tests/scenarios/` через
+  `process()`/`json_free()` статичного ядра.
+- **`native_host.exe`** (L2/L3, лише при `BUILD_WITH_UAPKI=ON`) — емулює платформу 1С: вантажить
+  головну DLL через `LoadLibraryW` і викликає компоненту `AddinUAPKIConnect` через
+  `IComponentBase`/`CallUapki`, e2e-кейси 1-4 і крос-валідація ПРРО (кейс 5, потребує
+  `PRRO_DOCS_DIR`, інакше SKIP).
 
 Запуск: `build_project.ps1 -WithUAPKI -WithTests`, потім
-`powershell -File run_tests.ps1 [x64|x86]` (оркестратор: L0 dumpbin-інваріанти → L1 selftest по
-сценаріях → L2/L3 native_host; підсумкова таблиця PASS/FAIL/SKIP/BLOCKED, ненульовий exit при
-провалі).
+`powershell -File run_tests.ps1 [x64|x86]` (оркестратор: L0 dumpbin-інваріанти → L0.5 core_selftest
+ядра → L1 selftest по сценаріях → L2/L3 native_host; підсумкова таблиця PASS/FAIL/SKIP/BLOCKED,
+ненульовий exit при провалі). L0.5 проходить і без `-WithUAPKI`.
 
 Тестові exe лягають у `bin/Release` (через `EXECUTABLE_OUTPUT_PATH`, `output_settings.cmake`) —
 саме там їх шукає `run_tests.ps1`.
@@ -98,19 +106,38 @@ extern/             # сабмодулі: spdlog, nlohmann_json, ixwebsocket, ua
 
 ## Як додати компоненту
 
-1. `src/components/Моя.{h,cpp}` — успадкуй `AddInNative`, зареєструй через `AddComponent`,
-   методи опиши в `RegisterMethods()` (лямбди з аргументами `VH`, результат — `this->result`):
+1. `src/components/Моя.{h,cpp}` — успадкуй `AddInNative`, у `.h` оголоси
+   `static std::vector<std::u16string> names;`, а реєстрацію в `.cpp` (на файловому рівні) зроби
+   макросом `REGISTER_COMPONENT` (він і визначає `names`, і додає анти-стрип reference проти
+   відкидання лінкером). Методи опиши в `RegisterMethods()` (лямбди з аргументами `VH`):
    ```cpp
-   std::vector<std::u16string> Моя::names = { AddComponent(u"Моя", []() { return new Моя; }) };
-   namespace { auto& _force = Моя::names; }        // проти відкидання лінкером
+   REGISTER_COMPONENT(u"Моя", Моя)                 // src/components/Моя.cpp, файловий рівень
    Моя::Моя() { REPORT_INFO("Ініціалізація Моя"); RegisterMethods(); }
    ```
+   (Для компоненти з кількома іменами макрос не підходить — залиш ручний `names = { AddComponent(...),
+   ... }` і **обов'язково** додай `namespace { [[maybe_unused]] auto& _force = Моя::names; }`.)
+
+   Конвенції методів:
+   - **Повернення значення в 1С — через `Ret(...)`**: `AddFunction(u"F", u"Ф", Ret([](VH a){ return ...; }))`.
+     `MethFunction` — це `std::function<void(...)>`, тож значення, повернуте «голою» лямбдою, мовчки
+     відкидається; `Ret()` загортає value-лямбду у хендлер, що присвоює `this->result`.
+     **Правило:** обгортай `Ret()` ЛИШЕ хендлери, чиє `return`-значення і є результатом. **НЕ обгортай**
+     хендлери, які самі ставлять `this->result` (як `CallUapki`), а повертають службовий `bool` —
+     `Ret()` перезаписав би корисний результат.
+   - **Параметри — декларативно через `ParamSpec`**: перевантаження `AddFunction`/`AddProcedure` з
+     `const std::vector<ParamSpec>&` описує `required`/`byDefault` (`DefaultHelper`); обов'язкові без
+     дефолту валідуються ДО виклику хендлера — при порожньому аргументі ядро само робить `AddError`
+     з ім'ям параметра й повертає `false`.
+   - **`EnableLogging`/`ИспользоватьЛогирование` реєструвати не треба** — метод успадкований з базового
+     `AddInNative` (делегат у `ServiceTools::EnableComponentLogging`); у деструкторі похідного —
+     `ServiceTools::DisableComponentLogging(this)`.
 2. У `CMake/components.cmake`: додай файли до `HEADER_FILES`/`SOURCE_FILES`, за потреби окрему
    `add_library(... OBJECT ...)` з include-шляхами й `add_dependencies` (мінімум `base_component spdlog`),
    і `$<TARGET_OBJECTS:...>` до фінальної SHARED-цілі.
 3. Перевір збірку `build_project.ps1` (+`-WithUAPKI`, якщо залежить від UAPKI).
 
-Детальніше про модель ядра (VariantHelper, реєстрація, життєвий цикл) — `docs/architecture/core.md`.
+Детальніше про модель ядра (VariantHelper, реєстрація, життєвий цикл, платформенні механізми
+Етапу 0) — `docs/architecture/core.md`.
 
 ## Git-нюанси
 

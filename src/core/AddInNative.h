@@ -5,11 +5,14 @@
 #endif //_WINDOWS
 
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <variant>
+#include <optional>
 #include <string_view>
 #include <functional>
+#include <type_traits>
 
 #include "ComponentBase.h"
 #include "AddInDefBase.h"
@@ -86,6 +89,18 @@ protected:
 
 	using VH = VariantHelper;
 	using MethDefaults = std::map<long, DefaultHelper>;
+
+	// Декларативний опис параметра методу: імена (en/ru), ознака обов'язковості
+	// й опційне значення за замовчуванням. За наявності byDefault воно потрапляє
+	// в MethDefaults методу; required без byDefault перевіряється в ValidateParams
+	// перед викликом хендлера (порожній аргумент → AddError + return false).
+	struct ParamSpec {
+		std::u16string nameEn;
+		std::u16string nameRu;
+		bool required = false;
+		std::optional<DefaultHelper> byDefault{};
+	};
+
 	using PropFunction = std::function<void(VH)>;
 	using MethFunction0 = std::function<void()>;
 	using MethFunction1 = std::function<void(VH)>;
@@ -110,8 +125,44 @@ protected:
 	void AddProperty(const std::u16string& nameEn, const std::u16string& nameRu, const PropFunction &getter, const PropFunction &setter = nullptr);
 	void AddProcedure(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction &handler, const MethDefaults &defs = {});
 	void AddFunction(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction &handler, const MethDefaults &defs = {});
+
+	// Перевантаження з декларативним описом параметрів: дефолти беруться зі spec-ів,
+	// а required-параметри валідуються перед викликом хендлера (див. ValidateParams).
+	void AddProcedure(const std::u16string& nameEn, const std::u16string& nameRu,
+	                  const MethFunction& handler, const std::vector<ParamSpec>& params);
+	void AddFunction(const std::u16string& nameEn, const std::u16string& nameRu,
+	                 const MethFunction& handler, const std::vector<ParamSpec>& params);
+
+	// Обгортає value-повертаючу лямбду у void-хендлер, який присвоює this->result.
+	// Потрібно, бо MethFunction — це std::function<void(...)>: значення, повернуте
+	// лямбдою напряму, мовчки відкидається і НЕ потрапляє в 1С.
+	template <typename F>
+	MethFunction Ret(F f) { return WrapRet(std::function(std::move(f))); }
+
+private:
+	template <typename R, typename... A>
+	MethFunction WrapRet(std::function<R(A...)> f)
+	{
+		static_assert(!std::is_void_v<R>,
+			"Ret(): лямбда мусить повертати значення; для void використовуйте AddProcedure");
+		return MethFunction(std::function<void(A...)>(
+			[this, f = std::move(f)](A... a) {
+				if constexpr (std::is_same_v<R, bool>)
+					this->result = f(a...);
+				else if constexpr (std::is_integral_v<R>)
+					this->result = static_cast<int64_t>(f(a...));
+				else if constexpr (std::is_floating_point_v<R>)
+					this->result = static_cast<double>(f(a...));
+				else
+					this->result = f(a...);
+			}));
+	}
+protected:
 public:
 	static std::u16string AddComponent(const std::u16string& name, CompFunction creator);
+	// Фабрика компонент за ім'ям. Публічна — потрібна L1-харнесу core_selftest
+	// (створює пробні компоненти без платформи 1С); у DLL її кличе GetClassObject.
+	static AddInNative* CreateObject(const std::u16string& name);
 	VariantHelper result;
 	static std::u16string getComponentNames();
 	static std::u16string upper(std::u16string& str);
@@ -134,9 +185,15 @@ private:
 		MethFunction handler;
 		MethDefaults defs;
 		bool hasRetVal;
+		std::vector<ParamSpec> params;
 	};
 
 	bool CallMethod(MethFunction* function, tVariant* paParams, Meth* meth, const long lSizeArray);
+	// Перевіряє required-параметри без дефолту перед викликом хендлера: за порожнім
+	// чи відсутнім аргументом реєструє AddError з ім'ям параметра й повертає false.
+	bool ValidateParams(Meth& m, tVariant* paParams, const long lSizeArray);
+	// Будує MethDefaults зі spec-ів: параметри з byDefault стають дефолтами 1С.
+	static MethDefaults DefaultsFromSpecs(const std::vector<ParamSpec>& params);
 	VariantHelper VA(tVariant* pvar) { return VariantHelper(pvar, this); }
 	VariantHelper VA(tVariant* pvar, Prop* prop) { return VariantHelper(pvar, this, prop); }
 	VariantHelper VA(tVariant* pvar, Meth* meth, long number) { return VariantHelper(pvar + number, this, meth, number); }
@@ -145,9 +202,11 @@ private:
 
 	friend const WCHAR_T* GetClassNames();
 	friend long GetClassObject(const WCHAR_T*, IComponentBase**);
-	static AddInNative* CreateObject(const std::u16string& name);
 
-	static std::map<std::u16string, CompFunction> components;
+	// Реєстр компонент — функціо-локальний статик (Meyers singleton): будується
+	// при першому виклику, тому файло-рівнева реєстрація (REGISTER_COMPONENT) не
+	// залежить від порядку статичної ініціалізації між одиницями трансляції.
+	static std::map<std::u16string, CompFunction>& components();
 	std::vector<Prop> properties;
 	std::vector<Meth> methods;
 	std::u16string name;
@@ -160,6 +219,11 @@ public:
 	// Метод для добавления ошибок компонента
 	// Перенесено из private в public
 	bool AddError(const std::u16string& descr, long scode = 0);
+
+	// Потокобезпечний міст подій у 1С: викликається з БУДЬ-ЯКОГО потоку
+	// (фонові reader-потоки транспортів). source = ім'я компоненти (this->name).
+	// Повертає false, якщо зв'язку з 1С немає (до Init або після Done).
+	bool PostExternalEvent(const std::u16string& message, const std::u16string& data);
 
 	// IInitDoneBase
 	virtual bool ADDIN_API Init(void*) override final;
@@ -192,4 +256,16 @@ public:
 private:
 	IMemoryManager* m_iMemory = nullptr;
 	IAddInDefBase* m_iConnect = nullptr;
+	// Захищає m_iConnect від гонки між фоновими PostExternalEvent/AddError і Done().
+	std::mutex connectMutex_;
 };
+
+// Реєстрація компоненти в реєстрі DLL + захист від відкидання лінкером.
+// Клас мусить оголосити: static std::vector<std::u16string> names;
+// Використання (у .cpp компоненти, на файловому рівні):
+//   REGISTER_COMPONENT(u"МояКомпонента", МійКлас)
+#define REGISTER_COMPONENT(NAME_U16, CLASS) \
+	std::vector<std::u16string> CLASS::names = { \
+		AddInNative::AddComponent(NAME_U16, []() -> AddInNative* { return new CLASS; }) \
+	}; \
+	namespace { [[maybe_unused]] auto& _force_##CLASS##_names = CLASS::names; }

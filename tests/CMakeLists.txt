@@ -5,11 +5,11 @@
 ##        лінкують крипто-ядро (uapki_bundle) і НЕ підключають src/core/pch.h.
 ##
 
-# Тести залежать від статичного крипто-ядра UAPKI, яке збирається лише під
-# Windows і лише коли увімкнено BUILD_WITH_UAPKI. Без цих умов ціль uapki_bundle
-# не існує — тихо пропускаємо піддиректорію, щоб не ламати звичайну збірку.
-if(NOT (WIN32 AND BUILD_WITH_UAPKI))
-    message(STATUS "[tests] пропущено (потрібні WIN32 + BUILD_WITH_UAPKI)")
+# Каталог тестів доступний на Windows завжди; окремі цілі мають власні умови.
+# core_selftest (L1-харнес ядра) не залежить від UAPKI й будується при -DBUILD_TESTS=ON;
+# uapki_selftest/native_host потребують крипто-ядра (BUILD_WITH_UAPKI) — див. гейт нижче.
+if(NOT WIN32)
+    message(STATUS "[tests] пропущено (потрібен WIN32)")
     return()
 endif()
 
@@ -19,6 +19,41 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     set(_TEST_ARCH_SUFFIX "_x64")
 else()
     set(_TEST_ARCH_SUFFIX "_x86")
+endif()
+
+# ---------------------------------------------------------------------------
+# core_selftest — L1-харнес ядра AddInNative (без 1С, без UAPKI).
+# Лінкує OBJECT-бібліотеки ядра напряму; платформа 1С емулюється моками.
+# ---------------------------------------------------------------------------
+add_executable(core_selftest core_selftest.cpp
+    $<TARGET_OBJECTS:base_component>
+    $<TARGET_OBJECTS:helpers_component>
+)
+set_target_properties(core_selftest PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "core_selftest${_TEST_ARCH_SUFFIX}"
+)
+target_include_directories(core_selftest PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${SPDLOG_INCLUDE_DIR}
+)
+# _WINDOWS — критично: types.h саме за ним вмикає WCHAR_T=wchar_t і
+# ADDIN_API=__stdcall; об'єкти ядра зібрані з _WINDOWS — ABI мусить збігатися.
+target_compile_definitions(core_selftest PRIVATE _WINDOWS UNICODE _UNICODE)
+target_link_libraries(core_selftest PRIVATE spdlog::spdlog)
+if(MSVC)
+    target_compile_options(core_selftest PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
+# Далі — цілі, що потребують крипто-ядра UAPKI (uapki_bundle існує лише при
+# BUILD_WITH_UAPKI). Без нього тихо пропускаємо решту файлу.
+# ---------------------------------------------------------------------------
+if(NOT BUILD_WITH_UAPKI)
+    message(STATUS "[tests] uapki_selftest/native_host пропущено (потрібен BUILD_WITH_UAPKI)")
+    return()
 endif()
 
 # ---------------------------------------------------------------------------

@@ -33,18 +33,6 @@ public:
      */
     bool IsSuccessCode(const std::string& responseCode) const;
 
-    /**
-     * @brief Включает логирование для компонента
-     * 
-     * @param logLevel Уровень логирования (error, warn, info, debug, trace, off)
-     * @param logFilePath Путь к файлу логов
-     * @return bool Результат операции
-     * 
-     * @details Включает и настраивает логирование для компонента с указанным уровнем детализации.
-     * Доступные уровни: off, error, warn, info, debug, trace.
-     */
-    bool EnableLogging(const std::string& logLevel, const std::string& logFilePath);
-    
 private:
     /**
      * @brief Определение типа транспорта на основе строки подключения
