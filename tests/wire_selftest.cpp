@@ -2,7 +2,9 @@
 // Лінкує wire_component+helpers+base напряму; свій хенд-ролед раннер (як core_selftest).
 // УВАГА: pch.h тут НЕ підключається (правило tests/).
 #include "../src/transport/NullTerminatedFramer.h"
+#include "../src/transport/IFrameClassifier.h"
 #include <cstdio>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -45,5 +47,57 @@ static void TestNullTerminatedFramer() {
       fo.Feed([]{ auto v=B("Z"); v.push_back(0); return v; }(), o2);
       CHECK(o2.size()==1 && o2[0]==B("Z"), "overflow: recovers on next valid frame"); }
 }
+// --- тестові подвійники IFrameClassifier (§4.3 дизайну) ---------------------
+
+// EchoClassifier — PrimaryResponse, якщо вхідний кадр байт-у-байт збігається
+// з pending.primary; інакше Unsolicited (ігнорує все, що не матчиться).
+class EchoClassifier : public IFrameClassifier {
+public:
+    Classification Classify(const PendingView& pending,
+                             const std::vector<uint8_t>& frame) override {
+        if (pending.primary && frame == *pending.primary) {
+            return { FrameClass::PrimaryResponse, RejectReason::Busy };
+        }
+        return { FrameClass::Unsolicited, RejectReason::Busy };
+    }
+};
+
+// ScriptedClassifier — повертає наперед задану чергу Classification, по одному
+// результату на виклик Classify (незалежно від вмісту кадру/pending).
+class ScriptedClassifier : public IFrameClassifier {
+public:
+    explicit ScriptedClassifier(std::deque<Classification> script) : script_(std::move(script)) {}
+    Classification Classify(const PendingView&, const std::vector<uint8_t>&) override {
+        Classification c = script_.front();
+        script_.pop_front();
+        return c;
+    }
+private:
+    std::deque<Classification> script_;
+};
+
+static void TestClassifierDoubles() {
+    EchoClassifier echo;
+    auto primary = B("resp");
+    PendingView pv{ &primary, nullptr };
+
+    auto r1 = echo.Classify(pv, B("resp"));
+    CHECK(r1.cls == FrameClass::PrimaryResponse, "EchoClassifier: matches equal bytes");
+
+    auto r2 = echo.Classify(pv, B("other"));
+    CHECK(r2.cls == FrameClass::Unsolicited, "EchoClassifier: ignores non-matching bytes");
+
+    ScriptedClassifier scripted(std::deque<Classification>{
+        { FrameClass::ServiceResponse, RejectReason::Busy },
+        { FrameClass::RejectBoth, RejectReason::Unsupported }
+    });
+    auto s1 = scripted.Classify(pv, B("x"));
+    CHECK(s1.cls == FrameClass::ServiceResponse, "ScriptedClassifier: first scripted result");
+    auto s2 = scripted.Classify(pv, B("y"));
+    CHECK(s2.cls == FrameClass::RejectBoth && s2.reason == RejectReason::Unsupported,
+          "ScriptedClassifier: second scripted result");
+}
+
 int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
+    TestClassifierDoubles();
     std::printf("=== %s (failed:%d) ===\n", g_failed?"FAIL":"OK", g_failed); return g_failed?1:0; }
