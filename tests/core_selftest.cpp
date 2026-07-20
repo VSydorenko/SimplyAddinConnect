@@ -74,9 +74,33 @@ static void TestSmokeLifecycle() {
     delete comp;
 }
 
+// Експорти оголошені в ComponentBase.h (extern "C"); для прямого виклику з тесту:
+extern "C" long GetClassObject(const WCHAR_T* wsName, IComponentBase** pInterface);
+extern "C" long DestroyObject(IComponentBase** pInterface);
+
+// ---- Boot-фікси: контракт 1/0 у GetClassObject і лінива локаль upper() ----
+static void TestBootFixes() {
+    // 1) GetClassObject не залежить від молодших біт адреси: контракт — 1/0
+    IComponentBase* iface = nullptr;
+    long rc = GetClassObject((const WCHAR_T*)u"CoreProbe", &iface);
+    CHECK(rc == 1 && iface != nullptr, "GetClassObject returns 1 on success");
+    long rc2 = GetClassObject((const WCHAR_T*)u"CoreProbe", &iface); // *pInterface != null
+    CHECK(rc2 == 0, "GetClassObject refuses non-null pInterface");
+    CHECK(DestroyObject(&iface) == 0 && iface == nullptr, "DestroyObject");
+
+    IComponentBase* none = nullptr;
+    CHECK(GetClassObject((const WCHAR_T*)u"NoSuchComponent", &none) == 0,
+          "GetClassObject returns 0 for unknown name");
+
+    // 2) upper() не падає навіть якщо ru_RU.UTF-8 недоступна (fallback), ASCII працює
+    std::u16string s = u"abcXYZ123";
+    CHECK(AddInNative::upper(s) == u"ABCXYZ123", "upper() ASCII");
+}
+
 int main() {
     std::printf("=== core_selftest ===\n");
     TestSmokeLifecycle();
+    TestBootFixes();
     std::printf("=== %s (failed: %d) ===\n", g_failed ? "FAIL" : "OK", g_failed);
     return g_failed ? 1 : 0;
 }

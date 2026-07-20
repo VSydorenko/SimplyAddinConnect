@@ -6,8 +6,6 @@
 
 #ifdef _WINDOWS
 #pragma warning (disable : 4267)
-#pragma warning (disable : 4302)
-#pragma warning (disable : 4311)
 #else
 #include <unistd.h>
 #include <stdlib.h>
@@ -54,7 +52,10 @@ long GetClassObject(const WCHAR_T* wsName, IComponentBase** pInterface)
 {
 	if (*pInterface) return 0;
 	auto cls_name = std::u16string(reinterpret_cast<const char16_t*>(wsName));
-	return long(*pInterface = AddInNative::CreateObject(cls_name));
+	*pInterface = AddInNative::CreateObject(cls_name);
+	// Контракт 1С: ненульове значення = успіх. Повертаємо 1 замість адреси,
+	// бо приведення 64-бітного вказівника до long усікає його (UB на x64).
+	return *pInterface ? 1 : 0;
 }
 
 long DestroyObject(IComponentBase** pInterface)
@@ -470,17 +471,30 @@ std::u16string AddInNative::MB2WCHAR(std::string_view src) {
 #endif//_WINDOWS
 }
 
-std::locale locale_ru = std::locale("ru_RU.UTF-8");
+// Локаль для регістронезалежного пошуку імен. НЕ глобальний об'єкт:
+// std::locale("ru_RU.UTF-8") може кинути виняток, а на етапі статичної
+// ініціалізації DLL це означає відмову завантаження компоненти в 1С.
+static const std::locale& RuLocale()
+{
+	static const std::locale loc = []() -> std::locale {
+		try { return std::locale("ru_RU.UTF-8"); }
+		catch (...) {
+			try { return std::locale("Russian_Russia.1251"); }
+			catch (...) { return std::locale::classic(); }
+		}
+	}();
+	return loc;
+}
 
 std::u16string AddInNative::upper(std::u16string& str)
 {
-	std::transform(str.begin(), str.end(), str.begin(), [](wchar_t ch) { return std::toupper(ch, locale_ru); });
+	std::transform(str.begin(), str.end(), str.begin(), [](wchar_t ch) { return std::toupper(ch, RuLocale()); });
 	return str;
 }
 
 std::wstring AddInNative::upper(std::wstring& str)
 {
-	std::transform(str.begin(), str.end(), str.begin(), [](wchar_t ch) { return std::toupper(ch, locale_ru); });
+	std::transform(str.begin(), str.end(), str.begin(), [](wchar_t ch) { return std::toupper(ch, RuLocale()); });
 	return str;
 }
 
