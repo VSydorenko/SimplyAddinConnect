@@ -4,6 +4,7 @@
 #include "../core/AddInNative.h"
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/rotating_file_sink.h>
+#include <spdlog/sinks/msvc_sink.h>
 
 /**
  * @file ServiceTools_Log.cpp
@@ -78,16 +79,29 @@ static spdlog::level::level_enum ConvertLogLevel(LogLevel level) {
  * @param componentName Название компонента
  * @return std::shared_ptr<spdlog::logger> Указатель на логгер компонента или дефолтный логгер
  */
+// Fallback-логер до першого EnableLogging: OutputDebugString (видно в DebugView/
+// відладчику), рівень warn — щоб діагностика старту DLL не губилась мовчки.
+static std::shared_ptr<spdlog::logger> GetFallbackLogger() {
+    static std::shared_ptr<spdlog::logger> fallback = [] {
+        auto sink = std::make_shared<spdlog::sinks::msvc_sink_mt>();
+        auto logger = std::make_shared<spdlog::logger>("SimplyAddinConnect", sink);
+        logger->set_level(spdlog::level::warn);
+        logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%n] [%l] %v");
+        return logger;
+    }();
+    return fallback;
+}
+
 static std::shared_ptr<spdlog::logger> GetLogger(const std::string& componentName) {
     std::lock_guard<std::mutex> lock(loggersMutex);
-    
+
     auto it = loggers.find(componentName);
     if (it != loggers.end()) {
         return it->second;
     }
-    
-    // Если логгер для компонента не найден, возвращаем дефолтный логгер
-    return spdlog::default_logger();
+
+    // Если логгер для компонента не найден, возвращаем fallback-логгер (OutputDebugString)
+    return GetFallbackLogger();
 }
 
 /**

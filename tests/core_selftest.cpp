@@ -267,6 +267,12 @@ static void TestEventBridge() {
     delete comp;
 }
 
+// ---- Fallback-sink логера: до EnableLogging репорти не падають і не вимагають файлу ----
+static void TestFallbackLogging() {
+    NEUTRAL_REPORT_WARN("CoreSelftest", "Перевірка fallback-логера до EnableLogging");
+    CHECK(true, "fallback logging does not crash");
+}
+
 int main() {
     // Небуферизований stdout: щоб при аварійному завершенні (AV) не втратити
     // останні рядки й точно локалізувати місце падіння.
@@ -282,6 +288,7 @@ int main() {
     TestParamValidation();
     TestIndexHardening();
     TestEventBridge();
+    TestFallbackLogging();
     std::printf("=== %s (failed: %d) ===\n", g_failed ? "FAIL" : "OK", g_failed);
     return g_failed ? 1 : 0;
 }
