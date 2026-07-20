@@ -17,7 +17,7 @@ TransportCOM::TransportCOM(
       m_portHandle(INVALID_HANDLE_VALUE),
       m_isOpen(false),
       m_threadRunning(false),
-      m_stateDownEmitted(false),
+      m_upDelivered(false),
       m_writeFn([](HANDLE h, const void* buf, DWORD n, DWORD* written)
                 { return WriteFile(h, buf, n, written, NULL); })
 {
@@ -83,9 +83,12 @@ bool TransportCOM::Open()
         return false;
     }
 
-    // Устанавливаем флаг "открыт"
+    // Устанавливаем флаг "открыт". #C10: m_upDelivered сбрасываем в false ЗДЕСЬ (новый
+    // цикл соединения) — до этой точки неудачный Open (CreateFileW успел, но
+    // ConfigurePort/SetTimeouts провалились → Close → EmitStateDown) НЕ породит
+    // фантомный state(false), т.к. state(true) ещё не доставлялся.
     m_isOpen = true;
-    m_stateDownEmitted = false;   // новое соединение — разрешаем следующий state(false)
+    m_upDelivered = false;
 
     // Запускаем поток чтения
     if (!StartReadThread())
@@ -96,13 +99,17 @@ bool TransportCOM::Open()
     }
 
     NEUTRAL_REPORT_INFO("TransportCOM", "Порт успешно открыт: " + m_portName);
-    
-    // Уведомляем о изменении состояния соединения
+
+    // Уведомляем о изменении состояния соединения. #C6: помечаем «up доставлен»
+    // РОВНО перед доставкой state(true), чтобы EmitStateDown эмитил парный state(false)
+    // только для реально поднятого соединения. Это исключает и фантомный state(false),
+    // и возможность state(false) до/вокруг state(true) (гейт m_upDelivered в EmitStateDown).
+    m_upDelivered = true;
     if (m_connectionStateCallback)
     {
         m_connectionStateCallback(true);
     }
-    
+
     return true;
 }
 
@@ -158,8 +165,12 @@ bool TransportCOM::Close()
 
 void TransportCOM::EmitStateDown()
 {
-    bool expected = false;
-    if (m_stateDownEmitted.compare_exchange_strong(expected, true))
+    // #C6/#C10: state(false) РОВНО один раз И только если ранее доставлен state(true).
+    // exchange(false) даёт и гейт «up был доставлен», и exactly-once (лишь один
+    // вызывающий увидит true) — симметрия контракта §4.1 п.5. Неудачный первый Open
+    // (до пометки m_upDelivered) или reader-fail до state(true) не породит фантомный
+    // state(false); state(false) никогда не предшествует state(true).
+    if (m_upDelivered.exchange(false))
     {
         if (m_connectionStateCallback)
         {
@@ -416,7 +427,9 @@ void TransportCOM::AttachHandleForTest(HANDLE h)
 {
     m_portHandle = h;
     m_isOpen = true;
-    m_stateDownEmitted = false;
+    // Хендл привязан без доставки state(true) — up НЕ доставлен, поэтому Close после
+    // Attach не эмитит фантомный state(false) (гейт m_upDelivered в EmitStateDown).
+    m_upDelivered = false;
 }
 
 bool TransportCOM::StartReadThread()

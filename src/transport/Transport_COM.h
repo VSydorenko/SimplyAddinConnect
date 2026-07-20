@@ -106,7 +106,8 @@ private:
     bool StartReadThread();
     void StopReadThread();
 
-    // state(false) ровно один раз на разрыв (контракт §4.1 п.5).
+    // state(false) ровно один раз на разрыв И только если ранее доставлен state(true)
+    // (контракт §4.1 п.5; гейт m_upDelivered против фантомного/раннего state(false)).
     void EmitStateDown();
 
     // Приватные переменные
@@ -120,7 +121,10 @@ private:
     // Флаги состояния
     std::atomic<bool> m_isOpen;
     std::atomic<bool> m_threadRunning;
-    std::atomic<bool> m_stateDownEmitted;
+    // #C6/#C10: «state(true) доставлен в текущем цикле». Ставится РОВНО перед
+    // callback(true); EmitStateDown эмитит state(false) только при exchange(false)==true,
+    // что даёт up-gate (нет state(false) без state(true)) и exactly-once (§4.1 п.5).
+    std::atomic<bool> m_upDelivered;
 
     // Потоки и синхронизация
     std::thread m_readThread;

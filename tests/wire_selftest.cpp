@@ -1446,6 +1446,26 @@ static void TestComCloseCleansHandle() {
     CHECK(com.Close(), "ComCloseCleansHandle: повторний Close ідемпотентний");
 }
 
+// #C6/#C10 (регрес): невдалий Open (CreateFileW успіх, але ConfigurePort провалюється
+// на не-comm девайсі "NUL") НЕ повинен дати фантомний state(false) без попереднього
+// state(true). До фіксу перший Close у Open-fail-шляху емітив фантомний state(false)
+// (m_stateDownEmitted стартував false); тепер гейтить m_upDelivered (ставиться РІВНО
+// перед state(true), який тут не доставляється). Дзеркалить TestTcpStateUpGate.
+static void TestComStateUpGate() {
+    std::atomic<int> ups{ 0 }, downs{ 0 };
+    {
+        TransportCOM com("NUL");   // Open: CreateFileW ок, GetCommState на NUL провалиться
+        com.SetConnectionStateCallback([&](bool up) { (up ? ups : downs).fetch_add(1); });
+        CHECK(!com.Open(), "ComStateUpGate: Open на не-comm девайсі провалився");
+        CHECK(ups.load() == 0, "ComStateUpGate: жодного state(true) на невдалому Open");
+        CHECK(downs.load() == 0,
+              "ComStateUpGate: немає фантомного state(false) без попереднього state(true)");
+        com.Close();   // явний Close після невдалого Open — теж без фантомного down
+        CHECK(downs.load() == 0, "ComStateUpGate: явний Close не дав фантомного state(false)");
+    }   // деструктор → Close() ще раз
+    CHECK(downs.load() == 0, "ComStateUpGate: state(false) не зʼявився і після деструкції");
+}
+
 // Реальний COM round-trip проти com0com — ручний крок (у CI пропущено, НЕ FAIL).
 // Ручна перевірка: створити віртуальну пару com0com (напр. COM5<->COM6), запустити
 // ехо-заглушку на одному кінці, і DeviceSession над TransportCOM("COM5") має
@@ -1530,6 +1550,8 @@ static std::unique_ptr<ix::WebSocketServer> StartWsEcho(int port) {
 
 // Reopen після Close реально перепідключає (m_started→stop() у Close дозволяє повторний
 // start()). Exactly-once state: рівно один up і один down на цикл; повторний Close — no-op.
+// #W1: Open тепер НЕблокуючий — реальний конект підтверджується АСИНХРОННО через state(true),
+// тож тест чекає up/down через бар'єр (cv), а не читає IsOpen() синхронно після Open.
 static void TestWsReopen() {
     ix::initNetSystem();
     const int port = ProbeFreePort();
@@ -1549,35 +1571,71 @@ static void TestWsReopen() {
     TransportWSClient ws(url);
     ws.SetTimeout(3);   // короткий дедлайн конекту, щоб SKIP-гілка не вішала watchdog
 
-    std::atomic<int> ups{ 0 }, downs{ 0 };
-    ws.SetConnectionStateCallback([&](bool up) { (up ? ups : downs).fetch_add(1); });
+    std::mutex m;
+    std::condition_variable cv;
+    int ups = 0, downs = 0;
+    ws.SetConnectionStateCallback([&](bool up) {
+        std::lock_guard<std::mutex> lk(m);
+        if (up) ++ups; else ++downs;
+        cv.notify_all();
+    });
+    auto waitUps = [&](int n) {
+        std::unique_lock<std::mutex> lk(m);
+        return cv.wait_for(lk, std::chrono::seconds(3), [&] { return ups >= n; });
+    };
+    auto waitDowns = [&](int n) {
+        std::unique_lock<std::mutex> lk(m);
+        return cv.wait_for(lk, std::chrono::seconds(3), [&] { return downs >= n; });
+    };
 
-    // Цикл 1: Open (успіх лише за state(true)) → рівно один up.
-    bool o1 = ws.Open();
-    if (!o1) {
+    // Цикл 1: Open НЕблокуючий — повертає true одразу; факт конекту приходить через state(true).
+    CHECK(ws.Open(), "WsReopen: перший Open (неблокуючий) повернув true");
+    if (!waitUps(1)) {
         std::printf("[SKIP] WsReopen: конект до локального ws-сервера не встановився (ручний смоук)\n");
+        ws.Close();
         server->stop();
         ix::uninitNetSystem();
         return;
     }
-    CHECK(ws.IsOpen(), "WsReopen: перший Open встановив з'єднання (state-based)");
-    CHECK(ups.load() == 1, "WsReopen: рівно один state(true) на перший цикл");
+    CHECK(ws.IsOpen(), "WsReopen: перший Open встановив з'єднання (state(true) прийшов)");
+    { std::lock_guard<std::mutex> lk(m); CHECK(ups == 1, "WsReopen: рівно один state(true) на перший цикл"); }
 
     // Close → рівно один down (exactly-once, §4.1 п.5).
     CHECK(ws.Close(), "WsReopen: перший Close повертає true");
-    CHECK(downs.load() == 1, "WsReopen: рівно один state(false) на розрив");
+    CHECK(waitDowns(1), "WsReopen: state(false) доставлено на розрив");
+    { std::lock_guard<std::mutex> lk(m); CHECK(downs == 1, "WsReopen: рівно один state(false) на розрив"); }
     CHECK(ws.Close(), "WsReopen: повторний Close ідемпотентний");
-    CHECK(downs.load() == 1, "WsReopen: state(false) не дублюється при повторному Close");
+    { std::lock_guard<std::mutex> lk(m); CHECK(downs == 1, "WsReopen: state(false) не дублюється при повторному Close"); }
 
     // Цикл 2: Open ПІСЛЯ Close реально перепідключає (reopen через новий start()).
-    bool o2 = ws.Open();
-    CHECK(o2 && ws.IsOpen(), "WsReopen: reopen після Close реально перепідключив");
-    CHECK(ups.load() == 2, "WsReopen: другий цикл дав другий state(true)");
+    CHECK(ws.Open(), "WsReopen: reopen (неблокуючий) повернув true");
+    CHECK(waitUps(2), "WsReopen: другий цикл дав другий state(true)");
+    { std::lock_guard<std::mutex> lk(m); CHECK(ups == 2, "WsReopen: рівно два state(true) за два цикли"); }
+    CHECK(ws.IsOpen(), "WsReopen: reopen після Close реально перепідключив");
     ws.Close();
-    CHECK(downs.load() == 2, "WsReopen: другий Close дав другий state(false)");
+    CHECK(waitDowns(2), "WsReopen: другий Close дав другий state(false)");
 
     server->stop();
     ix::uninitNetSystem();
+}
+
+// #W1 (регрес): Open для WS — НЕблокуючий (§4.1). Проти недосяжного (black-hole) хоста
+// з ВЕЛИКИМ таймаутом хендшейка Open ЗОБОВ'ЯЗАНИЙ повернутись НЕГАЙНО. До фіксу він
+// блокувався на m_connCv до m_timeoutSecs (~30с тут), морозячи потік 1С у Start і
+// вішаючи Stop() (яка джойнить супервізор ДО Close()). RunGuarded-watchdog (10с) зловив
+// би старий блокуючий Open як FAIL. Close теж не виснe (ix скасовує connect по stop()).
+static void TestWsOpenNonBlocking() {
+    // 192.0.2.1 — RFC5737 TEST-NET-1: не маршрутизується, конект «у чорну діру» (ні RST,
+    // ні відповіді) — саме сценарій, де старий блокуючий Open висів би до таймаута.
+    TransportWSClient ws("ws://192.0.2.1:9");
+    ws.SetTimeout(30);   // великий дедлайн хендшейка: блокуючий Open висів би ~30с
+
+    std::atomic<int> ups{ 0 };
+    ws.SetConnectionStateCallback([&](bool up) { if (up) ups.fetch_add(1); });
+
+    CHECK(ws.Open(), "WsOpenNonBlocking: Open повертає true одразу (не блокує на хендшейку)");
+    CHECK(ups.load() == 0, "WsOpenNonBlocking: state(true) ще не доставлено (конект async)");
+    CHECK(ws.Close(), "WsOpenNonBlocking: Close не виснe проти недосяжного хоста");
 }
 
 // === Task 8b: регресії код-рев'ю TransportTCP (#T5/#T7/#T9/#T-sym) ================
@@ -1832,8 +1890,10 @@ int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     RunGuarded("TestTcpStateUpGate", TestTcpStateUpGate);
     RunGuarded("TestComSendAllOrError", TestComSendAllOrError);
     RunGuarded("TestComCloseCleansHandle", TestComCloseCleansHandle);
+    RunGuarded("TestComStateUpGate", TestComStateUpGate);
     TestComRoundtripSkip();
     RunGuarded("TestWsDisableAutoReconnect", TestWsDisableAutoReconnect);
     RunGuarded("TestWsStartedControlsStop", TestWsStartedControlsStop);
+    RunGuarded("TestWsOpenNonBlocking", TestWsOpenNonBlocking);
     RunGuarded("TestWsReopen", TestWsReopen, 30);
     std::printf("=== %s (failed:%d) ===\n", g_failed?"FAIL":"OK", g_failed); return g_failed?1:0; }

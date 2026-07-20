@@ -81,30 +81,18 @@ bool TransportWSClient::Open()
         // Установка таймаута подключения
         m_webSocket->setHandshakeTimeout(m_timeoutSecs);
 
-        // Запуск ix-воркера. m_started фиксирует, что ресурс (воркер) существует —
-        // именно по нему Close() решает вызывать stop() (а не по m_isOpen).
+        // #W1 (§4.1): Open для WS — НЕблокирующий. Возвращаем true СРАЗУ после start()
+        // (конект ИНИЦИИРОВАН), не ожидая хендшейка. Иначе поток 1С мёрзнул бы до
+        // m_timeoutSecs (~60с) на m_connCv против недостижимого/black-hole хоста, а
+        // Stop() (джойнит супервизор ДО Close()) вис бы, и connectDeadlineMs
+        // становился неэффективным. Фактический конект подтверждается АСИНХРОННО через
+        // Open-сообщение воркера → OnMessageCallback → ConnectionState(true); гейтит его
+        // уже DeviceSession по connectDeadlineMs (Start/ReconnectLoop). m_started
+        // фиксирует, что ресурс (воркер) существует — именно по нему Close() решает
+        // вызывать stop() (а не по m_isOpen).
         m_webSocket->start();
         m_started = true;
-
-        // Успех Open — ТОЛЬКО по факту state(true) (§4.1: для WS факт конекта — через
-        // ConnectionState(true)). Ждём Open-сообщение воркера или ошибку/таймаут
-        // хендшейка; не рапортуем оптимистичный успех. Колбек state(true) при этом
-        // всё равно доставляется из OnMessageCallback (не из-под лока).
-        bool ok;
-        {
-            std::unique_lock<std::mutex> lk(m_connMutex);
-            m_connCv.wait_for(lk, std::chrono::seconds(m_timeoutSecs),
-                              [this] { return m_isOpen.load() || m_openFailed; });
-            ok = m_isOpen.load();
-        }
-
-        if (!ok)
-        {
-            m_isConnecting = false;
-            NEUTRAL_REPORT_WARN("Transport_WSClient",
-                "Соединение не установлено в пределах таймаута хендшейка: " + m_url);
-        }
-        return ok;
+        return true;
     }
     catch (const std::exception& e)
     {
