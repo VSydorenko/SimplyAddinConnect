@@ -6,6 +6,9 @@
 #include "../src/transport/Transport.h"
 #include "../src/transport/Transport_TCP.h"   // реальний транспорт для TCP-смоук (Task 8)
 #include "../src/transport/Transport_COM.h"   // реальний транспорт для COM-фіксів (Task 9)
+#include "../src/transport/Transport_WSClient.h"  // реальний транспорт для WS-фіксів (Task 10)
+#include "extern/ixwebsocket/ixwebsocket/IXWebSocketServer.h"  // локальний ws-echo (лише тест)
+#include "extern/ixwebsocket/ixwebsocket/IXNetSystem.h"
 #include "../src/transport/DeviceSession.h"
 #include <atomic>
 #include <chrono>
@@ -1309,6 +1312,132 @@ static void TestComRoundtripSkip() {
     std::printf("[SKIP] ComRoundtrip: потрібна пара com0com + ехо-заглушка (ручний смоук)\n");
 }
 
+// === Task 10: фікси реального TransportWSClient ===================================
+
+// --- (1) Детерміновані юніти на прапорцях (без мережі, завжди виконуються) --------
+
+// Конструктор ОБОВ'ЯЗКОВО вимикає авто-реконект ix (ним керує супервізор DeviceSession
+// через Close+Open; інакше ix-реконект ламав би exactly-once state, §9.1/§4.1).
+static void TestWsDisableAutoReconnect() {
+    TransportWSClient ws("ws://127.0.0.1:1");   // без Open — лише перевірка конструктора
+    CHECK(!ws.IsAutomaticReconnectionEnabledForTest(),
+          "WsDisableAutoReconnect: конструктор викликав disableAutomaticReconnection()");
+}
+
+// m_started (а НЕ m_isOpen) керує stop(): після remote-close з'єднання «впало»
+// (m_isOpen==false), але ix-воркер ще живий — Close ЗОБОВ'ЯЗАНИЙ його зупинити, інакше
+// наступний Open (reopen) не перепідключить. Детерміновано через stop-шов + лічильник.
+static void TestWsStartedControlsStop() {
+    TransportWSClient ws("ws://127.0.0.1:1");
+    std::atomic<int> stops{ 0 };
+    ws.SetStopHookForTest([&stops] { stops.fetch_add(1); });
+
+    // Модель стану «start() викликано, з'єднання впало remote-close»: started=true, !open.
+    ws.ForceStartedForTest(true);
+    CHECK(!ws.IsOpen(), "WsStartedControlsStop: не open (модель після remote-close)");
+
+    CHECK(ws.Close(), "WsStartedControlsStop: Close повертає true");
+    CHECK(stops.load() == 1,
+          "WsStartedControlsStop: Close викликав stop() попри !m_isOpen (m_started керує)");
+
+    // §4.1 п.1: повторний Close ідемпотентний — воркер уже зупинено, stop() не повторюється.
+    CHECK(ws.Close(), "WsStartedControlsStop: повторний Close ідемпотентний");
+    CHECK(stops.load() == 1, "WsStartedControlsStop: другий Close не викликає stop() повторно");
+}
+
+// --- (2) Локальний ws-echo (ix::WebSocketServer) для reopen/exactly-once ----------
+// Порт ефемерний: ix-сервер не оновлює _port при port=0, тож пробуємо вільний порт
+// сирим Winsock (bind(0)+getsockname), звільняємо і віддаємо ix-серверу. Якщо сервер
+// не піднявся (зайнятий/недоступний у CI) — тест SKIP, а не FAIL (ручний смоук лишається).
+
+static int ProbeFreePort() {
+    WSADATA w;
+    if (WSAStartup(MAKEWORD(2, 2), &w) != 0) return 0;
+    int port = 0;
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s != INVALID_SOCKET) {
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        a.sin_port = 0;
+        if (bind(s, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0) {
+            int len = sizeof(a);
+            if (getsockname(s, reinterpret_cast<sockaddr*>(&a), &len) == 0) {
+                port = ntohs(a.sin_port);
+            }
+        }
+        closesocket(s);
+    }
+    WSACleanup();
+    return port;
+}
+
+// Локальний ws-echo: ехо-ить кожне Message назад тому ж клієнту. nullptr при невдачі.
+static std::unique_ptr<ix::WebSocketServer> StartWsEcho(int port) {
+    auto server = std::make_unique<ix::WebSocketServer>(port, "127.0.0.1");
+    server->setOnClientMessageCallback(
+        [](std::shared_ptr<ix::ConnectionState>, ix::WebSocket& webSocket,
+           const ix::WebSocketMessagePtr& msg) {
+            if (msg->type == ix::WebSocketMessageType::Message) {
+                webSocket.send(msg->str, msg->binary);   // ехо кадру назад
+            }
+        });
+    if (!server->listenAndStart()) return nullptr;
+    return server;
+}
+
+// Reopen після Close реально перепідключає (m_started→stop() у Close дозволяє повторний
+// start()). Exactly-once state: рівно один up і один down на цикл; повторний Close — no-op.
+static void TestWsReopen() {
+    ix::initNetSystem();
+    const int port = ProbeFreePort();
+    if (port == 0) {
+        std::printf("[SKIP] WsReopen: не вдалося отримати вільний порт (ручний смоук)\n");
+        ix::uninitNetSystem();
+        return;
+    }
+    auto server = StartWsEcho(port);
+    if (!server) {
+        std::printf("[SKIP] WsReopen: локальний ws-сервер не піднявся на порту %d (ручний смоук)\n", port);
+        ix::uninitNetSystem();
+        return;
+    }
+
+    const std::string url = "ws://127.0.0.1:" + std::to_string(port);
+    TransportWSClient ws(url);
+    ws.SetTimeout(3);   // короткий дедлайн конекту, щоб SKIP-гілка не вішала watchdog
+
+    std::atomic<int> ups{ 0 }, downs{ 0 };
+    ws.SetConnectionStateCallback([&](bool up) { (up ? ups : downs).fetch_add(1); });
+
+    // Цикл 1: Open (успіх лише за state(true)) → рівно один up.
+    bool o1 = ws.Open();
+    if (!o1) {
+        std::printf("[SKIP] WsReopen: конект до локального ws-сервера не встановився (ручний смоук)\n");
+        server->stop();
+        ix::uninitNetSystem();
+        return;
+    }
+    CHECK(ws.IsOpen(), "WsReopen: перший Open встановив з'єднання (state-based)");
+    CHECK(ups.load() == 1, "WsReopen: рівно один state(true) на перший цикл");
+
+    // Close → рівно один down (exactly-once, §4.1 п.5).
+    CHECK(ws.Close(), "WsReopen: перший Close повертає true");
+    CHECK(downs.load() == 1, "WsReopen: рівно один state(false) на розрив");
+    CHECK(ws.Close(), "WsReopen: повторний Close ідемпотентний");
+    CHECK(downs.load() == 1, "WsReopen: state(false) не дублюється при повторному Close");
+
+    // Цикл 2: Open ПІСЛЯ Close реально перепідключає (reopen через новий start()).
+    bool o2 = ws.Open();
+    CHECK(o2 && ws.IsOpen(), "WsReopen: reopen після Close реально перепідключив");
+    CHECK(ups.load() == 2, "WsReopen: другий цикл дав другий state(true)");
+    ws.Close();
+    CHECK(downs.load() == 2, "WsReopen: другий Close дав другий state(false)");
+
+    server->stop();
+    ix::uninitNetSystem();
+}
+
 int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     TestClassifierDoubles();
     TestLoopbackTransport();
@@ -1338,4 +1467,7 @@ int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     RunGuarded("TestComSendAllOrError", TestComSendAllOrError);
     RunGuarded("TestComCloseCleansHandle", TestComCloseCleansHandle);
     TestComRoundtripSkip();
+    RunGuarded("TestWsDisableAutoReconnect", TestWsDisableAutoReconnect);
+    RunGuarded("TestWsStartedControlsStop", TestWsStartedControlsStop);
+    RunGuarded("TestWsReopen", TestWsReopen, 30);
     std::printf("=== %s (failed:%d) ===\n", g_failed?"FAIL":"OK", g_failed); return g_failed?1:0; }

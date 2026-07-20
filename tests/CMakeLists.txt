@@ -65,6 +65,7 @@ set_target_properties(wire_selftest PROPERTIES
 target_include_directories(wire_selftest PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}                   # корінь: Transport_WSClient.h тягне "extern/ixwebsocket/..."
     ${SPDLOG_INCLUDE_DIR}
     ${IXWEBSOCKET_INCLUDE_DIR}            # transport_component тягне ixwebsocket-заголовки
 )
