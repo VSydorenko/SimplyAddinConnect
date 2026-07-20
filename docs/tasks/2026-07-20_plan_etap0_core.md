@@ -404,11 +404,42 @@ protected:
 
 Expected: усі `[PASS]`.
 
+- [ ] **Step 4б: Полагодити зламані сайти TestComponent через Ret()**
+
+> **ПРАВИЛО застосування `Ret()` (за аудитом):** обгортати ЛИШЕ хендлери, чиє
+> `return`-значення і є результатом для 1С. **НЕ обгортати** хендлери, які самі
+> присвоюють `this->result`, а повертають лише службовий bool — `Ret()` перезаписав
+> би корисний результат булевим статусом. Приклади «не чіпати»:
+> `GetAvailablePorts` (`TestComponent.cpp:92` — ставить `result = portsStr`, `return true` службовий),
+> `CallUapki` (`AddinUAPKIConnect.cpp:80` — ставить `result = jsonResponse`).
+
+Реально зламані сьогодні сайти (повертають bool у void-`std::function` — значення
+губиться): `TestComponent.cpp:96-101` (`CheckPortExists`) і `:103-108`
+(`IsPortAvailable`). Обгорнути:
+
+```cpp
+	AddFunction(
+		u"CheckPortExists", u"ПроверитьСуществованиеПорта",
+		Ret([&](VH portName) {
+			std::u16string port = portName;
+			return this->CheckPortExists(port);
+		}));
+
+	AddFunction(
+		u"IsPortAvailable", u"ДоступенПорт",
+		Ret([&](VH portName) {
+			std::u16string port = portName;
+			return this->IsPortAvailable(port);
+		}));
+```
+
+Перевірка: збірка повної DLL зелена; core_selftest зелений.
+
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add src/core/AddInNative.h tests/core_selftest.cpp
-git commit -m "Ядро: Ret() — конвенція повернення значень у 1С через this->result для value-лямбд"
+git add src/core/AddInNative.h src/TestComponent.cpp tests/core_selftest.cpp
+git commit -m "Ядро: Ret() — конвенція повернення значень у 1С; полагоджено CheckPortExists/IsPortAvailable у TestComponent"
 ```
 
 ---
@@ -512,6 +543,58 @@ git commit -m "Ядро: REGISTER_COMPONENT — макрос реєстраці�
 - Consumes: `ServiceTools::EnableComponentLogging(AddInNative*, const std::string&, const std::string&)` (`src/helpers/ServiceTools.h:127`), `Ret()` з Task 3, `DefaultHelper`.
 - Produces: КОЖНА компонента автоматично має 1С-функцію `EnableLogging`/`ИспользоватьЛогирование(уровень="info", путь="")`. Дублікати в компонентах видалені. `DisableComponentLogging` лишається у деструкторах похідних (RTTI-імена в базовому деструкторі некоректні — не переносити).
 
+- [ ] **Step 0: Виправити латентний дедлок у ShutdownLogging (передумова)**
+
+Підтверджений аудитом баг наявного коду: `ShutdownLogging` бере `loggersMutex`
+(`src/helpers/ServiceTools_Log.cpp:163`) і під ним викликає `Info(componentName, ...)`
+(`:168`), а `Info → GetLogger` бере ТОЙ САМИЙ нерекурсивний м'ютекс (`:82`) —
+дедлок. Латентний, бо спрацьовує лише коли для компоненти існує логер (у 1С:
+увімкнули логування → закрили 1С → деструктор → `DisableComponentLogging` →
+зависання процесу). Виправлення — логувати БЕЗ повторного захоплення м'ютекса:
+
+```cpp
+void ShutdownLogging(const std::string& componentName) {
+    std::lock_guard<std::mutex> lock(loggersMutex);
+
+    auto it = loggers.find(componentName);
+    if (it != loggers.end()) {
+        try {
+            // Логуємо напряму через об'єкт логера (НЕ через Info(): той знову
+            // бере loggersMutex усередині GetLogger — це був дедлок)
+            it->second->info("Завершение работы логгера для компонента " + componentName);
+            it->second->flush();
+            loggers.erase(it);
+
+            auto settingsIt = componentLogSettings.find(componentName);
+            if (settingsIt != componentLogSettings.end()) {
+                componentLogSettings.erase(settingsIt);
+            }
+        }
+        catch (...) {
+            // Игнорируем исключения при закрытии логгера
+        }
+    }
+}
+```
+
+Тест у `core_selftest.cpp` (додати ДО TestBaseEnableLogging):
+
+```cpp
+static void TestShutdownLoggingNoDeadlock() {
+    // Ініціалізуємо логер у %TEMP% і одразу гасимо: до фіксу тут висне назавжди
+    std::string path = std::string(std::getenv("TEMP")) + "\\core_selftest_dl.log";
+    ServiceTools::InitLogging("DeadlockProbe", ServiceTools::LogLevel::Info, path);
+    ServiceTools::ShutdownLogging("DeadlockProbe");
+    CHECK(true, "ShutdownLogging does not deadlock");
+}
+```
+
+(Точні імена/неймспейси `InitLogging`/`ShutdownLogging`/`LogLevel` звірити з
+`ServiceTools.h` — якщо вони не в публічному заголовку, викликати через
+`EnableComponentLogging`/`DisableComponentLogging` з пробною компонентою.)
+Запуск до фіксу — тест висне (обірвати вручну), після фіксу — зелений. Коміт
+разом зі Step 5 задачі.
+
 - [ ] **Step 1: Написати падаючий тест**
 
 ```cpp
@@ -568,7 +651,9 @@ AddInNative::AddInNative(void) : result(nullptr, this) {
 			}
 			catch (...) { return false; }
 		}),
-		{ {0, DefaultHelper(u"info")}, {1, DefaultHelper(u"")} });
+		// Явний тип: після появи перевантаження з vector<ParamSpec> (Task 6)
+		// braced-list без типу може стати неоднозначним
+		MethDefaults{ {0, DefaultHelper(u"info")}, {1, DefaultHelper(u"")} });
 }
 ```
 
@@ -723,6 +808,41 @@ bool AddInNative::ValidateParams(Meth& m, tVariant* paParams, const long lSizeAr
 
 У `CallAsProc`: після отримання `it` — `if (!ValidateParams(*it, paParams, lSizeArray)) return false;`. У `CallAsFunc` — так само (до `CallMethod`, після `result << VA(pvarRetValue)`).
 
+Додатково (за аудитом): у місцях виклику зі старим 4-м аргументом-braced-list
+(`TestComponent.cpp:36`, база з Task 5) типізувати явно `MethDefaults{...}` /
+`std::vector<ParamSpec>{...}` — щоб перевантаження не стали неоднозначними
+(елемент `{0, DefaultHelper(...)}` теоретично матчиться і на `ParamSpec`,
+бо літерал `0` конвертується в `const char16_t*` для `std::u16string`).
+
+- [ ] **Step 3б: Захист індексів методів/властивостей (hardening за аудитом)**
+
+`std::next(begin, N)` при `N < 0` або `N > size()` — UB ще ДО перевірки
+`it == end()` (патерн у `AddInNative.cpp:242,259,349,366` та в property-шляхах).
+Додати на початок КОЖНОГО методу, що приймає `lMethodNum`/`lPropNum` з-зовні
+(`GetNParams`, `GetParamDefValue`, `HasRetVal`, `CallAsProc`, `CallAsFunc`,
+`GetMethodName`, `GetPropVal`, `SetPropVal`, `IsPropReadable`, `IsPropWritable`,
+`GetPropName`) охорону за зразком:
+
+```cpp
+	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= methods.size()) return false;
+```
+
+(для функцій, що повертають вказівник — `return nullptr;`, для `long` — `return -1;`).
+Тест у `core_selftest.cpp`:
+
+```cpp
+static void TestIndexHardening() {
+    AddInNative* comp = AddInNative::CreateObject(u"CoreProbe");
+    MockConnect connect; MockMemory memory;
+    comp->Init(&connect); comp->setMemManager(&memory);
+    tVariant ret{}; std::memset(&ret, 0, sizeof(ret)); ret.vt = VTYPE_EMPTY;
+    CHECK(!comp->CallAsFunc(-1, &ret, nullptr, 0), "negative method index rejected");
+    CHECK(!comp->CallAsFunc(9999, &ret, nullptr, 0), "out-of-range method index rejected");
+    CHECK(!comp->GetPropVal(-1, &ret), "negative prop index rejected");
+    comp->Done(); delete comp;
+}
+```
+
 - [ ] **Step 4: Запустити — зелено**
 
 Expected: усі `[PASS]`, старі тести теж зелені (регресія перевантажень).
@@ -805,15 +925,39 @@ void AddInNative::Done()
 
 bool AddInNative::PostExternalEvent(const std::u16string& message, const std::u16string& data)
 {
-	// ExternalEvent приймає незмінні для 1С буфери; платформа копіює їх
-	// синхронно всередині виклику, тож локальних копій достатньо
+	// ExternalEvent приймає WCHAR_T* без const — віддаємо mutable-буфери
+	// локальних копій (u16string::data() не-const з C++17); платформа копіює
+	// їх синхронно всередині виклику
 	std::u16string src = name, msg = message, dat = data;
 	std::lock_guard<std::mutex> lock(connectMutex_);
 	if (!m_iConnect) return false;
 	return m_iConnect->ExternalEvent(
-		(WCHAR_T*)src.c_str(), (WCHAR_T*)msg.c_str(), (WCHAR_T*)dat.c_str());
+		reinterpret_cast<WCHAR_T*>(src.data()),
+		reinterpret_cast<WCHAR_T*>(msg.data()),
+		reinterpret_cast<WCHAR_T*>(dat.data()));
 }
 ```
+
+Додатково (за аудитом): `AddError` (`AddInNative.cpp:577-581`) читає `m_iConnect`
+без синхронізації — з фоновими потоками це data race з `Done()`. Узяти той самий
+м'ютекс:
+
+```cpp
+void AddInNative::AddError(const std::u16string& descr)
+{
+	std::u16string source = u"AddIn." + name;
+	std::u16string text = descr;
+	std::lock_guard<std::mutex> lock(connectMutex_);
+	if (!m_iConnect) return;
+	m_iConnect->AddError(ADDIN_E_IMPORTANT,
+		reinterpret_cast<WCHAR_T*>(source.data()),
+		reinterpret_cast<WCHAR_T*>(text.data()), 0);
+}
+```
+
+(Точну поточну сигнатуру/тіло `AddError` звірити на місці — зберегти наявну
+семантику, додавши лише lock + null-guard. У тесті EventBridge доповнити:
+`comp->Done();` потім виклик методу, що всередині робить `AddError`, — не падає.)
 
 - [ ] **Step 4: Запустити — зелено**
 
@@ -902,7 +1046,15 @@ git commit -m "Логування: fallback-sink OutputDebugString до EnableLo
 
 - [ ] **Step 1: Додати core_selftest у run_tests.ps1**
 
-Знайти в `run_tests.ps1` блок L1 (`uapki_selftest`) і ПЕРЕД ним додати аналогічний крок: запуск `bin/Release/core_selftest_$Arch.exe`, PASS при exit 0, FAIL інакше, з додаванням до підсумкової таблиці (використати той самий механізм обліку результатів, що й у сусідніх кроків — скопіювати патерн виклику з L1-блоку).
+Конкретні точки (за аудитом): поряд з `$SelfTestExe` (`run_tests.ps1:39`) додати
+`$CoreSelftestExe = Join-Path $BinRelease "core_selftest$ArchSuffix.exe"`;
+перевірку `$haveExes` (`:208` і `:218`) НЕ розширювати — вона стосується
+UAPKI-екзешників; для core — окрема перевірка наявності з власним
+`Add-Result 'build' 'core-exe' ...`. Запуск core_selftest — ПЕРЕД блоком L1
+(`:229+`): exit 0 → PASS, інакше FAIL, у підсумкову таблицю тим самим
+`Add-Result`-патерном. Ключова вимога: core-крок НЕ повинен вимагати провайдера
+UAPKI (`$ProviderDll`) чи UAPKI-екзешників — він має проходити і в збірці без
+`-WithUAPKI`.
 
 - [ ] **Step 2: Повна збірка з UAPKI і тестами**
 
@@ -916,7 +1068,7 @@ Expected: core_selftest PASS + всі попередні UAPKI-рівні (L0/L1
 
 - [ ] **Step 4: Синхронізувати документацію**
 
-- `AGENTS.md` → «Як додати компоненту»: замінити ручний блок `names`+`_force` на `REGISTER_COMPONENT`, згадати `Ret()`, `ParamSpec`, успадкований `EnableLogging`; «Тести» → додати `core_selftest` (збирається без `-WithUAPKI`, потрібен лише `-WithTests`... фактично: `-DBUILD_TESTS=ON`; уточнити поведінку `build_project.ps1 -WithTests` без `-WithUAPKI` — якщо скрипт блокує, зняти блокування або задокументувати cmake-шлях).
+- `AGENTS.md` → «Як додати компоненту»: замінити ручний блок `names`+`_force` на `REGISTER_COMPONENT`, згадати `Ret()` (і правило «не обгортати хендлери, що самі ставлять this->result»), `ParamSpec`, успадкований `EnableLogging`; «Тести» → додати `core_selftest`. Перевірено аудитом: `build_project.ps1:78` ВЖЕ передає `-DBUILD_TESTS=ON` незалежно від `-WithUAPKI` — скрипт міняти не треба; виправити лише формулювання в AGENTS.md («-WithTests працює лише разом з -WithUAPKI» → «core_selftest збирається завжди при -WithTests; uapki_selftest/native_host — лише разом з -WithUAPKI»).
 - `docs/architecture/core.md`: нові механізми (Ret, ParamSpec+валідація, PostExternalEvent, EnableLogging у базі, boot-фікси) — окремим розділом «Платформенні механізми ядра (Етап 0)».
 
 - [ ] **Step 5: Commit**
