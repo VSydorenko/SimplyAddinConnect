@@ -6,6 +6,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
+#include <chrono>
+#include <future>
 #include <string>
 #include <thread>
 #include <vector>
@@ -154,14 +157,64 @@ static void TestRetConvention() {
     comp->Done(); delete comp;
 }
 
+// ---- Ret() через CallAsProc: функція, викликана як процедура (результат
+// відкидається). CallAsProc відʼєднує result.pvar; до фіксу operator= кидав тут
+// bad_variant_access, і CallAsProc повертав false попри виконану дію. ----
+static bool g_procSideEffect = false;
+static void TestRetViaCallAsProc() {
+    struct ProcProbe : public AddInNative {
+        ProcProbe() {
+            AddFunction(u"DoIt", u"Сделать",
+                Ret([]() { g_procSideEffect = true; return true; }));
+        }
+    };
+    AddInNative::AddComponent(u"ProcProbe", []() -> AddInNative* { return new ProcProbe; });
+    AddInNative* comp = AddInNative::CreateObject(u"ProcProbe");
+    MockConnect connect; MockMemory memory;
+    comp->Init(&connect); comp->setMemManager(&memory);
+    long m = comp->FindMethod((WCHAR_T*)u"DoIt");
+    CHECK(m >= 0, "FindMethod(DoIt)");
+    g_procSideEffect = false;
+    // Виклик як ПРОЦЕДУРА: 1С відкидає результат -> платформа кличе CallAsProc.
+    CHECK(comp->CallAsProc(m, nullptr, 0), "Ret() via CallAsProc returns true (no spurious throw)");
+    CHECK(g_procSideEffect, "Ret() handler side effect ran under CallAsProc");
+    CHECK(connect.errors.empty(), "no spurious AddError from CallAsProc");
+    comp->Done(); delete comp;
+}
+
 // ---- Дедлок ShutdownLogging: до фіксу зависав назавжди, після — миттєво ----
 static void TestShutdownLoggingNoDeadlock() {
-    // Ініціалізуємо логер у %TEMP% і одразу гасимо: до фіксу тут висло б назавжди
     const char* tempDir = std::getenv("TEMP");
     std::string path = std::string(tempDir ? tempDir : ".") + "\\core_selftest_dl.log";
-    ServiceTools::InitLogging("DeadlockProbe", ServiceTools::LogLevel::Info, path);
-    ServiceTools::ShutdownLogging("DeadlockProbe");
-    CHECK(true, "ShutdownLogging does not deadlock");
+    // Watchdog: якщо ShutdownLogging самозаблокується (регресія дедлоку), процес
+    // не має зависати назавжди — фіксуємо FAIL і аварійно виходимо через 5 с.
+    // (без цього регресія дедлоку повісила б увесь run_tests без жодного [FAIL]).
+    auto fut = std::async(std::launch::async, [&] {
+        ServiceTools::InitLogging("DeadlockProbe", ServiceTools::LogLevel::Info, path);
+        ServiceTools::ShutdownLogging("DeadlockProbe");
+    });
+    if (fut.wait_for(std::chrono::seconds(5)) == std::future_status::ready) {
+        fut.get();
+        CHECK(true, "ShutdownLogging does not deadlock");
+    } else {
+        CHECK(false, "ShutdownLogging DEADLOCK (timeout 5s)");
+        std::fflush(stdout);
+        std::_Exit(2);
+    }
+}
+
+// ---- Повторний InitLogging після ShutdownLogging: spdlog::drop у реєстрі ----
+// До фіксу 2-й init того ж імені кидав spdlog_ex "already exists" -> false,
+// і файлове логування ламалось для другої й наступних інстанцій типу в сесії 1С.
+static void TestReInitLoggingAfterShutdown() {
+    const char* tempDir = std::getenv("TEMP");
+    std::string path = std::string(tempDir ? tempDir : ".") + "\\core_selftest_reinit.log";
+    CHECK(ServiceTools::InitLogging("ReInitProbe", ServiceTools::LogLevel::Info, path),
+          "InitLogging(ReInitProbe) first");
+    ServiceTools::ShutdownLogging("ReInitProbe");
+    CHECK(ServiceTools::InitLogging("ReInitProbe", ServiceTools::LogLevel::Info, path),
+          "InitLogging(ReInitProbe) again after shutdown (spdlog::drop)");
+    ServiceTools::ShutdownLogging("ReInitProbe");
 }
 
 // ---- Спільний EnableLogging/ИспользоватьЛогирование у базі ----
@@ -267,6 +320,30 @@ static void TestEventBridge() {
     delete comp;
 }
 
+// ---- Реальна гонка PostExternalEvent (фон) проти Done() (головний потік) ----
+// Дає connectMutex_ змістовне покриття: без м'ютекса це data-race/UAF -> креш
+// під стресом; assertion (пост після Done -> false, без креша) детермінований.
+static void TestEventBridgeConcurrency() {
+    bool ok = true;
+    for (int i = 0; i < 40; ++i) {
+        AddInNative* comp = AddInNative::CreateObject(u"CoreProbe");
+        MockConnect connect; MockMemory memory;
+        comp->Init(&connect); comp->setMemManager(&memory);
+        std::atomic<bool> stop{ false };
+        std::thread poster([&] {
+            while (!stop.load(std::memory_order_relaxed))
+                comp->PostExternalEvent(u"OnData", u"x");
+        });
+        std::this_thread::yield();
+        comp->Done();                                   // гонка з poster
+        stop.store(true, std::memory_order_relaxed);
+        poster.join();
+        if (comp->PostExternalEvent(u"OnData", u"late")) ok = false;  // після Done -> false
+        delete comp;
+    }
+    CHECK(ok, "concurrent PostExternalEvent vs Done: no post after Done, no crash");
+}
+
 // ---- Fallback-sink логера: до EnableLogging репорти не падають і не вимагають файлу ----
 static void TestFallbackLogging() {
     NEUTRAL_REPORT_WARN("CoreSelftest", "Перевірка fallback-логера до EnableLogging");
@@ -281,13 +358,16 @@ int main() {
     TestSmokeLifecycle();
     TestBootFixes();
     TestRetConvention();
+    TestRetViaCallAsProc();
     TestComponentRegistry();
     TestRegisterComponentMacro();
     TestShutdownLoggingNoDeadlock();
+    TestReInitLoggingAfterShutdown();
     TestBaseEnableLogging();
     TestParamValidation();
     TestIndexHardening();
     TestEventBridge();
+    TestEventBridgeConcurrency();
     TestFallbackLogging();
     std::printf("=== %s (failed: %d) ===\n", g_failed ? "FAIL" : "OK", g_failed);
     return g_failed ? 1 : 0;

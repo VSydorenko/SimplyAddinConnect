@@ -184,7 +184,12 @@ void ShutdownLogging(const std::string& componentName) {
             it->second->info("Завершение работы логгера для компонента " + componentName);
             it->second->flush();
             loggers.erase(it);
-            
+            // Прибираємо ім'я і з глобального реєстру spdlog: інакше повторний
+            // InitLogging того ж імені (нова інстанція того ж типу компоненти в
+            // одній сесії 1С) кине spdlog_ex "already exists" і файлове логування
+            // зламається назавжди. spdlog::drop — no-op, якщо імені вже немає.
+            spdlog::drop(componentName);
+
             // Также удаляем настройки компонента
             auto settingsIt = componentLogSettings.find(componentName);
             if (settingsIt != componentLogSettings.end()) {

@@ -635,6 +635,10 @@ void AddInNative::VariantHelper::clear()
 
 AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(int64_t value)
 {
+	// Присвоєння у відʼєднаний result (CallAsProc навмисно обнуляє pvar, коли
+	// функцію викликано як процедуру — результат не потрібен) — тихе відкидання,
+	// а не bad_variant_access через clear() на nullptr
+	if (pvar == nullptr) return *this;
 	clear();
 	if (INT32_MIN <= value && value <= INT32_MAX) {
 		TV_VT(pvar) = VTYPE_I4;
@@ -649,6 +653,8 @@ AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(int64_t value)
 
 AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(double value)
 {
+	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння
+	if (pvar == nullptr) return *this;
 	clear();
 	TV_VT(pvar) = VTYPE_R8;
 	TV_R8(pvar) = value;
@@ -657,6 +663,8 @@ AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(double value)
 
 AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(bool value)
 {
+	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння
+	if (pvar == nullptr) return *this;
 	clear();
 	TV_VT(pvar) = VTYPE_BOOL;
 	TV_BOOL(pvar) = value;
@@ -665,6 +673,8 @@ AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(bool value)
 
 AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::u16string& str)
 {
+	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння
+	if (pvar == nullptr) return *this;
 	clear();
 	TV_VT(pvar) = VTYPE_PWSTR;
 	pvar->pwstrVal = nullptr;

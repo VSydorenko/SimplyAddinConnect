@@ -168,11 +168,20 @@ else {
 # --- L0.3: python ctypes smoke provider_info ---
 $python = (Get-Command python -ErrorAction SilentlyContinue)
 if (-not $python) { $python = (Get-Command py -ErrorAction SilentlyContinue) }
+# Розрядність python має збігатися з архітектурою провайдера: 64-біт python не
+# може завантажити 32-біт DLL (WinError 193) — це середовищне обмеження, а не
+# дефект провайдера, тож при розбіжності — SKIP, а не FAIL.
+$pyBits = $null
+if ($python) { $pyBits = "$(& $python.Source -c 'import struct;print(struct.calcsize("P")*8)' 2>$null)".Trim() }
+$wantBits = if ($Arch -eq 'x86') { '32' } else { '64' }
 if (-not $python) {
     Add-Result 'L0' 'py-provider_info' 'SKIP' 'python не в PATH'
 }
 elseif (-not (Test-Path $ProviderDll)) {
     Add-Result 'L0' 'py-provider_info' 'SKIP' "немає провайдера: $ProviderDll"
+}
+elseif ($pyBits -and ($pyBits -ne $wantBits)) {
+    Add-Result 'L0' 'py-provider_info' 'SKIP' "python $pyBits-біт не може завантажити $Arch-провайдер (потрібен $wantBits-біт python)"
 }
 else {
     $pySmoke = @'
