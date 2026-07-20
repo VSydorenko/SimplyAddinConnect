@@ -2,7 +2,9 @@
 #include "DeviceSession.h"
 #include "../helpers/ServiceTools.h"
 
+#include <algorithm>
 #include <chrono>
+#include <string>
 
 // Мапінг classifier-локального RejectReason у публічний RequestStatus (§4.3, §7).
 static RequestStatus MapReject(RejectReason reason) {
@@ -53,6 +55,7 @@ bool DeviceSession::Start() {
         }
         started_ = true;
         stopping_ = false;
+        desiredUp_ = true;
     }
 
     // Підписка транспортних колбеків ДО Open (щоб state(true) не загубився).
@@ -66,16 +69,28 @@ bool DeviceSession::Start() {
     // Dispatcher-потік — ДО Open (Inline-транспорт доставляє state синхронно в Open).
     dispatcher_ = std::thread([this] { DispatchLoop(); });
 
-    if (!transport_->Open()) {
-        // Реконект-супервізор доробляється в Task 6; поки просто повідомляємо невдачу.
-        NEUTRAL_REPORT_WARN("DeviceSession", "Транспорт не відкрився при Start");
-        return false;
+    // Первинна спроба Open робиться тут (щоб уникнути гонки супервізора з Open, супервізор
+    // піднімаємо ПІСЛЯ). Невдалий Open → просимо супервізора ретраїти через reconnectRequested_.
+    bool opened = transport_->Open();
+    if (opened) {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait_for(lk, std::chrono::milliseconds(cfg_.connectDeadlineMs),
+                     [this] { return connected_ || stopping_; });
+    } else {
+        NEUTRAL_REPORT_WARN("DeviceSession", "Транспорт не відкрився при Start — реконект супервізором");
+        std::lock_guard<std::mutex> lk(m_);
+        reconnectRequested_ = true;   // прокинути супервізора саме за reconnectRequested_
     }
 
-    // Дочекатися state(true) як критерію успіху конекту (§4.1, connectDeadlineMs).
-    std::unique_lock<std::mutex> lk(m_);
-    cv_.wait_for(lk, std::chrono::milliseconds(cfg_.connectDeadlineMs),
-                 [this] { return connected_ || stopping_; });
+    // Супервізор реконекту — ПІСЛЯ первинного Open. При успіху конекту його предикат
+    // (reconnectRequested_ || !connected_) хибний і він мирно чекає.
+    supervisor_ = std::thread([this] { ReconnectLoop(); });
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        supervisorCv_.notify_all();
+    }
+
+    std::lock_guard<std::mutex> lk(m_);
     return connected_;
 }
 
@@ -85,15 +100,10 @@ void DeviceSession::Stop() {
         std::lock_guard<std::mutex> lk(m_);
         if (stopping_) return;  // ідемпотентність
         stopping_ = true;
-        if (pendingPrimary_.active && !pendingPrimary_.done) {
-            pendingPrimary_.result = { RequestStatus::Stopped, {} };
-            pendingPrimary_.done = true;
-        }
-        if (pendingService_.active && !pendingService_.done) {
-            pendingService_.result = { RequestStatus::Stopped, {} };
-            pendingService_.done = true;
-        }
+        desiredUp_ = false;
+        FinishPendingLocked(RequestStatus::Stopped);
         cv_.notify_all();
+        supervisorCv_.notify_all();   // розбудити супервізора на завершення
     }
 
     // §6 крок 2: розбудити+join супервізор (повний реконект — Task 6).
@@ -200,8 +210,20 @@ RequestResult DeviceSession::DoRequest(Pending& pending, bool isPrimary,
     } else if (!connected_) {
         result = { RequestStatus::Disconnected, {} };
     } else {
-        // Таймаут; desync-логіка primary — Task 6.
+        // Справжній таймаут (з'єднання живе, не зупинено, відповіді нема).
         result = { RequestStatus::Timeout, {} };
+        if (isPrimary) {
+            // §7: нема ID запиту — пізня відповідь могла б зматчитись на наступний primary,
+            // тож переходимо в desync (знімає лише MarkSynchronized) і просимо реконект.
+            desynchronized_ = true;
+            reconnectRequested_ = true;
+            supervisorCv_.notify_all();
+        } else {
+            // §7/§14: service-таймаут без desync, але карантинимо дискримінатор цього
+            // service — наступний ServiceResponse-кадр (пізній дубль) проковтнути, щоб він
+            // не завершив новий service.
+            ++serviceQuarantine_;
+        }
     }
 
     // Звільнити доріжку (запит завершено).
@@ -241,17 +263,30 @@ void DeviceSession::OnBytes(const std::vector<uint8_t>& chunk) {
             continue;
         }
 
+        // Guard проти stale-кадрів (§14): доріжку завершує лише відповідь ТІЄЇ Ж генерації.
+        // Кадр старого epoch (пізня відповідь до реконекту) не завершує новий запит.
+        const bool primaryLive =
+            pendingPrimary_.active && !pendingPrimary_.done && pendingPrimary_.epoch == epoch_;
+        const bool serviceLive =
+            pendingService_.active && !pendingService_.done && pendingService_.epoch == epoch_;
+
         switch (cls.cls) {
         case FrameClass::PrimaryResponse:
-            if (pendingPrimary_.active && !pendingPrimary_.done) {
+            if (primaryLive) {
                 pendingPrimary_.result = { RequestStatus::Response, frame };
                 pendingPrimary_.done = true;
                 cv_.notify_all();
             }
             break;
         case FrameClass::ServiceResponse:
+            // Карантин (§7/§14): пізній дубль timed-out service — проковтнути, НЕ завершувати
+            // поточний service. Карантин діє до наступного кадру/реконекту.
+            if (serviceQuarantine_ > 0) {
+                --serviceQuarantine_;
+                break;
+            }
             // Доріжка service серіалізована серед service, але паралельна primary.
-            if (pendingService_.active && !pendingService_.done) {
+            if (serviceLive) {
                 pendingService_.result = { RequestStatus::Response, frame };
                 pendingService_.done = true;
                 cv_.notify_all();
@@ -259,14 +294,14 @@ void DeviceSession::OnBytes(const std::vector<uint8_t>& chunk) {
             break;
         case FrameClass::RejectPrimary:
             // Явний reject primary → завершити НЕГАЙНО (без таймауту) з мапінгом reason.
-            if (pendingPrimary_.active && !pendingPrimary_.done) {
+            if (primaryLive) {
                 pendingPrimary_.result = { MapReject(cls.reason), {} };
                 pendingPrimary_.done = true;
                 cv_.notify_all();
             }
             break;
         case FrameClass::RejectService:
-            if (pendingService_.active && !pendingService_.done) {
+            if (serviceLive) {
                 pendingService_.result = { MapReject(cls.reason), {} };
                 pendingService_.done = true;
                 cv_.notify_all();
@@ -275,17 +310,18 @@ void DeviceSession::OnBytes(const std::vector<uint8_t>& chunk) {
         case FrameClass::RejectBoth:
             // Неоднозначний reject при обох pending: немає причинного ID, який запит
             // відхилено → завершити ОБИДВІ доріжки + перевести сесію в desync (§7).
-            if (pendingPrimary_.active && !pendingPrimary_.done) {
+            if (primaryLive) {
                 pendingPrimary_.result = { MapReject(cls.reason), {} };
                 pendingPrimary_.done = true;
             }
-            if (pendingService_.active && !pendingService_.done) {
+            if (serviceLive) {
                 pendingService_.result = { MapReject(cls.reason), {} };
                 pendingService_.done = true;
             }
             desynchronized_ = true;
-            reconnectRequested_ = true;   // будити супервізор (Task 6)
+            reconnectRequested_ = true;
             cv_.notify_all();
+            supervisorCv_.notify_all();   // будити супервізор реконекту
             break;
         case FrameClass::Unsolicited:
         default:
@@ -308,10 +344,14 @@ void DeviceSession::OnTransportState(bool up) {
         std::lock_guard<std::mutex> lk(m_);
         connected_ = up;
         if (!up) {
-            ++epoch_;                    // нова генерація (guard проти stale — повне в Task 6)
-            reconnectRequested_ = true;  // будити супервізор (Task 6)
+            ++epoch_;                 // нова генерація — guard проти stale-кадрів (§14)
+            serviceQuarantine_ = 0;   // карантин діє «до реконекту» — скидаємо
+            // Обрив трактуємо як запит на реконект, ОКРІМ навмисного Close супервізора
+            // (інакше після нашого ж Close залишився б хибний reconnectRequested_ → цикл).
+            if (!expectedClose_) reconnectRequested_ = true;
         }
         cv_.notify_all();
+        supervisorCv_.notify_all();
     }
     // Прокинути стан драйверу — лише на dispatcher-потоці.
     Enqueue([this, up] {
@@ -326,8 +366,93 @@ void DeviceSession::OnTransportError(const std::string& message, int code) {
         "Помилка транспорту: " + message + " (код " + std::to_string(code) + ")");
 }
 
+void DeviceSession::FinishPendingLocked(RequestStatus status) {
+    if (pendingPrimary_.active && !pendingPrimary_.done) {
+        pendingPrimary_.result = { status, {} };
+        pendingPrimary_.done = true;
+    }
+    if (pendingService_.active && !pendingService_.done) {
+        pendingService_.result = { status, {} };
+        pendingService_.done = true;
+    }
+}
+
 void DeviceSession::ReconnectLoop() {
-    // Повна логіка супервізора реконекту — Task 6.
+    // Супервізор реконекту. Предикат пробудження — desiredUp_ && autoReconnect &&
+    // (reconnectRequested_ || !connected_): НЕ лише !connected_, бо після таймауту primary
+    // connected_ лишається true (§5). Успіх реконекту — ЛИШЕ state(true) у межах
+    // connectDeadlineMs (§4.1). Backoff cfg.reconnectDelayMs..reconnectMaxDelayMs.
+    int backoff = cfg_.reconnectDelayMs;
+    int tries = 0;
+
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> lk(m_);
+            supervisorCv_.wait(lk, [this] {
+                return stopping_ ||
+                       (desiredUp_ && cfg_.autoReconnect &&
+                        (reconnectRequested_ || !connected_));
+            });
+            if (stopping_) return;
+
+            // Споживаємо запит; завершуємо ще-активні pending як Disconnected (обрив/реконект).
+            reconnectRequested_ = false;
+            FinishPendingLocked(RequestStatus::Disconnected);
+            connected_ = false;
+            expectedClose_ = true;    // наступний Close — навмисний (не хибний reconnectRequested_)
+            cv_.notify_all();
+        }
+
+        // Кадрувальник — у чисте: старі байти не переносимо в нову генерацію.
+        {
+            std::lock_guard<std::mutex> fl(framerMutex_);
+            if (framer_) framer_->Reset();
+        }
+
+        // Backoff (скасовний через stopping_).
+        {
+            std::unique_lock<std::mutex> lk(m_);
+            if (supervisorCv_.wait_for(lk, std::chrono::milliseconds(backoff),
+                                       [this] { return stopping_; })) {
+                return;
+            }
+        }
+
+        // Спроба реконекту: Close → Open (без m_ — контракт §4.1, ніколи під локом).
+        transport_->Close();
+        const bool opened = transport_->Open();
+
+        bool ok = false;
+        {
+            std::unique_lock<std::mutex> lk(m_);
+            if (opened) {
+                supervisorCv_.wait_for(lk, std::chrono::milliseconds(cfg_.connectDeadlineMs),
+                                       [this] { return connected_ || stopping_; });
+                ok = connected_ && !stopping_;
+            }
+            expectedClose_ = false;
+            if (stopping_) return;
+        }
+
+        if (ok) {
+            backoff = cfg_.reconnectDelayMs;   // скинути backoff на майбутнє
+            tries = 0;
+            // desynchronized_ НЕ знімаємо автоматично — лише MarkSynchronized() (§5).
+        } else {
+            // Невдача: збільшити backoff і спробувати знову (доки не досягнуто maxTries).
+            backoff = (std::min)(backoff * 2, cfg_.reconnectMaxDelayMs);
+            ++tries;
+            if (cfg_.reconnectMaxTries > 0 && tries >= cfg_.reconnectMaxTries) {
+                NEUTRAL_REPORT_WARN("DeviceSession", "Реконект вичерпав спроби: " +
+                                    std::to_string(tries));
+                // Лишаємось відключеними; чекаємо наступної події (нового reconnectRequested_).
+            } else {
+                std::lock_guard<std::mutex> lk(m_);
+                reconnectRequested_ = true;
+                supervisorCv_.notify_all();
+            }
+        }
+    }
 }
 
 void DeviceSession::DispatchLoop() {

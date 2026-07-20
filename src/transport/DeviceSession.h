@@ -91,6 +91,9 @@ private:
                             const std::vector<uint8_t>& payload,
                             int timeoutMs, FrameOptions opts);
 
+    // Завершити активні (незавершені) pending заданим статусом. Викликати ПІД m_.
+    void FinishPendingLocked(RequestStatus status);
+
     // Поставити user-подію в чергу dispatcher-потоку.
     void Enqueue(std::function<void()> fn);
     // Wire-trace (sendAttempt/incoming) у чергу dispatcher-а (FIFO).
@@ -121,7 +124,12 @@ private:
     bool stopping_ = false;
     bool desynchronized_ = false;
     bool reconnectRequested_ = false;
-    std::uint64_t epoch_ = 0;
+    bool desiredUp_ = false;          ///< сесія хоче бути на зв'язку (Start..Stop)
+    bool expectedClose_ = false;      ///< супервізор навмисне Close (не трактувати як обрив)
+    int  serviceQuarantine_ = 0;      ///< скільки наступних ServiceResponse-кадрів проковтнути
+    std::uint64_t epoch_ = 0;         ///< генерація з'єднання (guard проти stale-кадрів)
+
+    std::condition_variable supervisorCv_;   ///< будильник супервізора реконекту (під m_)
 
     // Dispatcher-потік і його черга.
     std::thread dispatcher_;

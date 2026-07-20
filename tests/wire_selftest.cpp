@@ -634,6 +634,219 @@ static void TestSecondPrimaryConcurrent() {
           "SecondPrimaryConcurrent: first released by Stop");
 }
 
+// Лічильник подій стану з'єднання — для детермінованого очікування (ре)конекту
+// без sleep (підписується через SetConnectionStateHandler ДО Start).
+struct StateWaiter {
+    std::mutex m;
+    std::condition_variable cv;
+    int ups = 0;
+    int downs = 0;
+    void On(bool up) {
+        std::lock_guard<std::mutex> lk(m);
+        if (up) ++ups; else ++downs;
+        cv.notify_all();
+    }
+    bool WaitUps(int n, int timeoutMs = 3000) {
+        std::unique_lock<std::mutex> lk(m);
+        return cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&] { return ups >= n; });
+    }
+};
+
+// Таймаут primary: мовчання пристрою → {Timeout} + сесія в desync (§7).
+static void TestPrimaryTimeout() {
+    SessionConfig cfg;
+    cfg.autoReconnect      = true;
+    cfg.primaryTimeoutMs   = 120;
+    cfg.reconnectDelayMs   = 10;
+    cfg.reconnectMaxDelayMs = 40;
+    cfg.connectDeadlineMs  = 2000;
+    auto transport = std::make_unique<LoopbackTransport>();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<EchoClassifier>(), cfg);
+    CHECK(session.Start(), "PrimaryTimeout: Start connects");
+
+    RequestResult r = session.RequestPrimary(B("REQ"));   // жодної відповіді → таймаут
+    CHECK(r.status == RequestStatus::Timeout, "PrimaryTimeout: result {Timeout}");
+    CHECK(session.IsDesynchronized(), "PrimaryTimeout: session desynchronized after timeout");
+    session.Stop();
+}
+
+// desync блокує primary, але НЕ service; MarkSynchronized() знімає (§7).
+static void TestDesyncBlocksPrimaryNotService() {
+    SessionConfig cfg;
+    cfg.autoReconnect = false;   // без churn реконекту — спостерігаємо чистий desync
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<ScriptedClassifier>(std::deque<Classification>{
+                              { FrameClass::ServiceResponse, RejectReason::Busy },
+                              { FrameClass::PrimaryResponse, RejectReason::Busy }
+                          }), cfg);
+    CHECK(session.Start(), "DesyncBlocks: Start connects");
+
+    // Ввести desync через таймаут primary (короткий timeout, без відповіді).
+    RequestResult t = session.RequestPrimary(B("X"), 100);
+    CHECK(t.status == RequestStatus::Timeout, "DesyncBlocks: inducer primary timed out");
+    CHECK(session.IsDesynchronized(), "DesyncBlocks: desynchronized");
+    tp->WaitForSend();   // спожити send індьюсера X
+
+    // У desync новий primary → {Desynchronized} НЕГАЙНО, без відправки в мережу.
+    size_t sentBefore = tp->SentCount();
+    RequestResult p = session.RequestPrimary(B("Y"), 100);
+    CHECK(p.status == RequestStatus::Desynchronized, "DesyncBlocks: primary rejected {Desynchronized}");
+    CHECK(tp->SentCount() == sentBefore, "DesyncBlocks: desynced primary not sent to wire");
+
+    // Service дозволено навіть у desync (для відновлення).
+    RequestResult sr{};
+    std::thread sth([&] { sr = session.RequestService(B("SRV")); });
+    CHECK(tp->WaitForSend(), "DesyncBlocks: service sent despite desync");
+    tp->InjectRecv(NT("srvresp"));   // ScriptedClassifier[0] → ServiceResponse
+    sth.join();
+    CHECK(sr.status == RequestStatus::Response, "DesyncBlocks: service completes in desync");
+
+    // MarkSynchronized() знімає desync — primary знову дозволено.
+    session.MarkSynchronized();
+    CHECK(!session.IsDesynchronized(), "DesyncBlocks: MarkSynchronized clears desync");
+    RequestResult pr{};
+    std::thread pth([&] { pr = session.RequestPrimary(B("Z")); });
+    CHECK(tp->WaitForSend(), "DesyncBlocks: primary sent after MarkSynchronized");
+    tp->InjectRecv(NT("priresp"));   // ScriptedClassifier[1] → PrimaryResponse
+    pth.join();
+    CHECK(pr.status == RequestStatus::Response, "DesyncBlocks: primary works after resync");
+    session.Stop();
+}
+
+// Stale-frame після таймауту+реконекту: пізня відповідь старого запиту не завершує
+// новий primary (epoch/generation guard, §14).
+static void TestStaleFrameAfterReconnect() {
+    SessionConfig cfg;
+    cfg.autoReconnect      = true;
+    cfg.primaryTimeoutMs   = 120;
+    cfg.reconnectDelayMs   = 10;
+    cfg.reconnectMaxDelayMs = 40;
+    cfg.connectDeadlineMs  = 2000;
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<ScriptedClassifier>(std::deque<Classification>{
+                              { FrameClass::PrimaryResponse, RejectReason::Busy },  // stale — відкинути
+                              { FrameClass::PrimaryResponse, RejectReason::Busy }   // відповідь новому
+                          }), cfg);
+    StateWaiter sw;
+    session.SetConnectionStateHandler([&](bool up) { sw.On(up); });
+    CHECK(session.Start(), "StaleFrame: Start connects");
+    CHECK(sw.WaitUps(1), "StaleFrame: initial connect state(true)");
+
+    // primary тайм-аутить → desync + reconnectRequested → супервізор реконектить.
+    RequestResult t = session.RequestPrimary(B("OLD"));
+    CHECK(t.status == RequestStatus::Timeout, "StaleFrame: old primary timed out");
+    tp->WaitForSend();   // спожити send старого primary
+    CHECK(sw.WaitUps(2), "StaleFrame: supervisor reconnected (2nd state(true))");
+
+    // Пізня відповідь СТАРОГО запиту прилітає вже після реконекту. Активного primary
+    // нема (desync блокує новий) — має бути безпечно відкинута, НЕ збережена «на потім».
+    tp->InjectRecv(NT("STALE"));   // ScriptedClassifier[0] → PrimaryResponse (dropped)
+
+    // Драйвер відновив синхронізацію → новий primary дозволено.
+    session.MarkSynchronized();
+    RequestResult nr{};
+    std::thread th([&] { nr = session.RequestPrimary(B("NEW")); });
+    CHECK(tp->WaitForSend(), "StaleFrame: new primary sent");
+    tp->InjectRecv(NT("NEWRESP"));   // ScriptedClassifier[1] → PrimaryResponse → completes NEW
+    th.join();
+    CHECK(nr.status == RequestStatus::Response && nr.frame == B("NEWRESP"),
+          "StaleFrame: new primary completed by its own response, stale not applied");
+    session.Stop();
+}
+
+// Таймаут service: {Timeout} без desync, з карантином — пізній дубль не завершує
+// новий service (§7, §14).
+static void TestServiceTimeoutQuarantine() {
+    SessionConfig cfg;
+    cfg.autoReconnect = false;
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<ScriptedClassifier>(std::deque<Classification>{
+                              { FrameClass::ServiceResponse, RejectReason::Busy },  // пізній дубль
+                              { FrameClass::ServiceResponse, RejectReason::Busy }   // відповідь новому
+                          }), cfg);
+    CHECK(session.Start(), "ServiceQuarantine: Start connects");
+
+    RequestResult t = session.RequestService(B("A"), 100);   // мовчання → таймаут
+    CHECK(t.status == RequestStatus::Timeout, "ServiceQuarantine: service timed out");
+    CHECK(!session.IsDesynchronized(), "ServiceQuarantine: service timeout does NOT desync");
+    tp->WaitForSend();   // спожити send першого service
+
+    RequestResult sr{};
+    std::thread sth([&] { sr = session.RequestService(B("B")); });
+    CHECK(tp->WaitForSend(), "ServiceQuarantine: new service sent");
+
+    // Пізній дубль відповіді старого (timed-out) service — карантин має проковтнути.
+    tp->InjectRecv(NT("late-dup"));   // ScriptedClassifier[0] → ServiceResponse (swallowed)
+    // Справжня відповідь новому service.
+    tp->InjectRecv(NT("real"));       // ScriptedClassifier[1] → ServiceResponse → completes B
+    sth.join();
+    CHECK(sr.status == RequestStatus::Response && sr.frame == B("real"),
+          "ServiceQuarantine: new service completed by its own response, not the late dup");
+    session.Stop();
+}
+
+// Обрив під час in-flight запиту → pending {Disconnected} + автоматичний реконект.
+static void TestDisconnectDuringPending() {
+    SessionConfig cfg;
+    cfg.autoReconnect      = true;
+    cfg.reconnectDelayMs   = 10;
+    cfg.reconnectMaxDelayMs = 40;
+    cfg.connectDeadlineMs  = 2000;
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<EchoClassifier>(), cfg);
+    StateWaiter sw;
+    session.SetConnectionStateHandler([&](bool up) { sw.On(up); });
+    CHECK(session.Start(), "DisconnectDuringPending: Start connects");
+    CHECK(sw.WaitUps(1), "DisconnectDuringPending: initial connect");
+
+    RequestResult r{};
+    std::thread th([&] { r = session.RequestPrimary(B("REQ")); });
+    CHECK(tp->WaitForSend(), "DisconnectDuringPending: request in-flight");
+
+    tp->ForceRemoteClose();   // обрив під час очікування відповіді
+    th.join();
+    CHECK(r.status == RequestStatus::Disconnected,
+          "DisconnectDuringPending: pending completes {Disconnected}");
+    CHECK(sw.WaitUps(2), "DisconnectDuringPending: supervisor reconnected after drop");
+    session.Stop();
+}
+
+// Провал ПЕРШОГО Open: супервізор має прокинутись за reconnectRequested_
+// (не лише !connected_) і перепідключитись.
+static void TestInitialOpenFailure() {
+    SessionConfig cfg;
+    cfg.autoReconnect      = true;
+    cfg.reconnectDelayMs   = 10;
+    cfg.reconnectMaxDelayMs = 40;
+    cfg.connectDeadlineMs  = 2000;
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    tp->ScriptFailNextOpen();   // перший Open провалиться (без state(true))
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<EchoClassifier>(), cfg);
+    StateWaiter sw;
+    session.SetConnectionStateHandler([&](bool up) { sw.On(up); });
+    session.Start();   // Open fail → супервізор має ретраїти
+    CHECK(sw.WaitUps(1), "InitialOpenFailure: supervisor reconnects after failed initial Open");
+    CHECK(session.IsConnected(), "InitialOpenFailure: session connected after retry");
+    session.Stop();
+}
+
 int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     TestClassifierDoubles();
     TestLoopbackTransport();
@@ -646,4 +859,10 @@ int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     RunGuarded("TestRejectBoth", TestRejectBoth);
     RunGuarded("TestUnsolicitedToHandler", TestUnsolicitedToHandler);
     RunGuarded("TestSecondPrimaryConcurrent", TestSecondPrimaryConcurrent);
+    RunGuarded("TestPrimaryTimeout", TestPrimaryTimeout);
+    RunGuarded("TestDesyncBlocksPrimaryNotService", TestDesyncBlocksPrimaryNotService);
+    RunGuarded("TestStaleFrameAfterReconnect", TestStaleFrameAfterReconnect);
+    RunGuarded("TestServiceTimeoutQuarantine", TestServiceTimeoutQuarantine);
+    RunGuarded("TestDisconnectDuringPending", TestDisconnectDuringPending);
+    RunGuarded("TestInitialOpenFailure", TestInitialOpenFailure);
     std::printf("=== %s (failed:%d) ===\n", g_failed?"FAIL":"OK", g_failed); return g_failed?1:0; }
