@@ -1,170 +1,150 @@
-# Device-facing ядро: ITransport + IFramer + DeviceSession — дизайн (ред. 2)
+# Device-facing ядро: ITransport + IFramer + DeviceSession — дизайн (ред. 3)
 
-*Дата: 2026-07-20. Статус: ред. 2 після локального Codex-аудиту (гілка `device-core`).*
-*Спирається на: `docs/tasks/2026-07-19_platform_architecture_design.md`,
-`docs/ECR_Privat_JSON_Protokol.md`, виконаний Етап 0 (`2026-07-20_plan_etap0_core.md`).*
-*Ред. 2 враховує підтверджені по коду/спеці знахідки аудиту: класифікація кадрів
-замість `bool`-кореляції, дві доріжки primary/service, результат-структура зі
-статусом, desync-на-тайм-аут, реальні фікси транспортів (не «зберегти як є»),
-дисципліна потоків (dispatcher user-колбеків, теардаун, framer-mutex), точні
-CMake/тест/доки-чеклісти.*
+*Дата: 2026-07-20. Статус: ред. 3 після 2 локальних Codex-аудитів (гілка `device-core`).*
+*Ред. 3 усуває власні суперечності ред. 2 (єдиний порядок TCP `Close`; `RequestStatus`
+у спільному заголовку; живі config-дефолти), уточнює desync/teardown/precedence, і
+виносить дрібнозернисті реалізаційні деталі в §14 (інваріанти для TDD) та обмеження
+класифікатора Привату в §15 (драйверна фаза) — замість доспецифікації кожної нитки в прозі.*
+*База: `docs/tasks/2026-07-19_platform_architecture_design.md`, `docs/ECR_Privat_JSON_Protokol.md`,
+Етап 0 (`2026-07-20_plan_etap0_core.md`).*
 
 ---
 
 ## 1. Мета й обсяг
 
-Побудувати переюзний device-facing фундамент драйверів: «байтовий транспорт →
-кадрування → класифікація → сесія запит/відповідь», повністю тестований без
-обладнання (loopback + байтові вектори).
+Переюзний device-facing фундамент драйверів: «байтовий транспорт → кадрування →
+класифікація → сесія запит/відповідь», повністю тестований без обладнання.
 
-**У обсязі:**
-- `ITransport` — байтовий контракт із **чіткою моделлю потоків/помилок** + реальні
-  фікси наявних `TransportCOM`/`TransportTCP`/`TransportWSClient` (§9.1).
-- `IFramer` + `NullTerminatedFramer` (per-request `FrameOptions`).
-- `IFrameClassifier` — класифікація вхідного кадру (не `bool`-кореляція).
-- `DeviceSession` — постійна дуплексна сесія: reader, буфер, framer, класифікація,
-  **дві доріжки** `RequestPrimary`/`RequestService`, результат-структура,
-  unsolicited-канал через **dispatcher**, реконект-супервізор, desync-логіка,
-  wire-трейс.
-- `wire_selftest` + `LoopbackTransport` (з окремим потоком доставки).
-- Прибирання мертвого коду + синхронізація CMake/доків (§9.2).
+**У обсязі:** `ITransport` (контракт §4.1 + реальні фікси наявних транспортів §9.1);
+`IFramer`+`NullTerminatedFramer`; `IFrameClassifier`; `DeviceSession` (reader, дві
+доріжки `RequestPrimary`/`RequestService`, `RequestResult`, unsolicited через
+dispatcher, реконект-супервізор, desync-логіка, wire-трейс); `wire_selftest`+
+`LoopbackTransport`; прибирання коду + синхронізація CMake/доків.
 
-**Поза обсягом (наступні фази):**
-- Рушій async-операцій (`JobEngine`), база `DeviceDriverComponent`, `PrivatDriver`,
-  BPOS1/POSAPI.
-- **Фабрика/парсер рядка підключення** (`"tcp://…"`/`"COM3:…"`/`"ws://…"` → `ITransport`) —
-  свідомо в драйверну фазу; у цій фазі тести й майбутній caller створюють транспорт
-  **прямими конструкторами** (`TransportCOM/TCP/WSClient`) і передають `unique_ptr` у
-  сесію. Формат рядка тут лише зафіксовано документально.
+**Поза обсягом (наступні фази):** рушій async-операцій (`JobEngine`), база
+`DeviceDriverComponent`, `PrivatDriver` (+ конкретна Privat-логіка класифікатора, §15),
+BPOS1/POSAPI. **Фабрика/парсер рядка підключення** — драйверна фаза; тут тести й caller
+створюють транспорт прямими конструкторами.
 
 ## 2. Що лагодить
 
 Хендшейк Привату колись не пішов = **баг №1** (розірваний прийом): очікувач висів на
-condition variable, яку ніхто не сигналив (`ProcessReceivedData` не підключений до
-транспорту). `DeviceSession` усуває це структурно: прийом і очікування в одному
-об'єкті на спільних `mutex`/`cv`, єдиний власник байтового потоку.
-
-Додатковий висновок аудиту: **самі транспорти теж треба лагодити** (витоки хендлів,
-можливий hang у `Close`, WS-реконект, часткова відправка) — «зберегти як є» було
-хибним припущенням (§9.1).
+CV, яку ніхто не сигналив. `DeviceSession` усуває структурно (єдиний власник байтового
+потоку, прийом і очікування на спільних `mutex`/`cv`). Додатково: **самі транспорти
+теж мають реальні баги** (витоки, можливий hang, WS-реконект, часткова відправка) —
+§9.1.
 
 ## 3. Архітектура
 
 ```
-              ┌──────────────────────────────────────────────┐
-   (пізніше)  │ DeviceDriverComponent : AddInNative           │  ← НЕ в цій задачі
-              └───────────────────┬──────────────────────────┘
-                  RequestPrimary/RequestService/unsolicited
-  ┌───────────────────────────────▼───────────────────────────┐
-  │ DeviceSession                                              │
-  │  reader→framer→classifier→{primary|service|reject|unsol}   │
-  │  RequestPrimary / RequestService → RequestResult           │
-  │  dispatcher-потік для user-колбеків; реконект-супервізор    │
-  └──┬────────────┬───────────────┬──────────────┬─────────────┘
-     │ IFramer    │ IFrameClassifier             │ ITransport
-  ┌──▼───────┐ ┌──▼──────────────┐  ┌────────────▼──────────────┐
-  │NullTerm  │ │(Privat: method+ │  │ TransportCOM/_TCP/_WSClient│
-  │Framer    │ │ msgType) — драйв│  │ (з фіксами §9.1)           │
-  │+mutex    │ │ тести: подвійники│  │ + LoopbackTransport (тест)│
-  └──────────┘ └─────────────────┘  └───────────────────────────┘
+  DeviceSession
+   reader→framer→classifier→{primary|service|rejectPrimary|rejectService|unsolicited}
+   RequestPrimary/RequestService → RequestResult ; dispatcher-потік user-колбеків ; супервізор
+      │IFramer            │IFrameClassifier              │ITransport
+  NullTerminatedFramer   (Privat: §15 — драйв.фаза)   TransportCOM/_TCP/_WSClient(+фікси §9.1)
+   +framerMutex          тести: подвійники             + LoopbackTransport(тест)
 ```
 
-Правило потоків (наскрізне): **транспорт → `OnBytes`/`OnTransportState` (внутрішній
-стан під `m_`); user-колбеки (unsolicited / connection-state / wire-trace) — ЛИШЕ на
-окремому dispatcher-потоці, ніколи не під `m_` і не на reader/caller/supervisor-потоці.**
+**Правило потоків (наскрізне):** транспорт → внутрішні `OnBytes`/`OnTransportState`
+(стан під `m_`); **усі user-колбеки (unsolicited/state/trace) — лише на dispatcher-потоці**,
+ніколи під `m_`, ніколи на reader/caller/supervisor-потоці.
 
 ## 4. Компоненти й інтерфейси
 
-### 4.1 `ITransport` (еволюція `src/transport/Transport.h`) — уточнений контракт
+### 4.0 Спільні типи (`src/transport/RequestTypes.h`)
+
+Щоб класифікатор не залежав від сесії (аудит), статус-enum — окремий заголовок:
+
+```cpp
+enum class RequestStatus {
+    Response,        // frame валідний
+    Busy,            // deviceBusy
+    Unsupported,     // methodNotImplemented
+    Timeout,
+    Disconnected,    // обрив під час in-flight
+    SendFailed,
+    Stopped,         // Stop()/деструктор
+    Concurrent,      // друга операція тієї ж доріжки
+    Desynchronized   // сесія в desync (див. §7), новий primary заборонено
+};
+struct RequestResult { RequestStatus status; std::vector<uint8_t> frame; };
+```
+
+### 4.1 `ITransport` (еволюція `src/transport/Transport.h`) — контракт
 
 ```cpp
 class ITransport {
 public:
     using DataReceivedCallback    = std::function<void(const std::vector<uint8_t>&)>;
     using ErrorCallback           = std::function<void(const std::string&, int)>;
-    using ConnectionStateCallback = std::function<void(bool /*connected*/)>;
-
+    using ConnectionStateCallback = std::function<void(bool)>;
     virtual ~ITransport() = default;
 
-    // Open: синхронна спроба. true = ресурс відкрито (для WS — start ініційовано;
-    // фактичний конект підтверджується ConnectionState(true), див. контракт нижче).
-    virtual bool Open() = 0;
-
-    // Close: ІДЕМПОТЕНТНА і ЗАВЖДИ звільняє ресурси (handle/socket/thread) незалежно
-    // від внутрішніх прапорців. КОНТРАКТ: після повернення Close() жоден колбек
-    // (data/error/state) більше НЕ почнеться. Порядок для сокетів: atomic→closed →
-    // shutdown(SD_BOTH) → join reader → closesocket (щоб розблокувати recv у reader).
-    virtual bool Close() = 0;
-
+    virtual bool Open() = 0;   // синхронна спроба; для WS true=start ініційовано,
+                               // фактичний конект — лише через ConnectionState(true)
+    virtual bool Close() = 0;  // див. КОНТРАКТ нижче
     virtual bool IsOpen() const = 0;
-
-    // Send: ALL-OR-ERROR. Повертає кількість надісланих байтів == data.size() при
-    // успіху, або <0 при помилці. Реалізація ЦИКЛІЧНО дописує залишок; часткова
-    // відправка НЕ вважається успіхом.
-    virtual int Send(const std::vector<uint8_t>& data) = 0;
-
-    // Єдиний власник колбеків — DeviceSession (для СВОГО екземпляра транспорту).
-    // МОДЕЛЬ ПОТОКІВ (частина контракту):
-    //  • DataReceived — завжди на фоновому reader-потоці транспорту.
-    //  • ConnectionState — може приходити з РІЗНИХ потоків: caller-потік при
-    //    Open()/локальному Close(); reader-потік при remote-disconnect; ix-worker
-    //    для WS. Гарантія: state(false) генерується РІВНО ОДИН раз на розрив.
-    //  • Error — reader/caller-потік.
-    //  Колбеки НЕ викликаються з-під внутрішнього локу транспорту.
+    virtual int  Send(const std::vector<uint8_t>&) = 0;  // ALL-OR-ERROR: ==size | <0
     virtual void SetDataReceivedCallback(DataReceivedCallback) = 0;
     virtual void SetErrorCallback(ErrorCallback) = 0;
     virtual void SetConnectionStateCallback(ConnectionStateCallback) = 0;
 };
 ```
 
-Формат рядка підключення (лише документально; парсер — драйверна фаза):
-`"COM3:115200,8,N,1"` | `"tcp://host:2000"` | `"ws://host:3000/path"`.
+**Контракт `Close()` (єдиний, несуперечливий):**
+1. Ідемпотентний; ЗАВЖДИ звільняє ресурси за їх валідністю (handle/socket/thread), НЕ
+   за прапорцем `m_isOpen`.
+2. **Синхронізований із `Send`** (бере той самий `m_sendMutex`/lifecycle-guard) — щоб не
+   закрити дескриптор посеред активної відправки.
+3. Порядок для сокетів (розблокувати `recv` у reader ДО join): atomically
+   `exchange(m_socket, INVALID_SOCKET)` → `shutdown(SD_BOTH)` копії → `closesocket` копії →
+   **потім** `join` reader-потоку. (Аналогічно COM: скинути handle → перервати
+   read-цикл → join.)
+4. Після повернення `Close()` жоден колбек (data/error/state) більше НЕ почнеться.
+5. `state(false)` генерується **рівно один раз** на розрив (чи то з reader при
+   remote-close, чи то з `Close`, але не двічі).
+
+**Модель потоків колбеків (частина контракту):** `DataReceived` — reader-потік;
+`ConnectionState` — РІЗНІ потоки (caller при `Open`/локальному `Close`; reader при
+remote-disconnect; ix-worker для WS); `Error` — reader/caller. Колбеки не з-під
+внутрішнього локу транспорту.
 
 ### 4.2 `IFramer` + `NullTerminatedFramer`
 
 ```cpp
-struct FrameOptions { bool leadingDelimiter = false; };  // per-request, НЕ конструктор
-
+struct FrameOptions { bool leadingDelimiter = false; };   // per-request (лише Wrap)
 class IFramer {
 public:
     virtual ~IFramer() = default;
     virtual void Feed(const std::vector<uint8_t>& chunk,
-                      std::vector<std::vector<uint8_t>>& out) = 0;   // stateful буфер
+                      std::vector<std::vector<uint8_t>>& out) = 0;
     virtual std::vector<uint8_t> Wrap(const std::vector<uint8_t>& payload,
                                       FrameOptions opts = {}) = 0;
     virtual void Reset() = 0;
 };
 ```
 
-`NullTerminatedFramer`:
-- `Feed`: накопичує в буфер (stateful між викликами), ріже по `0x00`, термінатор
-  відкидається, **порожні кадри (подвійний/провідний `0x00`) ігноруються** — так
-  вхідний провідний `0x00` (спека дозволяє лише перед handshake, `ECR_Privat_JSON_Protokol.md:87`)
-  не породжує фальшивого unsolicited.
-- `Wrap`: `payload + 0x00`; за `opts.leadingDelimiter` — `0x00 + payload + 0x00`
-  (лише для `PingDevice`-хендшейку; звичайні дейтаграми — тільки кінцевий `0x00`,
-  `ECR_Privat_JSON_Protokol.md:145`). **Провідний `0x00` — per-request, не постійний.**
-- `Reset`: очищає буфер (виклик при реконекті).
-- Синхронізація: див. §6 — Feed/Wrap/Reset із різних потоків → **власний `framerMutex_`**;
-  внутрішній ліміт `maxBufferedBytes` (захист від нескінченного накопичення без `0x00`).
+`NullTerminatedFramer`: `Feed` stateful, ріже по `0x00`, термінатор відкидається,
+порожні кадри (провідний/подвійний `0x00`) ігноруються (тож вхідний провідний `0x00`
+не породжує фальшивого unsolicited). `Wrap`: `payload+0x00`; за `leadingDelimiter` —
+`0x00+payload+0x00` (лише PingDevice-хендшейк). `Reset` — при реконекті.
+**Синхронізація:** власний `framerMutex_` (Feed/Wrap/Reset із різних потоків).
+**Переповнення:** ліміт `maxBufferedBytes`; при перевищенні — `Reset()` буфера +
+повідомлення про framing-error (постумова: наступний валідний кадр обробляється
+нормально, буфер не «отруєний»).
 
-### 4.3 `IFrameClassifier` (замість `IFrameCorrelator`) — класифікація, не `bool`
-
-Кореляція за одним полем `method` некоректна (deviceBusy/identify — див. нижче), тож
-класифікатор бачить, що зараз in-flight, і повертає **клас** кадру:
+### 4.3 `IFrameClassifier` — класифікація вхідного кадру
 
 ```cpp
 enum class FrameClass {
-    PrimaryResponse,  // відповідь на pendingPrimary → завершити primary статусом Response
-    ServiceResponse,  // відповідь на pendingService → завершити service статусом Response
-    RejectPrimary,    // напр. deviceBusy/methodNotImplemented → завершити primary rejectStatus
-    Unsolicited       // ініціативне повідомлення терміналу (статуси, prompt тощо)
+    PrimaryResponse, ServiceResponse,
+    RejectPrimary, RejectService,   // напр. deviceBusy/methodNotImplemented
+    RejectBoth,                     // неоднозначний reject при обох pending → + desync
+    Unsolicited
 };
-struct PendingView {                       // що зараз чекає (nullptr = нема)
-    const std::vector<uint8_t>* primary;
-    const std::vector<uint8_t>* service;
-};
-struct Classification { FrameClass cls; RequestStatus rejectStatus; };  // rejectStatus лише для RejectPrimary
+enum class RejectReason { Busy, Unsupported };     // classifier-local, не RequestStatus
+struct PendingView { const std::vector<uint8_t>* primary; const std::vector<uint8_t>* service; };
+struct Classification { FrameClass cls; RejectReason reason; };
 
 class IFrameClassifier {
 public:
@@ -174,289 +154,265 @@ public:
 };
 ```
 
-**Чому так (докази зі спеки):**
-- `deviceBusy` — відповідь на несервісний запит, але `method="ServiceMessage"`
-  (`:2187`). За `method` не зматчиться з `Purchase` → без `RejectPrimary` primary
-  даремно чекав би до 120с. → клас `RejectPrimary`, `rejectStatus=Busy`.
-- `methodNotImplemented` (`:2244`) — теж `RejectPrimary`, `rejectStatus=Unsupported`.
-- `identify`: і запит, і відповідь мають `method="ServiceMessage"` (`:2529`) —
-  кореляція лише за `method` хибно зматчила б чужий `ServiceMessage`; класифікатор
-  Привату розрізняє за `params.msgType` (identify→identify) і за наявним `pendingService`.
-- Службові мапінги запит→відповідь: `interrupt→interruptTransmitted` (`:2213`),
-  `correctTransaction→correctionTransmitted` (`:2633`), `debug→debugOn/Off` (`:2372`) —
-  класифікатор Привату враховує `msgType`, невідомий `ServiceMessage` НЕ завершує
-  service-pending, а йде в `Unsolicited`.
-
-Privat-класифікатор — драйверна фаза. Тести цієї фази: подвійники
-(`EchoClassifier` — рівність байтів = `PrimaryResponse`; програмовані для inject
-`RejectPrimary`/`ServiceResponse`/`Unsolicited`).
+Сесія мапить `RejectReason`→`RequestStatus` (Busy/Unsupported). `RejectBoth` завершує
+обидві доріжки й переводить сесію в desync (немає причинного ID, щоб знати, який запит
+відхилено). Конкретна Privat-логіка (deviceBusy/methodNotImplemented/identify за
+response-полями та `msgType`) — **драйверна фаза, обмеження §15**. Тести цієї фази —
+подвійники (`EchoClassifier` + програмовані на кожен `FrameClass`).
 
 ### 4.4 `DeviceSession`
 
 ```cpp
-enum class RequestStatus {
-    Response, Busy, Unsupported, Timeout, Disconnected, SendFailed, Stopped, Concurrent
-};
-struct RequestResult {
-    RequestStatus status;
-    std::vector<uint8_t> frame;   // валідний лише при status==Response
-};
-
 struct SessionConfig {
-    int  primaryTimeoutMsDefault = 30000;   // операції задають свій (напр. 120000)
-    int  serviceTimeoutMsDefault = 5000;
-    bool autoReconnect           = true;
-    int  reconnectDelayMs        = 1000;    // експоненційний backoff
-    int  reconnectMaxDelayMs     = 15000;
-    int  reconnectMaxTries       = 0;       // 0 = нескінченно (постійний конект)
-    int  connectDeadlineMs       = 10000;   // очікування state(true) як успіху конекту
+    int  primaryTimeoutMs = 30000;   // ВИКОРИСТОВУЄТЬСЯ, коли Request timeout не заданий
+    int  serviceTimeoutMs = 5000;
+    bool autoReconnect    = true;
+    int  reconnectDelayMs = 1000, reconnectMaxDelayMs = 15000, reconnectMaxTries = 0;
+    int  connectDeadlineMs = 10000;  // очікування state(true) як успіху конекту
+    size_t maxBufferedBytes = 1<<20;
 };
 
 class DeviceSession {
 public:
     DeviceSession(std::unique_ptr<ITransport>, std::unique_ptr<IFramer>,
                   std::unique_ptr<IFrameClassifier>, SessionConfig cfg = {});
-    ~DeviceSession();                        // Stop() з гарантованим теардауном (§6)
+    ~DeviceSession();
 
     bool Start();
-    void Stop();
+    void Stop();                    // безпечний з БУДЬ-ЯКОГО потоку, у т.ч. dispatcher (§6)
     bool IsConnected() const;
 
-    // Основна операція (Purchase/Refund/…): серіалізована — один primary in-flight.
-    // Другий primary під час активного → {Concurrent}. Не з'єднано → {Disconnected}.
-    // Тайм-аут → {Timeout} + сесія переходить у Desynchronized і форсує реконект
-    // (див. §7): бо в Приваті нема унікального ID запиту, «протухла» відповідь може
-    // зматчитися на наступний primary.
-    RequestResult RequestPrimary(const std::vector<uint8_t>& payload, int timeoutMs,
-                                 FrameOptions frameOpts = {});
+    // timeoutMs<0 → cfg.primaryTimeoutMs/serviceTimeoutMs (дефолти тепер живі).
+    RequestResult RequestPrimary(const std::vector<uint8_t>& payload,
+                                 int timeoutMs = -1, FrameOptions = {});
+    RequestResult RequestService(const std::vector<uint8_t>& payload,
+                                 int timeoutMs = -1, FrameOptions = {});
 
-    // Службовий запит (getLastStatMsgCode/interrupt/correctTransaction/…): серіалізований
-    // серед service, але може виконуватися ПАРАЛЕЛЬНО з активним primary
-    // (спека: ServiceMessage async, `ECR_Privat_JSON_Protokol.md:303`).
-    RequestResult RequestService(const std::vector<uint8_t>& payload, int timeoutMs,
-                                 FrameOptions frameOpts = {});
+    // Драйвер знімає desync ПІСЛЯ протокольного відновлення результату транзакції.
+    void MarkSynchronized();
+    bool IsDesynchronized() const;
 
-    // User-колбеки — усі викликаються на DISPATCHER-потоці (§6), короткі/неблокуючі.
+    // Setters — ЛИШЕ до Start() (уникнення гонки з dispatcher); після Start — no-op+WARN.
     void SetUnsolicitedHandler(std::function<void(std::vector<uint8_t>)>);
     void SetConnectionStateHandler(std::function<void(bool)>);
-    // Wire-трейс: СИРІ байти (для outgoing — обгорнутий кадр із термінатором; для
-    // incoming — чанк як прийшов від транспорту). Формат сумісний із trace.log спеки.
-    void SetWireTraceHandler(std::function<void(bool outgoing, std::vector<uint8_t>)>);
-
+    void SetWireTraceHandler(std::function<void(bool /*sendAttempt*/, std::vector<uint8_t>)>);
 private:
-    void OnBytes(const std::vector<uint8_t>&);        // reader-потік
-    void OnTransportState(bool connected);            // різні потоки (див. ITransport)
+    void OnBytes(const std::vector<uint8_t>&);
+    void OnTransportState(bool);
     void OnTransportError(const std::string&, int);
-    void ReconnectLoop();                             // супервізор-потік
-    void DispatchLoop();                              // dispatcher-потік (user-колбеки)
-    // transport_, framer_(+framerMutex_), classifier_, cfg_
-    // m_ (pending primary/service, стан); cv_; dispatchQueue_+dispatchCv_
-    // stopping_, desynchronized_, connected_
+    void ReconnectLoop();
+    void DispatchLoop();
+    // m_, cv_; framerMutex_; dispatchQueue_+dispatchCv_
+    // pendingPrimary/pendingService; connected_, stopping_, desynchronized_, reconnectRequested_
 };
 ```
 
+Доріжки: **primary** серіалізований (один in-flight); **service** серіалізований серед
+service, але виконується **паралельно** з primary (спека: ServiceMessage async,
+`ECR_Privat_JSON_Protokol.md:303`). Пріоритет `interrupt` над polling-статусом — не тут,
+а в JobEngine (§15).
+
 ## 5. Потоки даних
 
-**Відправка (`RequestPrimary`/`RequestService`, потік-виклик):**
-1. Під `m_`: перевірити `stopping_`/`connected_`/`desynchronized_` і відсутність
-   іншого запиту тієї ж доріжки; зарезервувати pending (payload + місце під результат).
-   Якщо не можна — повернути `{Concurrent}`/`{Disconnected}`/`{Stopped}` **без** мережі.
-2. **Unlock `m_`** → `framer_->Wrap(payload, opts)` (під `framerMutex_`) → wire-trace(out,
-   через dispatcher) → `transport_->Send()`. Помилка `Send<0` → зняти pending, `{SendFailed}`.
-3. `cv_.wait_for(lock, timeout, predicate=результат готовий || розрив || stop)`.
-4. Повернути збережений `RequestResult` (`Response`/`Busy`/`Unsupported`/`Timeout`/
-   `Disconnected`/`Stopped`).
+**Відправка (`RequestPrimary`/`RequestService`):**
+1. Під `m_`: перевірити `stopping_`(→`Stopped`), `connected_`(→`Disconnected`),
+   для primary — `desynchronized_`(→`Desynchronized`), відсутність іншого запиту доріжки
+   (→`Concurrent`); зарезервувати pending (payload + `epoch` + місце під результат). Без
+   мережі, якщо відмова.
+2. **Unlock `m_`** → `Wrap` (під `framerMutex_`) → wire-trace(sendAttempt) → `transport_->Send()`.
+3. Під `m_`: **precedence** — якщо `Send<0` І pending ЩЕ належить цьому запиту й не
+   завершений іншим шляхом (напр. `state(false)`, викликаний Send'ом синхронно —
+   `Transport_TCP.cpp:371`), тоді `SendFailed`; інакше повернути вже збережений результат
+   (`Disconnected`).
+4. `cv_.wait_for(lock, timeout, pred = результат готовий || stopping_ || !connected_)`.
+5. Повернути `RequestResult`.
 
-**Прийом (reader-потік `OnBytes`):**
-1. wire-trace(in) через dispatcher.
-2. Під `framerMutex_`: `framer_->Feed(chunk, frames)` (винятки framer ловляться тут).
-3. Для кожного `frame`: під `m_` викликати `classifier_->Classify(pendingView, frame)`:
-   - `PrimaryResponse` → записати у primary-pending, `notify` очікувача primary.
-   - `ServiceResponse` → у service-pending, `notify` очікувача service.
-   - `RejectPrimary` → завершити primary-pending статусом `rejectStatus`, `notify`.
-   - `Unsolicited` → покласти кадр у `dispatchQueue_` (user-хендлер — на dispatcher).
-   *(Класифікація — швидка, без user-коду; жодного user-колбека під `m_`.)*
+**Прийом (`OnBytes`, reader-потік):** wire-trace(in) у dispatch-чергу (FIFO ДО unsolicited
+того ж чанку) → під `framerMutex_` `Feed` (винятки ловляться тут) → для кожного кадру
+під `m_` `Classify(pendingView, frame)`: `PrimaryResponse`/`ServiceResponse` → у pending
++ `notify`; `RejectPrimary`/`RejectService` → завершити відповідну доріжку
+(`Busy`/`Unsupported`); `RejectBoth` → обидві + `desynchronized_=true`+`reconnectRequested_`;
+`Unsolicited` → кадр у dispatch-чергу. Жодного user-колбека під `m_`.
 
-**Реконект (`OnTransportState(false)` → супервізор):** якщо `autoReconnect` і не
-`stopping_` → завершити pending-и статусом `Disconnected`, `framer_->Reset()`,
-розбудити `ReconnectLoop`. Супервізор працює за предикатом `desiredUp && !connected_`
-(включно з initial-Open-failure), backoff, `transport_->Close()`+`Open()`; успіхом
-вважає лише `state(true)` у межах `connectDeadlineMs` (не сам факт `Open()==true`).
-Після успішного реконекту знімає `desynchronized_`.
+**Реконект/desync:** будь-що, що ставить `reconnectRequested_=true` (обрив `state(false)`,
+таймаут primary, `RejectBoth`), будить супервізор. Предикат супервізора —
+`desiredUp && (reconnectRequested_ || !connected_)` (НЕ лише `!connected_` — після
+таймауту `connected_` лишається true). Супервізор: завершити pending `Disconnected`,
+`framer_->Reset()`, backoff, `Close()`+`Open()`, успіх — лише `state(true)` у межах
+`connectDeadlineMs`; **`desynchronized_` НЕ знімається автоматично** — лише `MarkSynchronized()`
+драйвером після протокольного відновлення.
 
-## 6. Модель потоків (явно)
+## 6. Модель потоків і teardown
 
-Чотири ролі потоків:
-- **Потік-виклик** — `RequestPrimary/Service`, блокується на `cv_`.
-- **reader-потік транспорту** — `OnBytes` (Feed+класифікація+notify); **user-код не виконує**.
-- **супервізор реконекту** — окремий; join у `Stop()`.
-- **dispatcher-потік** — єдиний, виконує ВСІ user-колбеки (unsolicited/state/trace) з
-  черги. Це усуває (а) реентрантний `Request` з reader-потоку (той не зміг би читати
-  свою ж відповідь) і (б) `Stop()` з user-колбека, що join-ив би сам себе.
+Ролі: потік-виклик (`Request`, чекає на `cv_`); reader-потік (OnBytes, без user-коду);
+супервізор реконекту; **dispatcher-потік** (усі user-колбеки з черги — усуває реентрантний
+`Request` і `Stop` з user-колбека). Локи: `m_` (pending/стан, коротко, ніколи під
+Send/Close/колбеків); `framerMutex_`; `dispatchCv_`.
 
-Локи:
-- `m_` — pending-и primary/service, `connected_`/`stopping_`/`desynchronized_`. Тримається
-  коротко; **ніколи** під час `Send`/`Open`/`Close` і user-колбеків.
-- `framerMutex_` — Feed/Wrap/Reset (різні потоки).
-- `dispatchCv_`/`dispatchQueue_` — черга dispatcher.
-
-**Теардаун `Stop()` (гарантований порядок, проти callback-у в знищену сесію):**
-1. Під `m_`: `stopping_=true`; завершити всі pending статусом `Stopped`; `cv_.notify_all`.
-2. Розбудити й **join** супервізор (без `m_`).
-3. `transport_->Close()` (без `m_`) — контракт §4.1 гарантує: після повернення колбеків
-   не буде.
-4. Від'єднати три транспортні колбеки (`Set*Callback(nullptr)`).
-5. Зупинити й **join** dispatcher-потік (після Close — нових елементів не додасться).
+**`Stop()` (безпечний з будь-якого потоку, у т.ч. dispatcher):**
+1. Під `m_`: `stopping_=true`; усі pending → `Stopped`; `cv_.notify_all`.
+2. Розбудити+join супервізор (без `m_`).
+3. `transport_->Close()` (без `m_`; контракт §4.1 — колбеків далі нема).
+4. Від'єднати транспортні колбеки (`Set*Callback(nullptr)`).
+5. Зупинити dispatcher: якщо `Stop()` викликано **НЕ** з dispatcher-потоку — join; якщо
+   **З** dispatcher-потоку (user-колбек викликав `Stop`) — **не self-join**: позначити
+   dispatcher на завершення після повернення поточного колбека, а фінальний join зробити
+   в `~DeviceSession` (з іншого потоку). Прапорець `stopping_` робить крок ідемпотентним.
 6. `framer_->Reset()`.
-`~DeviceSession` викликає `Stop()` (ідемпотентний).
+`~DeviceSession` викликає `Stop()` (ідемпотентний) і гарантує фінальний join dispatcher.
 
-## 7. Обробка помилок і результат
+## 7. Обробка помилок / результат
 
-- `Send<0` → `{SendFailed}`, pending знято.
-- Таймаут **primary** → `{Timeout}` + `desynchronized_=true` + форс-реконект (нова
-  синхронізація). Результат транзакції НЕВІДОМИЙ — відновлення (запит статусу) робить
-  драйвер у наступній фазі. Таймаут **service** — м'якший: `{Timeout}` без desync.
-- Обрив (`state(false)`) → усі pending `{Disconnected}` + реконект за політикою.
-- `RejectPrimary` (deviceBusy/methodNotImplemented) → primary завершується
-  `{Busy}`/`{Unsupported}` НЕГАЙНО (не чекає таймауту).
-- Виняток framer/classifier — ловиться в `OnBytes`, лог WARN, кадр відкидається,
-  сесія живе; не пропускається через reader-потік транспорту.
-- Виняток user-колбека (на dispatcher) — ловиться, лог WARN, dispatcher живе.
-- Немає `throw` через межу API.
+- `Send<0` → `SendFailed` (з precedence §5.3).
+- Таймаут **primary** → `Timeout` + `desynchronized_` + `reconnectRequested_` (бо нема ID
+  запиту: пізня відповідь могла б зматчитись на наступний primary). Знімається лише
+  `MarkSynchronized()`. Новий primary у desync → `Desynchronized`; **service дозволено**
+  (для відновлення). Таймаут **service** — `Timeout` без desync, але з карантином
+  дискримінатора цього service до наступного кадру/реконекту (щоб пізній дубль не
+  завершив новий service; §14).
+- Обрив → усі pending `Disconnected` + реконект.
+- `RejectPrimary`/`RejectService` → `Busy`/`Unsupported` негайно. `RejectBoth` → обидві +
+  desync.
+- Винятки framer/classifier — у `OnBytes`, лог WARN, кадр відкинуто, сесія живе.
+- Винятки user-колбека — на dispatcher, лог WARN. Немає `throw` через межу API.
 
 ## 8. Wire-трейс
 
-`SetWireTraceHandler(outgoing, bytes)` — **сирі байти**: outgoing = обгорнутий кадр
-(із термінатором), incoming = чанк як прийшов від транспорту (може не збігатися з
-межами кадрів — це прийнятно для сирого трейсу; логер драйвера форматує в hex за
-`trace.log`, `ECR_Privat_JSON_Protokol.md:2335`). Викликається на dispatcher-потоці.
+`SetWireTraceHandler(sendAttempt, bytes)` — байти на межі `ITransport` (для WS це
+payload, не сирі WebSocket-кадри). `sendAttempt=true` — **спроба** відправки (ставиться
+в чергу ДО `Send`, тож присутня навіть при `SendFailed`); `false` — прийнятий чанк.
+Порядок у dispatch-черзі FIFO: incoming-trace чанку — перед unsolicited того ж чанку.
+Логер драйвера форматує в hex за `trace.log` (`ECR_Privat_JSON_Protokol.md:2335`).
 
-## 9. Наявні транспорти й прибирання коду
+## 9. Наявні транспорти й прибирання
 
-### 9.1 Реальні фікси транспортів (аудит: «зберегти як є» — хибно)
+### 9.1 Реальні фікси (підтверджені по коду)
 
-- **`TransportCOM`** (`Transport_COM.cpp`): (а) `CreateFileA` → `CreateFileW`
-  (`:41`); (б) `Close()` при `!m_isOpen` виходить, не закривши handle — cleanup має
-  залежати від валідності `m_portHandle`, а не прапорця (`:103`), інакше помилка
-  `ConfigurePort`/`SetTimeouts` в `Open` (`:66-77`) → витік handle; (в) reader при
-  неусувній read-помилці лише логує — має генерувати `state(false)` і будити супервізор
-  (`:~439`); (г) прибрати мертвий `#include <winsock2.h>`.
-- **`TransportTCP`** (`Transport_TCP.cpp`): (а) `Close()` при `!m_isOpen` → рання відмова
-  без `closesocket` (`:283`) — cleanup завжди; (б) можливий hang: `StopReadThread` join
-  (`:478`) поки reader у блокуючому `recv` (`:490`) — порядок `shutdown(SD_BOTH)`+
-  `closesocket` **перед** join; (в) неблокуючий connect+`select` із таймаутом, потім
-  перевірити `SO_ERROR` і повернути сокет у blocking для reader; (г) видалити серверний
-  режим (конструктор `TransportTCP(int,int)`, `StartServer`, `AcceptThreadFunction`,
-  `m_serverSocket`, `m_isServer`, accept-потік); (д) `Send` — all-or-error цикл.
-- **`TransportWSClient`** (`Transport_WSClient.cpp`): (а) додати виклик
-  `disableAutomaticReconnection()` у конструкторі (зараз НЕ викликається — grep порожній;
-  ix default `true`); (б) `Open()` повертає `true` одразу після `start()` (`:70`) — сесія
-  вважає конект успішним лише за `state(true)` (§5); (в) реконект: вести окремий
-  `m_started` і завжди `stop()` для запущеного об'єкта, навіть коли `m_isOpen/m_isConnecting`
-  вже `false` (`:254-255,282-283`) — інакше повторний `Open` не спрацює; перестворювати
-  `ix::WebSocket` не треба (ix скидає stop-стан після join).
-- Спільне: усі три довести до **контракту `Close()`** з §4.1 (ідемпотентність,
-  «після Close колбеків нема», єдиний `state(false)`).
+- **`TransportCOM`**: `CreateFileA`→`CreateFileW` (`:41`); `Close` cleanup за валідністю
+  `m_portHandle`, не прапорця (`:103`); reader при неусувній помилці → `state(false)`+будити
+  супервізор (`:~439`); **all-or-error `Send`**: `WriteFile` при partial write зараз лише
+  WARN і повертає `bytesWritten<size` як «успіх» (`:360-372`) — цикл дозапису або трактувати
+  partial як `<0`; прибрати мертвий `#include <winsock2.h>`.
+- **`TransportTCP`**: `Close` cleanup завжди (`:283`); **єдиний порядок** (§4.1) — swap
+  socket→INVALID, `shutdown`, `closesocket`, потім join (`:293-305`,`:490`); **`Close`
+  синхронізувати з `m_sendMutex`** (Send його тримає `:353`, Close — ні); неблокуючий
+  connect+`select`+`SO_ERROR`+повернення в blocking; **обмежити DNS**: `getaddrinfo`
+  (`:102`) блокує до select — вимагати numeric IP або cancellable `GetAddrInfoExW` із
+  deadline; `Send` all-or-error цикл; видалити серверний режим (`TransportTCP(int,int)`,
+  `StartServer`, `AcceptThreadFunction`, `m_serverSocket`, `m_isServer`).
+- **`TransportWSClient`**: додати `disableAutomaticReconnection()` у конструкторі (зараз
+  НЕ викликається; ix default `true`); `Open` успіх — лише за `state(true)` (`:70`);
+  окремий `m_started` і `stop()` навіть коли `m_isOpen/m_isConnecting==false` (`:254-255,
+  282-283`); перестворювати `ix::WebSocket` не треба.
+- Спільне: усі три довести до **контракту `Close()` §4.1** (ідемпотентність, Send-sync,
+  правильний порядок, «після Close колбеків нема», єдиний `state(false)`).
 
 ### 9.2 Видалення + синхронізація
 
-- **Видалити** `Transport_WSServer.{h,cpp}` (мертвий) і серверний режим TCP (§9.1г).
-- **Видалити старий непрацездатний драйвер ECRPrivatJSON**: `src/components/AddinECRPrivatJSON.{h,cpp}`,
-  `src/protocols/ECRPrivatJSON/*`, `src/helpers/ECRPrivatJSON/*` (+ мертві
-  `CreateTransport`/`SetTransport`, дві буферні підсистеми, `stod→string`). Grep-перевірка
-  (аудит підтвердив): поза власними файлами `TransportWSServer`/TCP-сервер не
-  інстанціюються; єдиний зовнішній `TransportTCP` — клієнт у ECR-коді, що видаляється
-  (`ECRPrivatJSON_Connection.cpp:203`); `native_host` створює лише `AddinUAPKIConnect`
-  (`tests/native_host.cpp:165`); `manifest.xml`/`.def` правок не потребують.
-- **CMake** (`components.cmake`): прибрати в `HEADER_FILES` рядки 29,31,35,37-38;
-  `SOURCE_FILES` 55,57-63,67,69-74; `Transport_WSServer` з object-цілі 146-147; цілі ECR
-  150-228, їх залежності/лінк 297-310, `$<TARGET_OBJECTS:…>` 340-342. Додати ціль
-  `wire_component` (ITransport-реалізації + IFramer + IFrameClassifier + DeviceSession).
-  Якщо перейменовуємо `transport_component→wire_component` — оновити згадки 136-148,291,
-  313-329,337 і **`CMake/compiler_settings.cmake:29`** (інакше configure звернеться до
-  неіснуючої цілі).
-- **Синхронізувати доки** (пропущено в ред.1): `docs/architecture/README.md:20`,
-  `core.md:85`, `build-and-packaging.md:27`, `AGENTS.md:10` — прибрати ECR як наявний.
-- DLL після задачі: `TestComponent` + wire-об'єкти; `AddinUAPKIConnect` — **лише** при
-  `BUILD_WITH_UAPKI=ON` (`components.cmake:232,345`).
+- Видалити `Transport_WSServer.{h,cpp}` + серверний режим TCP.
+- Видалити старий ECR-драйвер: `src/components/AddinECRPrivatJSON.{h,cpp}`,
+  `src/protocols/ECRPrivatJSON/*`, `src/helpers/ECRPrivatJSON/*` (+ мертві `CreateTransport`/
+  `SetTransport`, дві буферні підсистеми, `stod→string`). Grep підтвердив (аудит): поза
+  власними файлами WSServer/TCP-сервер не інстанціюються; єдиний зовнішній `TransportTCP` —
+  клієнт у ECR (`ECRPrivatJSON_Connection.cpp:203`), що видаляється; `native_host` створює
+  лише `AddinUAPKIConnect` (`tests/native_host.cpp:165`); `manifest.xml`/`.def` не чіпати.
+- **CMake `components.cmake`**: прибрати `HEADER_FILES` 29,31,35,37-38; `SOURCE_FILES`
+  55,57-63,67,69-74; `Transport_WSServer` 146-147; цілі ECR 150-228 + залежності/лінк
+  297-310 + `$<TARGET_OBJECTS>` 340-342. Додати `wire_component`. При перейменуванні
+  `transport_component→wire_component` — оновити 136-148,291,313-329,337 і
+  `CMake/compiler_settings.cmake:29`.
+- Синхронізувати доки: `docs/architecture/README.md:20`, `core.md:85`,
+  `build-and-packaging.md:27`, `AGENTS.md:10`.
+- DLL після: `TestComponent`+wire; `AddinUAPKIConnect` лише при `BUILD_WITH_UAPKI=ON`.
 
-## 10. Тести (без обладнання)
+## 10. Тести
 
-Нова ціль **`wire_selftest`** (свій раннер, без gtest). Лінкування (аудит):
-`$<TARGET_OBJECTS:wire_component>` + `$<TARGET_OBJECTS:helpers_component>` +
-`$<TARGET_OBJECTS:base_component>` (транспорти кличуть `ServiceTools`) + link
-`spdlog::spdlog`, `ixwebsocket`, `ws2_32`; `_WINDOWS UNICODE _UNICODE`, `/utf-8`.
-**Оголосити `wire_selftest` ДО `return()`** у `tests/CMakeLists.txt` (гейт після
-core_selftest уже знято на `WIN32`; `:54` — UAPKI-return нижче).
+Ціль **`wire_selftest`** (свій раннер, без gtest). CMake — **скопіювати properties з
+core_selftest** (`tests/CMakeLists.txt:28-47`): `OUTPUT_NAME "wire_selftest${_TEST_ARCH_SUFFIX}"`,
+`CXX_STANDARD 17`, include dirs, `_WINDOWS UNICODE _UNICODE`, `/utf-8`; лінк
+`$<TARGET_OBJECTS:wire_component/helpers_component/base_component>` + `spdlog::spdlog`+
+`ixwebsocket`+`ws2_32`. Оголосити **ДО** UAPKI-`return()` (`:54`).
 
-1. **`NullTerminatedFramer` — байтові вектори** (без IO): один кадр; split посередині;
-   кілька в чанку; порожній кадр; провідний `0x00` окремим чанком; провідний `0x00`+JSON
-   одним чанком; звичайний кадр після handshake; `Wrap` з/без `leadingDelimiter`; `Reset`;
-   переповнення `maxBufferedBytes`. Вектори — з hex-прикладів спеки (`:92,113,153,160`).
-2. **`DeviceSession` над `LoopbackTransport`** (подвійник `ITransport`, що доставляє
-   `DataReceived`/`ConnectionState` **з окремого worker-потоку** — щоб відтворити
-   реальний асинхронний контракт; детермінізм — через черги+CV/бар'єри, БЕЗ `sleep_for`:
-   тест запускає `Request`, чекає факту `Send`, inject-ить кадр, join). Кейси:
-   - `RequestPrimary` → `PrimaryResponse` → `{Response}`;
-   - **response-before-wait** (відповідь інжектнута до входу в `wait` — не втратити);
-   - `deviceBusy` → `{Busy}` НЕГАЙНО; `methodNotImplemented` → `{Unsupported}`;
-   - unsolicited → у хендлер (на dispatcher), не в `Request`;
-   - **паралельно primary+service** (service проходить під час активного primary);
-   - другий primary під час активного → `{Concurrent}`;
-   - таймаут primary → `{Timeout}` + desync + реконект; **stale-відповідь після таймауту**
-     не матчиться на наступний primary;
-   - обрив під час in-flight → `{Disconnected}` + реконект; initial-Open-failure будить супервізор;
-   - `Stop()` під час pending → `{Stopped}`; **callback-quiescence після `Close`**;
-   - **реентрантний `Request`/`Stop` з unsolicited-хендлера** — не зависає (dispatcher);
-   - stop супервізора під час backoff; wire-trace ловить in/out.
-3. **Реальні транспорти — смоук:** `TransportTCP` авто проти in-process localhost-echo
-   (`bind(0)`+`getsockname`, readiness-бар'єр, `shutdown` перед join); `TransportCOM` —
-   ручний проти `com0com` (CI SKIP); `TransportWSClient` — ручний (повна валідація — у
-   драйверній фазі проти емулятора). Репрод-тест WS `Close/Open`.
-4. **`run_tests.ps1`**: додати `$WireSelftestExe` і рівень **L0.6** після L0.5, а також
-   **режим без UAPKI** (параметр): у ньому build перевіряє `core_selftest`+`wire_selftest`,
-   а provider/L1/L2/L3 → SKIP і **НЕ форсують** `BUILD_WITH_UAPKI=ON` (зараз `:225` форсує;
-   `:135` = FAIL при відсутньому провайдері).
+1. **Framer — байтові вектори** (§10 ред.2) + переповнення з перевіркою відновлення.
+2. **`DeviceSession` над `LoopbackTransport`** — подвійник із **двома режимами доставки
+   state**: worker-потік (async) І синхронний з `Open/Close` (контракт §4.1 дозволяє
+   обидва). Детермінізм — черги+CV+watchdog, без `sleep`. Кейси: Response;
+   response-before-wait; deviceBusy→Busy негайно; methodNotImplemented→Unsupported;
+   RejectBoth→обидві+desync; unsolicited→dispatcher; primary+service паралельно; другий
+   primary→Concurrent; таймаут primary→Timeout+desync (+ stale-frame після нового
+   `state(true)` НЕ матчиться); service-timeout+карантин дубля; обрив→Disconnected+реконект;
+   initial-Open-failure будить супервізор; `Stop` під час pending→Stopped;
+   callback-quiescence після Close; **реентрантні `Request`/`Stop` з unsolicited** (dispatcher,
+   watchdog); SendFailed-vs-Disconnected precedence; WS `Close/Open` repro.
+3. **Реальні транспорти — смоук:** `TransportTCP` авто (localhost-echo, `bind(0)`+
+   `getsockname`, readiness-бар'єр); **injectable write-seam** для partial-send (echo не
+   змусить partial); `TransportCOM` — `com0com` (CI SKIP); `TransportWSClient` + локальний
+   ws-echo для Close/Open/exact-once-state (за можливості авто, інакше ручний).
+4. **`run_tests.ps1`**: рівень **L0.6** + **режим без UAPKI** — окремий `$WireSelftestExe`,
+   mode-specific `$haveExes`/build/gates, у якому provider/L1/L2/L3 → SKIP і НЕ форсують
+   `BUILD_WITH_UAPKI` (зараз `:225` форсує, `:135` = FAIL до build).
 
-Принцип (урок обох попередніх спроб): жодних тестів проти вигаданого wire-формату;
-вектори — з hex-прикладів спеки або реального round-trip.
+Принцип: жодних тестів проти вигаданого wire-формату.
 
 ## 11. Структура файлів
 
 ```
-src/transport/
-  Transport.h                # ITransport (уточнений контракт §4.1)
-  Transport_COM.{h,cpp}      # ФІКСИ §9.1 (CreateFileW, Close, reader-state)
-  Transport_TCP.{h,cpp}      # ФІКСИ §9.1 (Close-order, nonblock connect, all-or-error) + прибрати сервер
-  Transport_WSClient.{h,cpp} # ФІКСИ §9.1 (disableAutoReconnect, m_started, state-based Open)
-  IFramer.h                  # НОВЕ (+FrameOptions)
-  NullTerminatedFramer.{h,cpp} # НОВЕ (+framerMutex, maxBufferedBytes)
-  IFrameClassifier.h         # НОВЕ (заміна IFrameCorrelator)
-  DeviceSession.{h,cpp}      # НОВЕ — ядро
-  (видалити) Transport_WSServer.{h,cpp}
-tests/  wire_selftest.cpp    # НОВЕ (+ LoopbackTransport з worker-потоком)
-CMake/  components.cmake (wire_component; §9.2) · compiler_settings.cmake (:29)
-run_tests.ps1                # L0.6 + режим без UAPKI
-docs/architecture/*, AGENTS.md  # синхронізація (§9.2)
+src/transport/  RequestTypes.h(нове) · Transport.h(§4.1) · Transport_COM/_TCP/_WSClient.{h,cpp}(фікси §9.1)
+                IFramer.h · NullTerminatedFramer.{h,cpp} · IFrameClassifier.h · DeviceSession.{h,cpp}  (нове)
+                (видалити) Transport_WSServer.{h,cpp}
+tests/ wire_selftest.cpp(+LoopbackTransport 2 режими)   CMake/ components.cmake · compiler_settings.cmake:29
+run_tests.ps1(L0.6+режим без UAPKI)   docs/architecture/*, AGENTS.md(синхр.)
 ```
 
 ## 12. Критерії приймання
 
-- `wire_selftest` зелений (усі кейси §10.1-2 + TCP-echo §10.3); COM/WS смоуки SKIP керовано.
-- **Режим без UAPKI**: `run_tests.ps1` збирає+ганяє `core_selftest`+`wire_selftest` без
-  `-WithUAPKI`, UAPKI-рівні SKIP.
-- `build_project.ps1 -WithUAPKI -WithTests` зелений x86/x64; повний `run_tests.ps1`
-  без регресій UAPKI (L0-L3) + L0.6.
-- ECR-драйвер, WSServer, TCP-сервер видалені; доки синхронізовані; UAPKI незачеплений.
-- Транспортні фікси §9.1 покриті смоук/loopback-тестами (Close-quiescence, all-or-error,
-  WS reopen).
+- `wire_selftest` зелений (framer + DeviceSession-over-loopback усі кейси §10.2 +
+  TCP-echo + partial-send через write-seam); COM/WS — керований SKIP або локальний ws-echo.
+- Режим без UAPKI: `run_tests.ps1` збирає+ганяє `core_selftest`+`wire_selftest` без
+  `-WithUAPKI` (UAPKI-рівні SKIP).
+- `build_project.ps1 -WithUAPKI -WithTests` зелений x86/x64; повний `run_tests.ps1` без
+  регресій UAPKI (L0-L3)+L0.6. ECR/WSServer/TCP-сервер видалені; доки синхронізовані;
+  UAPKI незачеплений. Транспортні фікси §9.1 покриті (Close-quiescence, all-or-error,
+  WS reopen, exact-once state) — де автотест недосяжний (реальний WS/COM), явно
+  задокументований ручний крок, а не мовчазна прогалина.
 
 ## 13. Ризики
 
 | Ризик | Пом'якшення |
 |---|---|
-| Гонки/дедлоки (reader/caller/supervisor/dispatcher) | Чіткі ролі потоків §6; user-колбеки лише на dispatcher; `m_` не тримається під Send/Close/колбеків; стрес-тести (reentrant, quiescence) |
-| Класифікатор/дві доріжки — складність не в тій фазі | Механізм (лейни, класифікація) generic і потрібен уже в сесії; Privat-логіка (`method`/`msgType`) — драйверна фаза; тести на подвійниках |
-| Фікси транспортів ширші за очікуване | Кожен фікс — малий і локальний; покривається loopback/смоук; робочого коду немає — рефактор вільний |
-| desync-на-тайм-аут ускладнює драйвер | Це вимога протоколу (нема ID запиту); сесія лише сигналить desync, відновлення — драйвер проти емулятора |
-| Форма сесії не підійде рушію операцій | Шов вузький (`RequestPrimary/Service`+RequestResult+unsolicited); рушій — споживач із worker-потоку |
+| Гонки/дедлоки (4 ролі потоків) | Ролі §6; user-колбеки лише dispatcher; `m_` не під Send/Close; стрес/reentrant/quiescence-тести; watchdog |
+| Фікси транспортів ширші | Кожен локальний; loopback+injectable seam; робочого коду нема — рефактор вільний |
+| desync ускладнює драйвер | Сесія лише сигналить+тримає desync; відновлення (MarkSynchronized) — драйвер проти емулятора |
+| Класифікатор — тонкі кейси Привату | Інтерфейс достатньо виразний (Reject*/ambiguity §4.3); Privat-логіка+edge-cases — §15, драйверна фаза |
+| Нескінченне доспецифікування дизайну | §14/§15 фіксують інваріанти/обмеження; решта точності — у TDD (тести форсують поведінку), не в прозі |
+
+## 14. Інваріанти для TDD (не доспецифікуються в прозі — форсуються тестами)
+
+Ці властивості реалізація мусить забезпечити; точний механізм — у коді під тест:
+- **Немає callback-у в знищену/зупинену сесію**: після `Close()`/`Stop()` — нуль колбеків
+  (тест quiescence з watchdog).
+- **Немає self-deadlock**: `Request`/`Stop` з unsolicited-хендлера не вішають (dispatcher).
+- **Exactly-once `state(false)`** на розрив; `state(true)` — критерій успіху реконекту.
+- **Precedence результату**: pending завершується РІВНО одним джерелом (Send-fail vs
+  disconnect vs response vs stop) — без подвійного запису.
+- **Stale-frame** після таймауту/реконекту не завершує новий запит (epoch/generation guard).
+- **framer-overflow**: буфер не «отруюється»; наступний валідний кадр обробляється.
+- **Send all-or-error** (COM і TCP) — під injectable write-seam.
+
+## 15. Обмеження класифікатора Привату (драйверна фаза — записано, не реалізується тут)
+
+Коли писатиметься `PrivatClassifier` (проти емулятора каси):
+- Розрізняти **запит vs відповідь** не лише за `method`/`msgType`, а за **response-only
+  полями** (identify-відповідь має `result/vendor/model`, `ECR_Privat_JSON_Protokol.md:2529`;
+  статуси мають свої response-поля) — інакше чужий `ServiceMessage` хибно зматчиться.
+- `deviceBusy`(`:2187`)→`RejectPrimary/Busy`; `methodNotImplemented`(`:2244`)→`Reject*/Unsupported`
+  (може стосуватися primary АБО service; при обох pending без причинного ID → `RejectBoth`).
+- Службові мапінги запит→відповідь: `interrupt→interruptTransmitted`(`:2213`),
+  `correctTransaction→correctionTransmitted`(`:2633`), `debug→debugOn/Off`(`:2372`);
+  невідомий `ServiceMessage` НЕ завершує service-pending → `Unsolicited`.
+- **Нормалізація літералів**: у спеці `msgType` містять провідні/кінцеві пробіли
+  (`" interruptTransmitted"` `:2221`, `" methodNotImplemented"` `:2251`) — ASCII-trim перед
+  порівнянням; вектори — з буквальних прикладів.
+- **Пріоритет `interrupt`** над polling-статусом (spec вимагає interrupt під час Purchase,
+  `:2201`) — політика JobEngine: зупинити polling, звільнити service-доріжку, повторити
+  interrupt (не проблема сесії).
