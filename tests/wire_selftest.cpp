@@ -167,9 +167,22 @@ public:
     }
 
     int Send(const std::vector<uint8_t>& data) override {
+        bool fail = false, failState = false;
         {
             std::lock_guard<std::mutex> lk(mtx_);
             if (!open_) return -1;                 // закрито → помилка (all-or-error)
+            if (failNextSend_) {                   // скриптований провал відправки (§5.3)
+                failNextSend_ = false;
+                fail = true;
+                failState = failNextSendState_;
+                failNextSendState_ = false;
+            }
+        }
+        if (fail) {
+            // Модель TCP-Send, що детектує обрив: провал (<0) + опційно СИНХРОННИЙ state(false)
+            // (Transport_TCP.cpp:371). Без захоплення в sent_ (all-or-error: не «успіх»).
+            if (failState) ForceRemoteClose();     // state(false) рівно раз (sync у Inline)
+            return -1;
         }
         {
             std::lock_guard<std::mutex> lk(sentMtx_);
@@ -195,6 +208,13 @@ public:
     void SetStateMode(LoopbackStateMode m) { mode_.store(m); }
     // Наступний Open провалиться (для тестів реконекту) — без state(true).
     void ScriptFailNextOpen() { std::lock_guard<std::mutex> lk(mtx_); failNextOpen_ = true; }
+    // Наступний Send провалиться (<0). withSyncState=true → синхронно доставити state(false)
+    // ДО повернення Send (модель TCP-Send, що детектує обрив; §5.3 precedence).
+    void ScriptFailNextSend(bool withSyncState = false) {
+        std::lock_guard<std::mutex> lk(mtx_);
+        failNextSend_ = true;
+        failNextSendState_ = withSyncState;
+    }
 
     // Доставити байти в DataReceived-колбек (модель reader-потоку). Синхронно на
     // потоці викликача; після Close/до Open — no-op (гейт open_).
@@ -281,6 +301,8 @@ private:
     bool open_ = false;
     bool falseEmitted_ = false;
     bool failNextOpen_ = false;
+    bool failNextSend_ = false;
+    bool failNextSendState_ = false;
     std::atomic<LoopbackStateMode> mode_{ LoopbackStateMode::Worker };
 
     // Захоплення Send
@@ -847,6 +869,216 @@ static void TestInitialOpenFailure() {
     session.Stop();
 }
 
+// === §14 інваріанти: потокобезпека, precedence, reentrancy, quiescence, wire-trace ===
+
+// Реентрантний Request з unsolicited-хендлера: хендлер (на dispatcher-потоці) кличе
+// RequestService. НЕ має вішати, бо dispatcher ≠ reader — відповідь класифікується на
+// reader-потоці (InjectRecv), доки dispatcher чекає на cv_. Watchdog ловить дедлок.
+static void TestReentrantRequestFromUnsolicited() {
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    auto session = std::make_unique<DeviceSession>(
+        std::move(transport),
+        std::make_unique<NullTerminatedFramer>(),
+        std::make_unique<ScriptedClassifier>(std::deque<Classification>{
+            { FrameClass::Unsolicited, RejectReason::Busy },      // тригер реентрантного service
+            { FrameClass::ServiceResponse, RejectReason::Busy }   // відповідь реентрантному service
+        }));
+    DeviceSession* sp = session.get();
+
+    std::mutex rmtx;
+    std::condition_variable rcv;
+    RequestResult reentrant{};
+    bool done = false;
+    session->SetUnsolicitedHandler([&, sp](std::vector<uint8_t>) {
+        // Реентрантний виклик із dispatcher-потоку — не має самозаблокуватись.
+        RequestResult r = sp->RequestService(B("REENTRANT"));
+        std::lock_guard<std::mutex> lk(rmtx);
+        reentrant = r; done = true; rcv.notify_all();
+    });
+    CHECK(session->Start(), "ReentrantRequest: Start connects");
+
+    tp->InjectRecv(NT("EVENT"));    // → Unsolicited → dispatcher кличе RequestService
+    CHECK(tp->WaitForSend(), "ReentrantRequest: reentrant service reached wire");
+    tp->InjectRecv(NT("SRVRESP"));  // → ServiceResponse → завершує реентрантний service
+
+    {
+        std::unique_lock<std::mutex> lk(rmtx);
+        CHECK(rcv.wait_for(lk, std::chrono::seconds(3), [&] { return done; }),
+              "ReentrantRequest: reentrant service completed (no self-deadlock)");
+        CHECK(reentrant.status == RequestStatus::Response,
+              "ReentrantRequest: reentrant service got its response");
+    }
+    session->Stop();
+}
+
+// Stop() з unsolicited-хендлера (dispatcher-потік): має завершитись БЕЗ self-join
+// (§6 крок 5 — детект потоку; фінальний join у ~DeviceSession). Watchdog ловить дедлок.
+static void TestStopFromUnsolicited() {
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    auto session = std::make_unique<DeviceSession>(
+        std::move(transport),
+        std::make_unique<NullTerminatedFramer>(),
+        std::make_unique<ScriptedClassifier>(std::deque<Classification>{
+            { FrameClass::Unsolicited, RejectReason::Busy }
+        }));
+    DeviceSession* sp = session.get();
+
+    std::mutex dmtx;
+    std::condition_variable dcv;
+    bool stopped = false;
+    session->SetUnsolicitedHandler([&, sp](std::vector<uint8_t>) {
+        sp->Stop();   // Stop із dispatcher-потоку — без self-join
+        std::lock_guard<std::mutex> lk(dmtx); stopped = true; dcv.notify_all();
+    });
+    CHECK(session->Start(), "StopFromUnsolicited: Start connects");
+
+    tp->InjectRecv(NT("EVENT"));   // → Unsolicited → dispatcher кличе Stop()
+    {
+        std::unique_lock<std::mutex> lk(dmtx);
+        CHECK(dcv.wait_for(lk, std::chrono::seconds(3), [&] { return stopped; }),
+              "StopFromUnsolicited: Stop() from dispatcher returned (no self-join)");
+    }
+    // Фінальний join dispatcher-а — у ~DeviceSession з цього (не-dispatcher) потоку.
+    session.reset();
+    CHECK(true, "StopFromUnsolicited: destroyed cleanly (final join in dtor)");
+}
+
+// Precedence (§5.3): Send провалюється із СИНХРОННИМ state(false). pending має
+// завершитись РІВНО одним джерелом. Без реконект-churn (autoReconnect=false) джерело —
+// precedence-блок RequestPrimary → SendFailed; disconnect зареєстровано (IsConnected=false),
+// але pending НЕ переписано вдруге.
+static void TestSendFailedVsDisconnected() {
+    SessionConfig cfg;
+    cfg.autoReconnect = false;   // без супервізора-конкурента — детермінований precedence
+    cfg.primaryTimeoutMs = 2000;
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    tp->SetStateMode(LoopbackStateMode::Inline);   // state(false) синхронно з Send
+    tp->ScriptFailNextSend(/*withSyncState=*/true);
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<EchoClassifier>(), cfg);
+    CHECK(session.Start(), "SendFailedVsDisconnected: Start connects");
+
+    RequestResult r = session.RequestPrimary(B("REQ"));
+    // Обидва статуси — валідне завершення РІВНО одним джерелом; тут детерміновано SendFailed.
+    CHECK(r.status == RequestStatus::SendFailed || r.status == RequestStatus::Disconnected,
+          "SendFailedVsDisconnected: pending completed by exactly one source");
+    CHECK(r.status == RequestStatus::SendFailed,
+          "SendFailedVsDisconnected: SendFailed wins (precedence, no double-complete)");
+    CHECK(!session.IsConnected(),
+          "SendFailedVsDisconnected: sync state(false) registered the disconnect");
+    session.Stop();
+}
+
+// Quiescence (§14): після Stop() — нуль НОВИХ колбеків; Stop не вішає (watchdog);
+// запит після Stop → {Stopped}; знищення без колбеків.
+static void TestCallbackQuiescenceAfterClose() {
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    auto session = std::make_unique<DeviceSession>(
+        std::move(transport),
+        std::make_unique<NullTerminatedFramer>(),
+        std::make_unique<ScriptedClassifier>(std::deque<Classification>{
+            { FrameClass::Unsolicited, RejectReason::Busy }
+        }));
+
+    std::atomic<int> unsolCount{0};
+    std::atomic<int> stateCount{0};
+    session->SetUnsolicitedHandler([&](std::vector<uint8_t>) { unsolCount.fetch_add(1); });
+    session->SetConnectionStateHandler([&](bool) { stateCount.fetch_add(1); });
+    CHECK(session->Start(), "Quiescence: Start connects");
+
+    tp->InjectRecv(NT("EVENT"));   // подія в чергу — dispatcher має бути активним
+
+    session->Stop();   // teardown; після повернення — dispatcher joined, транспорт закрито+відписано
+
+    const int unsolAfter = unsolCount.load();
+    const int stateAfter = stateCount.load();
+
+    // Спроби спровокувати колбеки після Stop — усе no-op (транспорт закрито, dispatcher joined).
+    tp->InjectRecv(NT("LATE"));
+    tp->ForceRemoteClose();
+    RequestResult r = session->RequestPrimary(B("AFTER"), 100);
+    CHECK(r.status == RequestStatus::Stopped, "Quiescence: request after Stop → {Stopped}");
+
+    CHECK(unsolCount.load() == unsolAfter, "Quiescence: no unsolicited callback after Stop");
+    CHECK(stateCount.load() == stateAfter, "Quiescence: no state callback after Stop");
+
+    session.reset();   // ~DeviceSession — фінальний join, без колбеків
+    CHECK(unsolCount.load() == unsolAfter && stateCount.load() == stateAfter,
+          "Quiescence: no callback during destruction");
+}
+
+// Wire-trace порядок (§8): (A) sendAttempt ставиться в чергу ДО Send, тож присутній навіть
+// коли Send провалюється; (B) incoming-trace чанку — ПЕРЕД unsolicited того ж чанку (FIFO).
+static void TestWireTraceOrder() {
+    // --- (A) sendAttempt присутній навіть при провалі Send ---
+    {
+        SessionConfig cfg; cfg.autoReconnect = false; cfg.primaryTimeoutMs = 2000;
+        auto transport = std::make_unique<LoopbackTransport>();
+        LoopbackTransport* tp = transport.get();
+        tp->ScriptFailNextSend(/*withSyncState=*/false);   // Send → -1, без зміни стану
+        DeviceSession session(std::move(transport),
+                              std::make_unique<NullTerminatedFramer>(),
+                              std::make_unique<EchoClassifier>(), cfg);
+        std::mutex tmtx; std::condition_variable tcv;
+        std::vector<std::pair<bool, std::vector<uint8_t>>> trace;
+        session.SetWireTraceHandler([&](bool sa, std::vector<uint8_t> b) {
+            std::lock_guard<std::mutex> lk(tmtx); trace.push_back({ sa, std::move(b) }); tcv.notify_all();
+        });
+        CHECK(session.Start(), "WireTrace(A): Start connects");
+
+        RequestResult r = session.RequestPrimary(B("REQ"));
+        CHECK(r.status == RequestStatus::SendFailed, "WireTrace(A): Send failed as scripted");
+        {
+            std::unique_lock<std::mutex> lk(tmtx);
+            CHECK(tcv.wait_for(lk, std::chrono::seconds(2), [&] { return !trace.empty(); }),
+                  "WireTrace(A): sendAttempt dispatched despite failed Send");
+            CHECK(trace[0].first == true && trace[0].second == NT("REQ"),
+                  "WireTrace(A): sendAttempt trace precedes/despite Send failure");
+        }
+        session.Stop();
+    }
+
+    // --- (B) incoming-trace ПЕРЕД unsolicited того ж чанку ---
+    {
+        auto transport = std::make_unique<LoopbackTransport>();
+        LoopbackTransport* tp = transport.get();
+        auto session = std::make_unique<DeviceSession>(
+            std::move(transport),
+            std::make_unique<NullTerminatedFramer>(),
+            std::make_unique<ScriptedClassifier>(std::deque<Classification>{
+                { FrameClass::Unsolicited, RejectReason::Busy }
+            }));
+        std::mutex omtx; std::condition_variable ocv;
+        std::vector<int> order;   // 0 = incoming-trace, 1 = unsolicited
+        session->SetWireTraceHandler([&](bool sa, std::vector<uint8_t>) {
+            if (sa) return;       // цікавить лише incoming-trace
+            std::lock_guard<std::mutex> lk(omtx); order.push_back(0); ocv.notify_all();
+        });
+        session->SetUnsolicitedHandler([&](std::vector<uint8_t>) {
+            std::lock_guard<std::mutex> lk(omtx); order.push_back(1); ocv.notify_all();
+        });
+        CHECK(session->Start(), "WireTrace(B): Start connects");
+
+        tp->InjectRecv(NT("EVENT"));   // чанк → incoming-trace, потім unsolicited (той же чанк)
+        {
+            std::unique_lock<std::mutex> lk(omtx);
+            auto findFirst = [&](int v) { for (size_t i = 0; i < order.size(); ++i) if (order[i] == v) return (int)i; return -1; };
+            CHECK(ocv.wait_for(lk, std::chrono::seconds(2),
+                               [&] { return findFirst(0) >= 0 && findFirst(1) >= 0; }),
+                  "WireTrace(B): both incoming-trace and unsolicited dispatched");
+            int ti = findFirst(0), ui = findFirst(1);
+            CHECK(ti >= 0 && ui >= 0 && ti < ui,
+                  "WireTrace(B): incoming-trace precedes unsolicited of same chunk");
+        }
+        session->Stop();
+    }
+}
+
 int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     TestClassifierDoubles();
     TestLoopbackTransport();
@@ -865,4 +1097,9 @@ int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     RunGuarded("TestServiceTimeoutQuarantine", TestServiceTimeoutQuarantine);
     RunGuarded("TestDisconnectDuringPending", TestDisconnectDuringPending);
     RunGuarded("TestInitialOpenFailure", TestInitialOpenFailure);
+    RunGuarded("TestReentrantRequestFromUnsolicited", TestReentrantRequestFromUnsolicited);
+    RunGuarded("TestStopFromUnsolicited", TestStopFromUnsolicited);
+    RunGuarded("TestSendFailedVsDisconnected", TestSendFailedVsDisconnected);
+    RunGuarded("TestCallbackQuiescenceAfterClose", TestCallbackQuiescenceAfterClose);
+    RunGuarded("TestWireTraceOrder", TestWireTraceOrder);
     std::printf("=== %s (failed:%d) ===\n", g_failed?"FAIL":"OK", g_failed); return g_failed?1:0; }
