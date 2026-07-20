@@ -147,6 +147,30 @@ add_library(transport_component OBJECT
     src/transport/Transport_WSServer.cpp
 )
 
+## @var wire_component
+## @brief Device-facing ядро драйверів (framer/classifier/session — §4 дизайну).
+## @note Поки лише кадрувальник; НЕ входить у фінальну DLL (Task 11).
+add_library(wire_component OBJECT
+    src/transport/RequestTypes.h
+    src/transport/IFramer.h
+    src/transport/NullTerminatedFramer.h
+    src/transport/NullTerminatedFramer.cpp
+)
+set_target_properties(wire_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+target_include_directories(wire_component PRIVATE
+    include
+    ${CMAKE_SOURCE_DIR}
+    src
+    ${SPDLOG_INCLUDE_DIR}
+    ${NLOHMANN_JSON_INCLUDE_DIR}
+)
+target_compile_definitions(wire_component PRIVATE _WINDOWS UNICODE _UNICODE)
+add_dependencies(wire_component base_component spdlog)
+
 ## @var privat_json_helper_component
 ## @brief Компонент для работы с протоколом ПриватБанка на основе JSON
 add_library(privat_json_helper_component OBJECT

@@ -48,6 +48,31 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# wire_selftest — L0.6-харнес device-facing ядра (framer/classifier/session).
+# Не залежить від UAPKI; лінкує wire_component+helpers+base напряму.
+# ---------------------------------------------------------------------------
+add_executable(wire_selftest wire_selftest.cpp
+    $<TARGET_OBJECTS:wire_component>
+    $<TARGET_OBJECTS:helpers_component>
+    $<TARGET_OBJECTS:base_component>
+)
+set_target_properties(wire_selftest PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "wire_selftest${_TEST_ARCH_SUFFIX}"
+)
+target_include_directories(wire_selftest PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${SPDLOG_INCLUDE_DIR}
+)
+target_compile_definitions(wire_selftest PRIVATE _WINDOWS UNICODE _UNICODE)
+target_link_libraries(wire_selftest PRIVATE spdlog::spdlog)
+if(MSVC)
+    target_compile_options(wire_selftest PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
 # Далі — цілі, що потребують крипто-ядра UAPKI (uapki_bundle існує лише при
 # BUILD_WITH_UAPKI). Без нього тихо пропускаємо решту файлу.
 # ---------------------------------------------------------------------------
