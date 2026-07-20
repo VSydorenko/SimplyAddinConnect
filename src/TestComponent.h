@@ -7,8 +7,9 @@
 class TestComponent:
     public AddInNative
 {
-private:
+public:
     static std::vector<std::u16string> names;
+private:
     TestComponent();
     ~TestComponent();
     int64_t value;

@@ -74,6 +74,23 @@ static void TestSmokeLifecycle() {
     delete comp;
 }
 
+// ---- Реєстр компонент + макрос REGISTER_COMPONENT ----
+// MacroProbe реєструється макросом на файловому рівні (компайл-гейт макросу).
+struct MacroProbe : public AddInNative { static std::vector<std::u16string> names; };
+REGISTER_COMPONENT(u"MacroProbe", MacroProbe)
+
+static void TestComponentRegistry() {
+    std::u16string names = AddInNative::getComponentNames();
+    // core_selftest лінкує лише base+helpers, тому в реєстрі — проби (CoreProbe/RetProbe),
+    // а не ECR/Test. Перевіряємо наявність зареєстрованої проби.
+    CHECK(names.find(u"CoreProbe") != std::u16string::npos,
+          "registry contains CoreProbe");
+}
+
+static void TestRegisterComponentMacro() {
+    CHECK(AddInNative::CreateObject(u"MacroProbe") != nullptr, "REGISTER_COMPONENT works");
+}
+
 // Експорти оголошені в ComponentBase.h (extern "C"); для прямого виклику з тесту:
 extern "C" long GetClassObject(const WCHAR_T* wsName, IComponentBase** pInterface);
 extern "C" long DestroyObject(IComponentBase** pInterface);
@@ -136,10 +153,15 @@ static void TestRetConvention() {
 }
 
 int main() {
+    // Небуферизований stdout: щоб при аварійному завершенні (AV) не втратити
+    // останні рядки й точно локалізувати місце падіння.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("=== core_selftest ===\n");
     TestSmokeLifecycle();
     TestBootFixes();
     TestRetConvention();
+    TestComponentRegistry();
+    TestRegisterComponentMacro();
     std::printf("=== %s (failed: %d) ===\n", g_failed ? "FAIL" : "OK", g_failed);
     return g_failed ? 1 : 0;
 }

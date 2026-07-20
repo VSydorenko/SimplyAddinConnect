@@ -7,10 +7,7 @@
 using namespace ECRPrivatJSON;
 
 // Инициализация статического поля names для регистрации компонента
-std::vector<std::u16string> AddinECRPrivatJSON::names = {
-    AddComponent(u"AddinECRPrivatJSON", []() { return new AddinECRPrivatJSON; })
-};
-namespace { auto& _forceAddinECRPrivatJSONNames = AddinECRPrivatJSON::names; }
+REGISTER_COMPONENT(u"AddinECRPrivatJSON", AddinECRPrivatJSON)
 
 // Конструктор
 AddinECRPrivatJSON::AddinECRPrivatJSON() {    

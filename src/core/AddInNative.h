@@ -176,7 +176,10 @@ private:
 	friend const WCHAR_T* GetClassNames();
 	friend long GetClassObject(const WCHAR_T*, IComponentBase**);
 
-	static std::map<std::u16string, CompFunction> components;
+	// Реєстр компонент — функціо-локальний статик (Meyers singleton): будується
+	// при першому виклику, тому файло-рівнева реєстрація (REGISTER_COMPONENT) не
+	// залежить від порядку статичної ініціалізації між одиницями трансляції.
+	static std::map<std::u16string, CompFunction>& components();
 	std::vector<Prop> properties;
 	std::vector<Meth> methods;
 	std::u16string name;
@@ -222,3 +225,13 @@ private:
 	IMemoryManager* m_iMemory = nullptr;
 	IAddInDefBase* m_iConnect = nullptr;
 };
+
+// Реєстрація компоненти в реєстрі DLL + захист від відкидання лінкером.
+// Клас мусить оголосити: static std::vector<std::u16string> names;
+// Використання (у .cpp компоненти, на файловому рівні):
+//   REGISTER_COMPONENT(u"МояКомпонента", МійКлас)
+#define REGISTER_COMPONENT(NAME_U16, CLASS) \
+	std::vector<std::u16string> CLASS::names = { \
+		AddInNative::AddComponent(NAME_U16, []() -> AddInNative* { return new CLASS; }) \
+	}; \
+	namespace { [[maybe_unused]] auto& _force_##CLASS##_names = CLASS::names; }

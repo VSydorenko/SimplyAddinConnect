@@ -7,6 +7,8 @@ std::vector<std::u16string> TestComponent::names = {
     AddComponent(u"SimplyAddinConnect", []() { return new TestComponent; }),
     AddComponent(u"SimplyConnect", []() { return new TestComponent; })
 };
+// Анти-стрип: не даємо лінкеру відкинути список імен разом з реєстрацією
+namespace { [[maybe_unused]] auto& _forceTestComponentNames = TestComponent::names; }
 
 TestComponent::TestComponent()
 {

@@ -78,7 +78,10 @@ std::wstring MB2WC(const std::string& str)
 	return converter.from_bytes(str);
 }
 
-std::map<std::u16string, CompFunction> AddInNative::components;
+std::map<std::u16string, CompFunction>& AddInNative::components() {
+	static std::map<std::u16string, CompFunction> registry;
+	return registry;
+}
 
 AddInNative::AddInNative(void) : result(nullptr, this) {
 	AddProperty(u"Version", u"Версия", [&](VH var) { var = this->version(); });
@@ -391,7 +394,7 @@ void AddInNative::SetLocale(const WCHAR_T* locale)
 std::u16string AddInNative::getComponentNames() {
 	const char16_t* const delim = u"|";
 	std::vector<std::u16string> names;
-	for (auto it = components.begin(); it != components.end(); ++it) names.push_back(it->first);
+	for (auto it = components().begin(); it != components().end(); ++it) names.push_back(it->first);
 	std::basic_ostringstream<char16_t, std::char_traits<char16_t>, std::allocator<char16_t>> imploded;
 	std::copy(names.begin(), names.end(), std::ostream_iterator<std::u16string, char16_t, std::char_traits<char16_t>>(imploded, delim));
 	std::u16string result = imploded.str();
@@ -401,13 +404,13 @@ std::u16string AddInNative::getComponentNames() {
 
 std::u16string AddInNative::AddComponent(const std::u16string& name, CompFunction creator)
 {
-	components.insert({ name, creator });
+	components().insert({ name, creator });
 	return name;
 }
 
 AddInNative* AddInNative::CreateObject(const std::u16string& name) {
-	auto it = components.find(name);
-	if (it == components.end()) return nullptr;
+	auto it = components().find(name);
+	if (it == components().end()) return nullptr;
 	AddInNative* object = it->second();
 	object->name = name;
 	return object;

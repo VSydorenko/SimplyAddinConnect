@@ -4,10 +4,7 @@
 #include "../helpers/ServiceTools.h"
 
 // Регистрация компонента через статический член класса
-std::vector<std::u16string> AddinUAPKIConnect::names = {
-    AddComponent(u"AddinUAPKIConnect", []() { return new AddinUAPKIConnect; })
-};
-namespace { auto& _forceAddinUAPKIConnectNames = AddinUAPKIConnect::names; }
+REGISTER_COMPONENT(u"AddinUAPKIConnect", AddinUAPKIConnect)
 
 // Конструктор класса
 AddinUAPKIConnect::AddinUAPKIConnect() {
