@@ -165,7 +165,10 @@ void ShutdownLogging(const std::string& componentName) {
     auto it = loggers.find(componentName);
     if (it != loggers.end()) {
         try {
-            Info(componentName, "Завершение работы логгера для компонента " + componentName);
+            // Логируем напрямую через объект логгера (НЕ через Info(): тот снова
+            // берёт loggersMutex внутри GetLogger — это был дедлок)
+            it->second->info("Завершение работы логгера для компонента " + componentName);
+            it->second->flush();
             loggers.erase(it);
             
             // Также удаляем настройки компонента

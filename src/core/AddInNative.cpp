@@ -20,6 +20,7 @@
 #include <sstream>
 
 #include "AddInNative.h"
+#include "../helpers/ServiceTools.h"
 
 #ifdef _WINDOWS
 
@@ -85,6 +86,19 @@ std::map<std::u16string, CompFunction>& AddInNative::components() {
 
 AddInNative::AddInNative(void) : result(nullptr, this) {
 	AddProperty(u"Version", u"Версия", [&](VH var) { var = this->version(); });
+	// Общий для всех компонент включатель логирования (делегат в ServiceTools).
+	AddFunction(u"EnableLogging", u"ИспользоватьЛогирование",
+		Ret([this](VH logLevel, VH logFilePath) {
+			try {
+				std::string level = logLevel;
+				std::string path = logFilePath;
+				return ServiceTools::EnableComponentLogging(this, level, path);
+			}
+			catch (...) { return false; }
+		}),
+		// Явный тип: после появления перегрузки с vector<ParamSpec> (Task 6)
+		// braced-list без типа может стать неоднозначным
+		MethDefaults{ {0, DefaultHelper(u"info")}, {1, DefaultHelper(u"")} });
 }
 
 std::string AddInNative::version()

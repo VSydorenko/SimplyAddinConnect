@@ -13,10 +13,6 @@ namespace { [[maybe_unused]] auto& _forceTestComponentNames = TestComponent::nam
 TestComponent::TestComponent()
 {
 	REPORT_INFO("Инициализация компонента TestComponent");
-	
-	AddProperty(
-		u"Version", u"Версия",
-		[&](VH var) { var = this->version(); });
 
 	AddProperty(
 		u"Text", u"Текст",
@@ -39,43 +35,9 @@ TestComponent::TestComponent()
 
 	// Добавление метода для генерации тестовой ошибки
 	AddProcedure(
-		u"GenerateTestError", u"СоздатьТестовуюОшибку", 
+		u"GenerateTestError", u"СоздатьТестовуюОшибку",
 		[&]() { this->GenerateTestError(); });
 
-	// Добавление метода для включения логирования
-	AddFunction(
-		u"EnableLogging", u"ИспользоватьЛогирование", 
-		[&](VH logLevel, VH logFilePath) {
-			try {
-				std::string level = logLevel;
-				std::string path = logFilePath;
-				
-				// Информация о попытке включения логирования
-				REPORT_INFO("Запрос на включение логирования с уровнем: " + level + ", путь: " + path);
-				
-				// Включаем логирование
-				bool result = this->EnableLogging(level, path);
-				
-				// После включения логирования можем использовать любые уровни лога
-				// Временно закомментировано, чтобы не вызывать лишние сообщения
-				// if (result) {
-				// 	REPORT_INFO("Логирование успешно включено с уровнем: " + level);
-				// 	REPORT_TRACE("Тестовое сообщение уровня TRACE после включения логирования");
-				// 	REPORT_DEBUG("Тестовое сообщение уровня DEBUG после включения логирования");
-				// 	REPORT_INFO("Тестовое сообщение уровня INFO после включения логирования");
-				// 	REPORT_WARN("Тестовое сообщение уровня WARN после включения логирования");
-				// } else {
-				// 	REPORT_WARN("Не удалось включить логирование с уровнем: " + level);
-				// }
-				
-				return result;
-			}
-			catch (const std::exception& e) {
-				REPORT_ERROR("Ошибка при включении логирования: " + std::string(e.what()));
-				return false;
-			}
-		});
-		
 	// Методы для работы с COM-портами
 	AddFunction(
 		u"GetAvailablePorts", u"ПолучитьДоступныеПорты",
@@ -141,24 +103,6 @@ TestComponent::~TestComponent()
 	}
 	
 	ServiceTools::DisableComponentLogging(this);
-}
-
-bool TestComponent::EnableLogging(const std::string& logLevel, const std::string& logFilePath)
-{
-	// Здесь нельзя использовать макросы логирования, т.к. они еще не настроены
-	// поэтому используем std::cout для вывода отладочной информации
-	try {
-		// Вывод информации о параметрах
-		std::cout << "TestComponent: Включение логирования, уровень: '" << logLevel << "', путь: '" << logFilePath << "'" << std::endl;
-		
-		// Делегирование вызова к ServiceTools
-		return ServiceTools::EnableComponentLogging(this, logLevel, logFilePath);
-	}
-	catch (const std::exception& e) {
-		// В случае исключения тоже используем прямой вывод
-		std::cerr << "TestComponent: Исключение при включении логирования: " << e.what() << std::endl;
-		return false;
-	}
 }
 
 std::u16string TestComponent::getTestString()

@@ -68,29 +68,8 @@ std::string AddinECRPrivatJSON::DetermineTransportType(const std::string& connec
     return "Unknown";
 }
 
-/**
- * @brief Включает логирование для компонента
- * 
- * @param logLevel Уровень логирования (error, warn, info, debug, trace, off)
- * @param logFilePath Путь к файлу логов
- * @return bool Результат операции
- */
-bool AddinECRPrivatJSON::EnableLogging(const std::string& logLevel, const std::string& logFilePath) {
-    // Вызываем метод из ServiceTools, передавая параметры
-    return ServiceTools::EnableComponentLogging(this, logLevel, logFilePath);
-}
-
 // Регистрация методов компонента для вызова из 1С
 void AddinECRPrivatJSON::RegisterMethods() {
-    // Метод для включения логирования
-    AddFunction(u"EnableLogging", u"ИспользоватьЛогирование",
-        [&](VH logLevel, VH logFilePath) {
-            std::string logLevelStr = static_cast<std::string>(logLevel);
-            std::string logFilePathStr = static_cast<std::string>(logFilePath);
-            return EnableLogging(logLevelStr, logFilePathStr);
-        }
-    );
-
     // Методы подключения
     AddFunction(u"ConnectCOM", u"ПодключитьCOM",
         [&](VH portName, VH baudRate) {

@@ -23,37 +23,6 @@ AddinUAPKIConnect::~AddinUAPKIConnect() {
 
 // Регистрация методов компонента
 void AddinUAPKIConnect::RegisterMethods() {
-    // Добавляем метод для включения логирования из 1С
-    AddFunction(u"EnableLogging", u"ИспользоватьЛогирование",
-        [&](VH logLevel, VH logFilePath) {
-            try {
-                // Преобразуем параметры в строки
-                std::string level = logLevel;
-                std::string path = logFilePath;
-                
-                REPORT_INFO("Запрос на включение логирования с уровнем: " + level + ", путь: " + path);
-                
-                // Вызываем метод EnableLogging
-                bool result = this->EnableLogging(level, path);
-                
-                if (result) {
-                    REPORT_DEBUG("Логирование успешно настроено с уровнем: " + level);
-                }
-                
-                return result;
-            }
-            catch (const std::exception& e) {
-                REPORT_ERROR("Ошибка при включении логирования: " + std::string(e.what()));
-                return false;
-            }
-            catch (...) {
-                REPORT_ERROR("Неизвестная ошибка при включении логирования");
-                return false;
-            }
-        },
-        { {0, DefaultHelper(u"info")}, {1, DefaultHelper(u"")} }  // Значения по умолчанию
-    );
-    
     // Регистрируем метод CallUapki/ВызватьUAPKI, который будет точкой входа
     // для всех вызовов библиотеки UAPKI
     AddFunction(u"CallUapki", u"ВызватьUAPKI",
@@ -151,32 +120,6 @@ bool AddinUAPKIConnect::CallUapki(const std::string& method, const std::string& 
     catch (...) {
         REPORT_ERROR("Неизвестное исключение при вызове метода UAPKI " + method);
         jsonResponse = "{\"errorCode\":500,\"error\":\"Unknown exception\"}";
-        return false;
-    }
-}
-
-// Реализация метода EnableLogging
-bool AddinUAPKIConnect::EnableLogging(const std::string& logLevel, const std::string& logFilePath) {
-    try {
-        // Делегирование вызова к ServiceTools
-        bool result = ServiceTools::EnableComponentLogging(this, logLevel, logFilePath);
-        
-        if (result) {
-            REPORT_DEBUG("Логирование успешно настроено с уровнем: " + logLevel + ", путь: " + 
-                         (logFilePath.empty() ? "стандартный" : logFilePath));
-        } else {
-            REPORT_ERROR("Не удалось настроить логирование с уровнем: " + logLevel);
-        }
-        
-        return result;
-    }
-    catch (const std::exception& e) {
-        // В случае ошибки не используем REPORT_ERROR, так как логирование могло не настроиться
-        std::cout << "AddinUAPKIConnect: Ошибка при настройке логирования: " << e.what() << std::endl;
-        return false;
-    }
-    catch (...) {
-        std::cout << "AddinUAPKIConnect: Неизвестная ошибка при настройке логирования" << std::endl;
         return false;
     }
 }

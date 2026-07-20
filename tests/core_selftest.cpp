@@ -2,6 +2,7 @@
 // Лінкує OBJECT-бібліотеки ядра напряму; емулює платформу моками.
 // УВАГА: pch.h тут НЕ підключається (правило tests/).
 #include "../src/core/AddInNative.h"
+#include "../src/helpers/ServiceTools.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -152,6 +153,44 @@ static void TestRetConvention() {
     comp->Done(); delete comp;
 }
 
+// ---- Дедлок ShutdownLogging: до фіксу зависав назавжди, після — миттєво ----
+static void TestShutdownLoggingNoDeadlock() {
+    // Ініціалізуємо логер у %TEMP% і одразу гасимо: до фіксу тут висло б назавжди
+    const char* tempDir = std::getenv("TEMP");
+    std::string path = std::string(tempDir ? tempDir : ".") + "\\core_selftest_dl.log";
+    ServiceTools::InitLogging("DeadlockProbe", ServiceTools::LogLevel::Info, path);
+    ServiceTools::ShutdownLogging("DeadlockProbe");
+    CHECK(true, "ShutdownLogging does not deadlock");
+}
+
+// ---- Спільний EnableLogging/ИспользоватьЛогирование у базі ----
+static void TestBaseEnableLogging() {
+    // CoreProbe зареєстрована в TestSmokeLifecycle і нічого сама не реєструє —
+    // метод має бути в БАЗІ AddInNative.
+    AddInNative* comp = AddInNative::CreateObject(u"CoreProbe");
+    CHECK(comp != nullptr, "CreateObject(CoreProbe) for EnableLogging");
+    if (!comp) return;
+    MockConnect connect; MockMemory memory;
+    comp->Init(&connect); comp->setMemManager(&memory);
+
+    long m = comp->FindMethod((WCHAR_T*)u"EnableLogging");
+    CHECK(m >= 0, "base registers EnableLogging");
+    long mru = comp->FindMethod((WCHAR_T*)u"ИспользоватьЛогирование");
+    CHECK(mru >= 0, "base registers ru alias");
+
+    // Виклик з рівнем off не потребує файлу; перевіряємо структурний успіх і тип
+    std::u16string off = u"off";
+    std::u16string empty = u"";
+    tVariant args[2]; std::memset(args, 0, sizeof(args));
+    args[0].vt = VTYPE_PWSTR; args[0].pwstrVal = (WCHAR_T*)off.c_str();   args[0].wstrLen = 3;
+    args[1].vt = VTYPE_PWSTR; args[1].pwstrVal = (WCHAR_T*)empty.c_str(); args[1].wstrLen = 0;
+    tVariant ret{}; std::memset(&ret, 0, sizeof(ret)); ret.vt = VTYPE_EMPTY;
+    CHECK(m >= 0 && comp->CallAsFunc(m, &ret, args, 2), "CallAsFunc(EnableLogging off)");
+    CHECK(ret.vt == VTYPE_BOOL, "EnableLogging returns bool");
+
+    comp->Done(); delete comp;
+}
+
 int main() {
     // Небуферизований stdout: щоб при аварійному завершенні (AV) не втратити
     // останні рядки й точно локалізувати місце падіння.
@@ -162,6 +201,8 @@ int main() {
     TestRetConvention();
     TestComponentRegistry();
     TestRegisterComponentMacro();
+    TestShutdownLoggingNoDeadlock();
+    TestBaseEnableLogging();
     std::printf("=== %s (failed: %d) ===\n", g_failed ? "FAIL" : "OK", g_failed);
     return g_failed ? 1 : 0;
 }
