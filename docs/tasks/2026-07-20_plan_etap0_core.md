@@ -1,5 +1,15 @@
 # Етап 0 «Ядро-міст 1С» — план імплементації
 
+> **СТАТУС: ✅ ВИКОНАНО** (2026-07-20, гілка `etap0-core-mist`). Усі 9 задач реалізовані
+> (TDD, per-task коміти) + 4 виправлення за адверсарним код-рев'ю: (1) `Ret()`-функція як
+> процедура (`CallAsProc` обнуляє `result.pvar`) більше не кидає `bad_variant_access`
+> (`operator=` тихо відкидає присвоєння у від'єднаний result); (2) `ShutdownLogging` робить
+> `spdlog::drop` (повторний `EnableLogging` того ж типу компоненти в одній сесії 1С не падає);
+> (3) watchdog у дедлок-тесті (регресія = FAIL, не хенг); (4) стрес-гонка EventBridge.
+> Гейт зелений: `build_project.ps1 -WithUAPKI -WithTests` (x86+x64, ZIP), `run_tests.ps1`
+> x64 (18 PASS) та x86 (17 PASS, 1 SKIP — 64-біт python не вантажить 32-біт провайдер);
+> `core_selftest` — 47 CHECK. Правки ECR-фасаду свідомо відкладені на Етап 2.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Зміцнити ядро-міст 1С за специфікацією `docs/tasks/2026-07-19_platform_architecture_design.md` §3.0: тестовий харнес ядра без UAPKI, boot-фікси, конвенція повернення значень, `REGISTER_COMPONENT`, спільний `EnableLogging`, декларативні параметри з валідацією, потокобезпечний міст подій `ExternalEvent`, fallback-sink логера.
@@ -44,7 +54,7 @@ bin\Release\core_selftest_x64.exe
 - Consumes: OBJECT-цілі `base_component`, `helpers_component` (`CMake/components.cmake:93,111`), `spdlog::spdlog`.
 - Produces: виконуваний `core_selftest_x64.exe` (exit 0 = усі перевірки пройшли); мок-хост `MockConnect`/`MockMemory` і макрос `CHECK(...)` — їх використовують УСІ наступні задачі, додаючи тест-функції в цей самий файл.
 
-- [ ] **Step 1: Написати падаючий тест (каркас + смоук)**
+- [X] **Step 1: Написати падаючий тест (каркас + смоук)**
 
 Створити `tests/core_selftest.cpp`:
 
@@ -135,12 +145,12 @@ int main() {
 
 Примітка: якщо `tVarInit` недоступний з `types.h` без додаткових include — замінити на `std::memset(&val, 0, sizeof(val)); val.vt = VTYPE_EMPTY;`.
 
-- [ ] **Step 2: Переконатися, що збірка падає (цілі ще немає)**
+- [X] **Step 2: Переконатися, що збірка падає (цілі ще немає)**
 
 Run: `cmake --build build_x64 --config Release --target core_selftest`
 Expected: FAIL — `core_selftest` невідома ціль (у `tests/CMakeLists.txt` її ще немає, а сам каталог відсікається гейтом).
 
-- [ ] **Step 3: Додати ціль у tests/CMakeLists.txt**
+- [X] **Step 3: Додати ціль у tests/CMakeLists.txt**
 
 Замінити гейт (рядки 8-14) і додати ціль ПЕРЕД UAPKI-блоком:
 
@@ -196,7 +206,7 @@ endif()
 
 Якщо `helpers_component` не збирається без глобальних include-шляхів у цьому контексті — конфігурація сама покаже; шляхи вже задаються глобально (компоненти в `components.cmake` збираються з `include`/`src`/`${SPDLOG_INCLUDE_DIR}`).
 
-- [ ] **Step 4: Зібрати і запустити — тест зелений**
+- [X] **Step 4: Зібрати і запустити — тест зелений**
 
 Run:
 ```powershell
@@ -206,7 +216,7 @@ bin\Release\core_selftest_x64.exe
 ```
 Expected: усі `[PASS]`, exit code 0. Якщо лінкер скаржиться на відсутні символи ServiceTools (їх тягне `AddError`-шлях) — перевірити, що `$<TARGET_OBJECTS:helpers_component>` присутній у add_executable.
 
-- [ ] **Step 5: Commit**
+- [X] **Step 5: Commit**
 
 ```powershell
 git add tests/CMakeLists.txt tests/core_selftest.cpp
@@ -225,7 +235,7 @@ git commit -m "Тести: core_selftest — L1-харнес ядра AddInNativ
 - Consumes: харнес Task 1.
 - Produces: `GetClassObject` повертає `1` при успіху (не адресу); внутрішня `RuLocale()` — статична функція, зовнішнього API не змінює.
 
-- [ ] **Step 1: Написати падаючі тести**
+- [X] **Step 1: Написати падаючі тести**
 
 У `tests/core_selftest.cpp` додати (і викликати з `main` після смоуку):
 
@@ -253,12 +263,12 @@ static void TestBootFixes() {
 }
 ```
 
-- [ ] **Step 2: Запустити — переконатися, що падає**
+- [X] **Step 2: Запустити — переконатися, що падає**
 
 Run: збірка + запуск (цикл із шапки).
 Expected: `[FAIL] GetClassObject returns 1 on success` (зараз повертається `long(вказівник)` — на x64 усічений; значення не дорівнює 1).
 
-- [ ] **Step 3: Мінімальна реалізація**
+- [X] **Step 3: Мінімальна реалізація**
 
 `src/core/AddInNative.cpp:53-58` — замінити тіло:
 
@@ -297,12 +307,12 @@ static const std::locale& RuLocale()
 
 І в обох `AddInNative::upper` (рядки 475-485) замінити `locale_ru` на `RuLocale()`.
 
-- [ ] **Step 4: Запустити — зелено**
+- [X] **Step 4: Запустити — зелено**
 
 Run: цикл збірки/запуску.
 Expected: усі `[PASS]`, exit 0.
 
-- [ ] **Step 5: Commit**
+- [X] **Step 5: Commit**
 
 ```powershell
 git add src/core/AddInNative.cpp tests/core_selftest.cpp
@@ -321,7 +331,7 @@ git commit -m "Ядро: boot-фікси — лінива локаль з fallba
 - Consumes: `VariantHelper::operator=` для `std::string/std::u16string/std::wstring/int64_t/double/bool` (`AddInNative.h:68-73`), член `VariantHelper result` (`AddInNative.h:115`).
 - Produces: `protected` шаблонний метод `MethFunction Ret(F f)` — приймає лямбду, що ПОВЕРТАЄ значення (`bool`, рядок, число), і загортає її у void-хендлер, який присвоює `this->result`. Використовується всіма наступними реєстраціями функцій (Task 5) і майбутніми драйверами.
 
-- [ ] **Step 1: Написати падаючий тест**
+- [X] **Step 1: Написати падаючий тест**
 
 ```cpp
 static void TestRetConvention() {
@@ -362,11 +372,11 @@ static void TestRetConvention() {
 }
 ```
 
-- [ ] **Step 2: Запустити — компіляція падає**
+- [X] **Step 2: Запустити — компіляція падає**
 
 Expected: FAIL компіляції — `Ret` не оголошено.
 
-- [ ] **Step 3: Мінімальна реалізація**
+- [X] **Step 3: Мінімальна реалізація**
 
 У `src/core/AddInNative.h`, у `protected`-секції класу (поряд із `AddFunction`), додати:
 
@@ -400,11 +410,11 @@ protected:
 
 Потрібні include: `<type_traits>` (перевірити наявність у заголовку; додати за відсутності).
 
-- [ ] **Step 4: Запустити — зелено**
+- [X] **Step 4: Запустити — зелено**
 
 Expected: усі `[PASS]`.
 
-- [ ] **Step 4б: Полагодити зламані сайти TestComponent через Ret()**
+- [X] **Step 4б: Полагодити зламані сайти TestComponent через Ret()**
 
 > **ПРАВИЛО застосування `Ret()` (за аудитом):** обгортати ЛИШЕ хендлери, чиє
 > `return`-значення і є результатом для 1С. **НЕ обгортати** хендлери, які самі
@@ -435,7 +445,7 @@ Expected: усі `[PASS]`.
 
 Перевірка: збірка повної DLL зелена; core_selftest зелений.
 
-- [ ] **Step 5: Commit**
+- [X] **Step 5: Commit**
 
 ```powershell
 git add src/core/AddInNative.h src/TestComponent.cpp tests/core_selftest.cpp
@@ -454,7 +464,7 @@ git commit -m "Ядро: Ret() — конвенція повернення зн�
 **Interfaces:**
 - Produces: макрос `REGISTER_COMPONENT(NAME_U16, CLASS)` — реєструє клас під одним ім'ям і створює анти-стрип reference. Компоненти з кількома іменами (TestComponent) реєструються як зараз + додається анти-стрип reference вручну.
 
-- [ ] **Step 1: Написати падаючий тест**
+- [X] **Step 1: Написати падаючий тест**
 
 ```cpp
 static void TestComponentRegistry() {
@@ -479,11 +489,11 @@ static void TestRegisterComponentMacro() {
 
 Для цього `MacroProbe` потрібен статичний член: макрос сам його оголошує (див. Step 3) — у тестовій структурі додати `static std::vector<std::u16string> names;`.
 
-- [ ] **Step 2: Запустити — компіляція падає**
+- [X] **Step 2: Запустити — компіляція падає**
 
 Expected: FAIL — `REGISTER_COMPONENT` не визначено.
 
-- [ ] **Step 3: Мінімальна реалізація**
+- [X] **Step 3: Мінімальна реалізація**
 
 У кінці `src/core/AddInNative.h` (після класу):
 
@@ -517,12 +527,12 @@ namespace { [[maybe_unused]] auto& _forceTestComponentNames = TestComponent::nam
 REGISTER_COMPONENT(u"AddinECRPrivatJSON", AddinECRPrivatJSON)
 ```
 
-- [ ] **Step 4: Запустити — зелено; повна DLL збирається**
+- [X] **Step 4: Запустити — зелено; повна DLL збирається**
 
 Run: цикл тестів + `cmake --build build_x64 --config Release --target SimplyAddinConnectWin` (ім'я цілі — з кореневого CMakeLists, перевірити фактичне).
 Expected: `[PASS] REGISTER_COMPONENT works`; DLL лінкується.
 
-- [ ] **Step 5: Commit**
+- [X] **Step 5: Commit**
 
 ```powershell
 git add src/core/AddInNative.h src/components/AddinUAPKIConnect.cpp src/components/AddinECRPrivatJSON.cpp src/TestComponent.cpp tests/core_selftest.cpp
@@ -543,7 +553,7 @@ git commit -m "Ядро: REGISTER_COMPONENT — макрос реєстраці�
 - Consumes: `ServiceTools::EnableComponentLogging(AddInNative*, const std::string&, const std::string&)` (`src/helpers/ServiceTools.h:127`), `Ret()` з Task 3, `DefaultHelper`.
 - Produces: КОЖНА компонента автоматично має 1С-функцію `EnableLogging`/`ИспользоватьЛогирование(уровень="info", путь="")`. Дублікати в компонентах видалені. `DisableComponentLogging` лишається у деструкторах похідних (RTTI-імена в базовому деструкторі некоректні — не переносити).
 
-- [ ] **Step 0: Виправити латентний дедлок у ShutdownLogging (передумова)**
+- [X] **Step 0: Виправити латентний дедлок у ShutdownLogging (передумова)**
 
 Підтверджений аудитом баг наявного коду: `ShutdownLogging` бере `loggersMutex`
 (`src/helpers/ServiceTools_Log.cpp:163`) і під ним викликає `Info(componentName, ...)`
@@ -595,7 +605,7 @@ static void TestShutdownLoggingNoDeadlock() {
 Запуск до фіксу — тест висне (обірвати вручну), після фіксу — зелений. Коміт
 разом зі Step 5 задачі.
 
-- [ ] **Step 1: Написати падаючий тест**
+- [X] **Step 1: Написати падаючий тест**
 
 ```cpp
 static void TestBaseEnableLogging() {
@@ -624,11 +634,11 @@ static void TestBaseEnableLogging() {
 
 (Якщо `EnableComponentLogging` з рівнем `"off"` повертає false за поточною реалізацією — перевірити її семантику в `ServiceTools_Log.cpp` і в тесті використати `"info"` + шлях у `%TEMP%`: `std::string(getenv("TEMP")) + "\\core_selftest.log"`, переданий як u16-рядок. Головне, що перевіряється: метод існує в базі й повертає bool.)
 
-- [ ] **Step 2: Запустити — падає**
+- [X] **Step 2: Запустити — падає**
 
 Expected: `[FAIL] base registers EnableLogging` (метод є лише в похідних).
 
-- [ ] **Step 3: Мінімальна реалізація**
+- [X] **Step 3: Мінімальна реалізація**
 
 `src/core/AddInNative.cpp` — включити хелперний заголовок (після `#include "AddInNative.h"`):
 
@@ -664,11 +674,11 @@ AddInNative::AddInNative(void) : result(nullptr, this) {
 - `TestComponent.cpp:15-17` (дубль Version), `:43-75` (реєстрація EnableLogging), метод `EnableLogging` з TestComponent.{h,cpp};
 - у `AddinECRPrivatJSON.cpp` — аналогічну реєстрацію (`:81-95` за грепом `EnableLogging`) і метод/декларацію.
 
-- [ ] **Step 4: Запустити — зелено; DLL збирається**
+- [X] **Step 4: Запустити — зелено; DLL збирається**
 
 Expected: `[PASS]` усі; повна ціль DLL лінкується (перевірити, що видалені методи ніде більше не викликаються: `grep -n "->EnableLogging(" src/`).
 
-- [ ] **Step 5: Commit**
+- [X] **Step 5: Commit**
 
 ```powershell
 git add src/core/AddInNative.cpp src/core/AddInNative.h src/components/AddinUAPKIConnect.* src/components/AddinECRPrivatJSON.* src/TestComponent.* tests/core_selftest.cpp
@@ -699,7 +709,7 @@ void AddFunction (nameEn, nameRu, handler, const std::vector<ParamSpec>& params)
 ```
 Правило валідації (виконується в `CallAsProc`/`CallAsFunc` ДО виклику хендлера): для кожного `required`-параметра без дефолту — якщо аргумент не передано (`i >= lSizeArray`) або він `VTYPE_EMPTY` → `AddError` з текстом «Параметр '<ім'я>' методу '<метод>' обов'язковий, отримано порожнє значення» (ім'я — ru/en за `alias`) і `return false`. Хендлер не викликається.
 
-- [ ] **Step 1: Написати падаючий тест**
+- [X] **Step 1: Написати падаючий тест**
 
 ```cpp
 static void TestParamValidation() {
@@ -739,11 +749,11 @@ static void TestParamValidation() {
 }
 ```
 
-- [ ] **Step 2: Запустити — компіляція падає**
+- [X] **Step 2: Запустити — компіляція падає**
 
 Expected: FAIL — `ParamSpec` не оголошено.
 
-- [ ] **Step 3: Мінімальна реалізація**
+- [X] **Step 3: Мінімальна реалізація**
 
 `AddInNative.h`:
 - після `using MethDefaults = ...` додати `struct ParamSpec` (як в Interfaces; потрібен `#include <optional>`);
@@ -814,7 +824,7 @@ bool AddInNative::ValidateParams(Meth& m, tVariant* paParams, const long lSizeAr
 (елемент `{0, DefaultHelper(...)}` теоретично матчиться і на `ParamSpec`,
 бо літерал `0` конвертується в `const char16_t*` для `std::u16string`).
 
-- [ ] **Step 3б: Захист індексів методів/властивостей (hardening за аудитом)**
+- [X] **Step 3б: Захист індексів методів/властивостей (hardening за аудитом)**
 
 `std::next(begin, N)` при `N < 0` або `N > size()` — UB ще ДО перевірки
 `it == end()` (патерн у `AddInNative.cpp:242,259,349,366` та в property-шляхах).
@@ -843,11 +853,11 @@ static void TestIndexHardening() {
 }
 ```
 
-- [ ] **Step 4: Запустити — зелено**
+- [X] **Step 4: Запустити — зелено**
 
 Expected: усі `[PASS]`, старі тести теж зелені (регресія перевантажень).
 
-- [ ] **Step 5: Commit**
+- [X] **Step 5: Commit**
 
 ```powershell
 git add src/core/AddInNative.h src/core/AddInNative.cpp tests/core_selftest.cpp
@@ -872,7 +882,7 @@ bool PostExternalEvent(const std::u16string& message, const std::u16string& data
 ```
 Гарантія: після повернення з `Done()` жоден `PostExternalEvent` не торкнеться `m_iConnect` (м'ютекс + обнулення). Це фундамент подій для Етапів 1-2 (JobEngine, SimplyChannel).
 
-- [ ] **Step 1: Написати падаючий тест**
+- [X] **Step 1: Написати падаючий тест**
 
 ```cpp
 #include <thread>
@@ -897,11 +907,11 @@ static void TestEventBridge() {
 }
 ```
 
-- [ ] **Step 2: Запустити — компіляція падає**
+- [X] **Step 2: Запустити — компіляція падає**
 
 Expected: FAIL — `PostExternalEvent` не оголошено.
 
-- [ ] **Step 3: Мінімальна реалізація**
+- [X] **Step 3: Мінімальна реалізація**
 
 `AddInNative.h`: у public-секцію — декларація методу; у private — `std::mutex connectMutex_;` (include `<mutex>`).
 
@@ -959,12 +969,12 @@ void AddInNative::AddError(const std::u16string& descr)
 семантику, додавши лише lock + null-guard. У тесті EventBridge доповнити:
 `comp->Done();` потім виклик методу, що всередині робить `AddError`, — не падає.)
 
-- [ ] **Step 4: Запустити — зелено**
+- [X] **Step 4: Запустити — зелено**
 
 Expected: усі `[PASS]`. Прогнати кілька разів поспіль (потоковий тест):
 `for ($i=0; $i -lt 20; $i++) { bin\Release\core_selftest_x64.exe | Select-String FAIL }` — порожньо.
 
-- [ ] **Step 5: Commit**
+- [X] **Step 5: Commit**
 
 ```powershell
 git add src/core/AddInNative.h src/core/AddInNative.cpp tests/core_selftest.cpp
@@ -983,7 +993,7 @@ git commit -m "Ядро: PostExternalEvent — потокобезпечний м
 - Consumes: spdlog `msvc_sink` (`spdlog/sinks/msvc_sink.h` — OutputDebugString).
 - Produces: до виклику `EnableLogging` усі `REPORT_*`/`NEUTRAL_REPORT_*` пишуть у DebugView (OutputDebugString) на рівні warn+, а не в «порожній» `spdlog::default_logger`.
 
-- [ ] **Step 1: Написати тест (смоук)**
+- [X] **Step 1: Написати тест (смоук)**
 
 ```cpp
 #include "../src/helpers/ServiceTools.h"
@@ -994,11 +1004,11 @@ static void TestFallbackLogging() {
 }
 ```
 
-- [ ] **Step 2: Запустити — має бути зелено вже зараз (базлайн)**
+- [X] **Step 2: Запустити — має бути зелено вже зараз (базлайн)**
 
 Expected: PASS (default_logger теж не падає). Це базлайн-тест: захищає від регресії ПІСЛЯ зміни. Головна перевірка Step 4 — ручна.
 
-- [ ] **Step 3: Реалізація**
+- [X] **Step 3: Реалізація**
 
 `ServiceTools_Log.cpp` — додати include і fallback:
 
@@ -1021,11 +1031,11 @@ static std::shared_ptr<spdlog::logger> GetFallbackLogger() {
 
 У `GetLogger` (рядок 90) замінити `return spdlog::default_logger();` на `return GetFallbackLogger();`.
 
-- [ ] **Step 4: Перевірити**
+- [X] **Step 4: Перевірити**
 
 Run: збірка + `bin\Release\core_selftest_x64.exe` (зелено). Ручна верифікація: запуск під відладчиком VS або DebugView — рядок `[SimplyAddinConnect] [warning] Перевірка fallback-логера...` присутній.
 
-- [ ] **Step 5: Commit**
+- [X] **Step 5: Commit**
 
 ```powershell
 git add src/helpers/ServiceTools_Log.cpp tests/core_selftest.cpp
@@ -1044,7 +1054,7 @@ git commit -m "Логування: fallback-sink OutputDebugString до EnableLo
 - Consumes: усі попередні задачі.
 - Produces: зелений повний прогін; документація відповідає коду.
 
-- [ ] **Step 1: Додати core_selftest у run_tests.ps1**
+- [X] **Step 1: Додати core_selftest у run_tests.ps1**
 
 Конкретні точки (за аудитом): поряд з `$SelfTestExe` (`run_tests.ps1:39`) додати
 `$CoreSelftestExe = Join-Path $BinRelease "core_selftest$ArchSuffix.exe"`;
@@ -1056,22 +1066,22 @@ UAPKI-екзешників; для core — окрема перевірка на
 UAPKI (`$ProviderDll`) чи UAPKI-екзешників — він має проходити і в збірці без
 `-WithUAPKI`.
 
-- [ ] **Step 2: Повна збірка з UAPKI і тестами**
+- [X] **Step 2: Повна збірка з UAPKI і тестами**
 
 Run: `powershell -ExecutionPolicy Bypass -File build_project.ps1 -WithUAPKI -WithTests`
 Expected: обидві архітектури зібрані, ZIP створено, тестові exe у `bin/Release`.
 
-- [ ] **Step 3: Повний прогін тестів**
+- [X] **Step 3: Повний прогін тестів**
 
 Run: `powershell -File run_tests.ps1 x64`, потім `powershell -File run_tests.ps1 x86`
 Expected: core_selftest PASS + всі попередні UAPKI-рівні (L0/L1/L2/L3) без регресій — підсумкова таблиця без FAIL.
 
-- [ ] **Step 4: Синхронізувати документацію**
+- [X] **Step 4: Синхронізувати документацію**
 
 - `AGENTS.md` → «Як додати компоненту»: замінити ручний блок `names`+`_force` на `REGISTER_COMPONENT`, згадати `Ret()` (і правило «не обгортати хендлери, що самі ставлять this->result»), `ParamSpec`, успадкований `EnableLogging`; «Тести» → додати `core_selftest`. Перевірено аудитом: `build_project.ps1:78` ВЖЕ передає `-DBUILD_TESTS=ON` незалежно від `-WithUAPKI` — скрипт міняти не треба; виправити лише формулювання в AGENTS.md («-WithTests працює лише разом з -WithUAPKI» → «core_selftest збирається завжди при -WithTests; uapki_selftest/native_host — лише разом з -WithUAPKI»).
 - `docs/architecture/core.md`: нові механізми (Ret, ParamSpec+валідація, PostExternalEvent, EnableLogging у базі, boot-фікси) — окремим розділом «Платформенні механізми ядра (Етап 0)».
 
-- [ ] **Step 5: Commit**
+- [X] **Step 5: Commit**
 
 ```powershell
 git add run_tests.ps1 AGENTS.md docs/architecture/core.md

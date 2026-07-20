@@ -253,9 +253,11 @@
 
 ## 6. Етапи виконання (strangler; кожен етап зелений і цінний)
 
-- **Етап 0 — ядро**: конвенція повернення (фікс бага №2 у всіх фасадах),
-  `REGISTER_COMPONENT`, `EnableLogging` у базу, декларативні параметри,
-  EventBridge (`ExternalEvent`), boot-фікси. Тестується без заліза.
+- **Етап 0 — ядро** — ✅ **виконано** (2026-07-20, гілка `etap0-core-mist`; план і звіт —
+  `docs/tasks/2026-07-20_plan_etap0_core.md`): конвенція повернення (`Ret()`, фікс бага №2
+  у фасадах, що переписуються не в Етапі 2), `REGISTER_COMPONENT`, `EnableLogging` у базу,
+  декларативні параметри (`ParamSpec`), EventBridge (`PostExternalEvent`/`ExternalEvent`),
+  boot-фікси. Тестується без заліза — харнес `core_selftest` (L0.5 у `run_tests.ps1`).
 - **Етап 1 — платформа + wire-стек**: Logger/WireTrace, JobEngine,
   OperationRegistry, `ITransport` (COM/TCP/WS-клієнт), `IFramer`, `FramedSession`.
   Юніт-тести: loopback-транспорт, framer-вектори, кореляція, реконект.
