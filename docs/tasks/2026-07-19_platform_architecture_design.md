@@ -261,6 +261,12 @@
 - **Етап 1 — платформа + wire-стек**: Logger/WireTrace, JobEngine,
   OperationRegistry, `ITransport` (COM/TCP/WS-клієнт), `IFramer`, `FramedSession`.
   Юніт-тести: loopback-транспорт, framer-вектори, кореляція, реконект.
+  **Wire-фундамент виконано (2026-07-20, гілка `device-core`):** `ITransport`+фікси COM/TCP/WS-клієнт
+  (§9.1), `IFramer`/`NullTerminatedFramer`, `IFrameClassifier`, `DeviceSession` (роль `FramedSession`;
+  дві доріжки primary/service, реконект, desync, WireTrace), детермінований `LoopbackTransport`;
+  харнес `wire_selftest` (L0.6 + режим `-NoUapki`). Дизайн/план —
+  `docs/tasks/2026-07-20_{design_device_transport_session,plan_device_core}.md`.
+  **Лишається в Етапі 1:** Logger, JobEngine, OperationRegistry.
 - **Етап 2 — пілот ECRPrivatJSON**: драйвер заново за еталонною схемою
   (баг №1 вмирає структурно) + **TCP-емулятор термінала** (байтові приклади зі
   спеки = готові тест-вектори; PingDevice/Identify/Purchase/помилкові сценарії) +
@@ -270,6 +276,10 @@
   EventBridge на реальному порту.
 - **Етап 3 — дієта**: spdlog→логер, ixwebsocket client-only, видалення WSServer,
   `CreateTransport`/`SetTransport` та іншого мертвого коду.
+  **Частина виконана достроково (гілка `device-core`):** видалено `Transport_WSServer`, серверний
+  режим TCP, старий непрацездатний ECR-драйвер (`AddinECRPrivatJSON`, `protocols/ECRPrivatJSON`,
+  `helpers/ECRPrivatJSON`) і мертві `CreateTransport`/`SetTransport`. **Лишається:** spdlog→логер,
+  повна ix-дієта.
 - **Етап 4 — аналоги BPOS1/POSAPI**: спершу підзадача wire-здобуття (§3.4),
   потім драйвери (framer+кодек+опис операцій; решта з платформи).
 
