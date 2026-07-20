@@ -93,6 +93,10 @@ class ScriptedClassifier : public IFrameClassifier {
 public:
     explicit ScriptedClassifier(std::deque<Classification> script) : script_(std::move(script)) {}
     Classification Classify(const PendingView&, const std::vector<uint8_t>&) override {
+        // Захист від зайвого інжекту понад заскриптоване: без цього front() на порожній
+        // deque — UB (креш). Зайвий кадр трактуємо як Unsolicited (нейтрально, не завершує
+        // жодної доріжки), а не валимо процес.
+        if (script_.empty()) return { FrameClass::Unsolicited, RejectReason::Busy };
         Classification c = script_.front();
         script_.pop_front();
         return c;
@@ -689,6 +693,75 @@ static void TestSecondPrimaryConcurrent() {
           "SecondPrimaryConcurrent: first released by Stop");
 }
 
+// Другий service під час активного першого → {Concurrent} (без відправки в мережу).
+// Дзеркало TestSecondPrimaryConcurrent для service-доріжки (§5.1: pending.active → Concurrent).
+static void TestSecondServiceConcurrent() {
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<EchoClassifier>());
+    CHECK(session.Start(), "SecondServiceConcurrent: Start connects");
+
+    RequestResult first{};
+    std::thread th([&] { first = session.RequestService(B("SRV")); });
+    CHECK(tp->WaitForSend(), "SecondServiceConcurrent: first service pending");
+
+    RequestResult second = session.RequestService(B("SRV2"));
+    CHECK(second.status == RequestStatus::Concurrent,
+          "SecondServiceConcurrent: second service {Concurrent}");
+    CHECK(tp->SentCount() == 1, "SecondServiceConcurrent: concurrent request not sent to wire");
+
+    session.Stop();   // звільнити перший
+    th.join();
+    CHECK(first.status == RequestStatus::Stopped,
+          "SecondServiceConcurrent: first released by Stop");
+}
+
+// FrameOptions{leadingDelimiter=true} → надісланий кадр РЕАЛЬНО починається з 0x00
+// (PingDevice-хендшейк). Перевіряємо крізь захоплення надісланих байтів
+// LoopbackTransport::Sent(): перший байт відповідного кадру == 0x00.
+static void TestLeadingDelimiterOnWire() {
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<EchoClassifier>());
+    CHECK(session.Start(), "LeadingDelim: Start connects");
+
+    // Контроль: БЕЗ опції провідного 0x00 нема (payload "PRI" → перший байт 'P').
+    RequestResult ctrl{};
+    std::thread cth([&] { ctrl = session.RequestPrimary(B("PRI")); });
+    CHECK(tp->WaitForSend(), "LeadingDelim: control primary sent");
+    tp->InjectRecv(NT("PRI"));   // EchoClassifier → PrimaryResponse → завершує контроль
+    cth.join();
+    CHECK(ctrl.status == RequestStatus::Response, "LeadingDelim: control primary completed");
+
+    // Primary з leadingDelimiter → перший байт надісланого кадру == 0x00.
+    RequestResult pr{};
+    std::thread pth([&] { pr = session.RequestPrimary(B("PRI"), -1, FrameOptions{true}); });
+    CHECK(tp->WaitForSend(), "LeadingDelim: primary(leadingDelimiter) sent");
+    // Service з leadingDelimiter (паралельна доріжка) → також провідний 0x00.
+    RequestResult sr{};
+    std::thread sth([&] { sr = session.RequestService(B("SRV"), -1, FrameOptions{true}); });
+    CHECK(tp->WaitForSend(), "LeadingDelim: service(leadingDelimiter) sent");
+
+    auto sent = tp->Sent();
+    CHECK(sent.size() == 3, "LeadingDelim: three frames captured");
+    CHECK(sent.size() >= 1 && !sent[0].empty() && sent[0][0] != 0x00,
+          "LeadingDelim: control frame has NO leading 0x00 (starts with payload)");
+    CHECK(sent.size() >= 2 && !sent[1].empty() && sent[1][0] == 0x00,
+          "LeadingDelim: primary(leadingDelimiter) frame starts with 0x00");
+    CHECK(sent.size() >= 3 && !sent[2].empty() && sent[2][0] == 0x00,
+          "LeadingDelim: service(leadingDelimiter) frame starts with 0x00");
+
+    session.Stop();   // звільнити ще-активні leading-delim pending
+    pth.join();
+    sth.join();
+    CHECK(pr.status == RequestStatus::Stopped && sr.status == RequestStatus::Stopped,
+          "LeadingDelim: leading-delim pendings released by Stop");
+}
+
 // Лічильник подій стану з'єднання — для детермінованого очікування (ре)конекту
 // без sleep (підписується через SetConnectionStateHandler ДО Start).
 struct StateWaiter {
@@ -774,7 +847,14 @@ static void TestDesyncBlocksPrimaryNotService() {
 }
 
 // Stale-frame після таймауту+реконекту: пізня відповідь старого запиту не завершує
-// новий primary (epoch/generation guard, §14).
+// новий primary (§14). ЩО САМЕ доводить цей тест (див. коментар про рівні захисту
+// в DeviceSession.cpp біля primaryLive): основний захист — це desync + звільнення
+// доріжки при таймауті + реконект. На момент прильоту STALE активного primary НЕМА
+// (таймаут звільнив доріжку, а desync блокує новий, поки драйвер не викличе
+// MarkSynchronized), тож кадр відкидається на `!active` і НЕ буферизується «на потім».
+// Далі новий primary заводить власну доріжку й завершується ВЛАСНОЮ відповіддю —
+// доказ, що stale не осів у стані. (Гілку epoch-mismatch при active-pending через
+// чорний ящик не досягти — тому окремого тесту на неї свідомо нема.)
 static void TestStaleFrameAfterReconnect() {
     SessionConfig cfg;
     cfg.autoReconnect      = true;
@@ -801,9 +881,20 @@ static void TestStaleFrameAfterReconnect() {
     tp->WaitForSend();   // спожити send старого primary
     CHECK(sw.WaitUps(2), "StaleFrame: supervisor reconnected (2nd state(true))");
 
+    // Передумова, на якій тримається доказ: на момент прильоту STALE активного primary
+    // НЕМА — таймаут звільнив доріжку, і сесія в desync (тому новий primary поки
+    // заборонено). Саме `!active` (а не порівняння epoch) і відкине stale-кадр.
+    CHECK(session.IsDesynchronized(),
+          "StaleFrame: desynced after timeout — no active primary track when stale arrives");
+
     // Пізня відповідь СТАРОГО запиту прилітає вже після реконекту. Активного primary
     // нема (desync блокує новий) — має бути безпечно відкинута, НЕ збережена «на потім».
-    tp->InjectRecv(NT("STALE"));   // ScriptedClassifier[0] → PrimaryResponse (dropped)
+    tp->InjectRecv(NT("STALE"));   // ScriptedClassifier[0] → PrimaryResponse (dropped на !active)
+
+    // Stale-кадр НЕ змінив стану сесії (desync лишився; MarkSynchronized ще не викликано) —
+    // тобто його точно не застосовано до жодної доріжки.
+    CHECK(session.IsDesynchronized(),
+          "StaleFrame: stale frame did not touch session state (still desynced)");
 
     // Драйвер відновив синхронізацію → новий primary дозволено.
     session.MarkSynchronized();
@@ -1867,6 +1958,8 @@ int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     RunGuarded("TestRejectBoth", TestRejectBoth);
     RunGuarded("TestUnsolicitedToHandler", TestUnsolicitedToHandler);
     RunGuarded("TestSecondPrimaryConcurrent", TestSecondPrimaryConcurrent);
+    RunGuarded("TestSecondServiceConcurrent", TestSecondServiceConcurrent);
+    RunGuarded("TestLeadingDelimiterOnWire", TestLeadingDelimiterOnWire);
     RunGuarded("TestPrimaryTimeout", TestPrimaryTimeout);
     RunGuarded("TestDesyncBlocksPrimaryNotService", TestDesyncBlocksPrimaryNotService);
     RunGuarded("TestStaleFrameAfterReconnect", TestStaleFrameAfterReconnect);

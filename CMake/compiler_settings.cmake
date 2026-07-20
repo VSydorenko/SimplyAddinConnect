@@ -93,6 +93,8 @@ if (NOT UNIX)
       target_compile_options(base_component PRIVATE /utf-8)
     target_compile_options(test_component PRIVATE /utf-8)
     target_compile_options(helpers_component PRIVATE /utf-8)
+    target_compile_options(wire_component PRIVATE /utf-8)
+    target_compile_options(transport_component PRIVATE /utf-8)
     # target_compile_options(ecrcommx_component PRIVATE /utf-8)
     # target_compile_options(posapi_component PRIVATE /utf-8)
 
