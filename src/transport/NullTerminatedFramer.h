@@ -22,6 +22,7 @@ public:
     std::vector<uint8_t> Wrap(const std::vector<uint8_t>& payload,
                               FrameOptions opts = {}) override;
     void Reset() override;
+    void SetMaxBufferedBytes(std::size_t maxBufferedBytes) override;
 
 private:
     std::mutex           framerMutex_;

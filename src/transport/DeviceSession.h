@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -124,9 +125,12 @@ private:
     bool stopping_ = false;
     bool desynchronized_ = false;
     bool reconnectRequested_ = false;
+    bool reconnectGaveUp_ = false;    ///< латч: реконект вичерпав reconnectMaxTries (§H3)
     bool desiredUp_ = false;          ///< сесія хоче бути на зв'язку (Start..Stop)
     bool expectedClose_ = false;      ///< супервізор навмисне Close (не трактувати як обрив)
-    int  serviceQuarantine_ = 0;      ///< скільки наступних ServiceResponse-кадрів проковтнути
+    int  serviceQuarantine_ = 0;      ///< скільки наступних service-кадрів проковтнути (bounded)
+    std::chrono::steady_clock::time_point serviceQuarantineDeadline_{};  ///< вікно карантину (§H2)
+    std::uint64_t serviceQuarantineEpoch_ = 0;   ///< генерація, до якої прив'язаний карантин
     std::uint64_t epoch_ = 0;         ///< генерація з'єднання (guard проти stale-кадрів)
 
     std::condition_variable supervisorCv_;   ///< будильник супервізора реконекту (під m_)

@@ -61,3 +61,8 @@ void NullTerminatedFramer::Reset() {
     std::lock_guard<std::mutex> lock(framerMutex_);
     buffer_.clear();
 }
+
+void NullTerminatedFramer::SetMaxBufferedBytes(std::size_t maxBufferedBytes) {
+    std::lock_guard<std::mutex> lock(framerMutex_);
+    max_ = maxBufferedBytes;
+}

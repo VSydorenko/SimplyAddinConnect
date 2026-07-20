@@ -62,6 +62,15 @@ static void TestNullTerminatedFramer() {
       CHECK(o2.empty(), "overflow: no frame emitted");
       fo.Feed([]{ auto v=B("Z"); v.push_back(0); return v; }(), o2);
       CHECK(o2.size()==1 && o2[0]==B("Z"), "overflow: recovers on next valid frame"); }
+
+    // #L: SetMaxBufferedBytes — ліміт можна оновити після конструктора (саме так DeviceSession
+    // під'єднує SessionConfig::maxBufferedBytes); overflow-recovery діє за оновленим лімітом.
+    { NullTerminatedFramer fs; std::vector<std::vector<uint8_t>> o3;
+      fs.SetMaxBufferedBytes(4);
+      fs.Feed(B("12345"), o3);                 // >4 без термінатора за оновленим лімітом
+      CHECK(o3.empty(), "SetMaxBufferedBytes: overflow honored after setter");
+      fs.Feed([]{ auto v=B("Z"); v.push_back(0); return v; }(), o3);
+      CHECK(o3.size()==1 && o3[0]==B("Z"), "SetMaxBufferedBytes: recovers after setter-driven overflow"); }
 }
 // --- тестові подвійники IFrameClassifier (§4.3 дизайну) ---------------------
 
@@ -141,8 +150,11 @@ public:
 
     // ---- ITransport ----
     bool Open() override {
+        { std::lock_guard<std::mutex> lk(openMtx_); ++openCount_; }
+        openCv_.notify_all();
         {
             std::lock_guard<std::mutex> lk(mtx_);
+            if (failAllOpens_) return false;                             // постійний фейл (§H3)
             if (failNextOpen_) { failNextOpen_ = false; return false; }  // без state(true)
             if (open_) return true;                                       // ідемпотентність
             open_ = true;
@@ -213,6 +225,16 @@ public:
     void SetStateMode(LoopbackStateMode m) { mode_.store(m); }
     // Наступний Open провалиться (для тестів реконекту) — без state(true).
     void ScriptFailNextOpen() { std::lock_guard<std::mutex> lk(mtx_); failNextOpen_ = true; }
+    // Усі наступні Open провалюються (постійний фейл для maxTries, §H3) — без state(true).
+    void ScriptFailAllOpens() { std::lock_guard<std::mutex> lk(mtx_); failAllOpens_ = true; }
+    // Скільки разів викликано Open() (успіх чи фейл) — для перевірки бюджету спроб реконекту.
+    size_t OpenCount() { std::lock_guard<std::mutex> lk(openMtx_); return openCount_; }
+    // Бар'єр: дочекатися щонайменше n викликів Open() (без sleep).
+    bool WaitForOpens(size_t n, int timeoutMs = 3000) {
+        std::unique_lock<std::mutex> lk(openMtx_);
+        return openCv_.wait_for(lk, std::chrono::milliseconds(timeoutMs),
+                                [&] { return openCount_ >= n; });
+    }
     // Наступний Send провалиться (<0). withSyncState=true → синхронно доставити state(false)
     // ДО повернення Send (модель TCP-Send, що детектує обрив; §5.3 precedence).
     void ScriptFailNextSend(bool withSyncState = false) {
@@ -306,9 +328,15 @@ private:
     bool open_ = false;
     bool falseEmitted_ = false;
     bool failNextOpen_ = false;
+    bool failAllOpens_ = false;
     bool failNextSend_ = false;
     bool failNextSendState_ = false;
     std::atomic<LoopbackStateMode> mode_{ LoopbackStateMode::Worker };
+
+    // Лічильник викликів Open() (для бюджету спроб реконекту, §H3).
+    std::mutex openMtx_;
+    std::condition_variable openCv_;
+    size_t openCount_ = 0;
 
     // Захоплення Send
     std::mutex sentMtx_;
@@ -823,6 +851,39 @@ static void TestServiceTimeoutQuarantine() {
     session.Stop();
 }
 
+// #H2: карантин ОБМЕЖЕНИЙ — service таймаутить, пізнього дубля НЕ приходить; після вікна
+// карантину новий service має завершитись СВОЄЮ відповіддю (а не бути проковтнутим назавжди).
+static void TestServiceQuarantineExpiresWithoutDuplicate() {
+    SessionConfig cfg;
+    cfg.autoReconnect   = false;   // без реконекту — карантин НЕ скидається обривом
+    cfg.serviceTimeoutMs = 30;     // мале вікно карантину, щоб детерміновано його перетнути
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<ScriptedClassifier>(std::deque<Classification>{
+                              { FrameClass::ServiceResponse, RejectReason::Busy }  // відповідь новому
+                          }), cfg);
+    CHECK(session.Start(), "QuarantineExpires: Start connects");
+
+    RequestResult t = session.RequestService(B("A"));   // default=30ms → мовчання → таймаут
+    CHECK(t.status == RequestStatus::Timeout, "QuarantineExpires: service A timed out");
+    CHECK(tp->WaitForSend(), "QuarantineExpires: A reached wire");
+
+    // Пізнього дубля НЕ інжектимо. Перечекати вікно карантину (serviceTimeoutMs=30мс) з запасом —
+    // це ЄДИНИЙ спосіб детерміновано перевірити «після вікна кадр легітимний» (вікно — за годинником).
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    RequestResult sr{};
+    std::thread sth([&] { sr = session.RequestService(B("B"), 2000); });
+    CHECK(tp->WaitForSend(), "QuarantineExpires: new service B sent");
+    tp->InjectRecv(NT("own"));   // ВЛАСНА відповідь B — вікно минуло, НЕ карантинити
+    sth.join();
+    CHECK(sr.status == RequestStatus::Response && sr.frame == B("own"),
+          "QuarantineExpires: B completed by its own response (quarantine window expired, not swallowed)");
+    session.Stop();
+}
+
 // Обрив під час in-flight запиту → pending {Disconnected} + автоматичний реконект.
 static void TestDisconnectDuringPending() {
     SessionConfig cfg;
@@ -871,6 +932,40 @@ static void TestInitialOpenFailure() {
     session.Start();   // Open fail → супервізор має ретраїти
     CHECK(sw.WaitUps(1), "InitialOpenFailure: supervisor reconnects after failed initial Open");
     CHECK(session.IsConnected(), "InitialOpenFailure: session connected after retry");
+    session.Stop();
+}
+
+// #H3: reconnectMaxTries РЕАЛЬНО обмежує — при постійному фейлі Open супервізор робить
+// РІВНО maxTries спроб реконекту, тоді ідлить (не крутить Close+Open вічно).
+static void TestReconnectMaxTries() {
+    SessionConfig cfg;
+    cfg.autoReconnect      = true;
+    cfg.reconnectDelayMs   = 5;
+    cfg.reconnectMaxDelayMs = 20;
+    cfg.reconnectMaxTries  = 3;      // бюджет спроб реконекту
+    cfg.connectDeadlineMs  = 200;
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    DeviceSession session(std::move(transport),
+                          std::make_unique<NullTerminatedFramer>(),
+                          std::make_unique<EchoClassifier>(), cfg);
+    StateWaiter sw;
+    session.SetConnectionStateHandler([&](bool up) { sw.On(up); });
+    CHECK(session.Start(), "ReconnectMaxTries: Start connects");
+    CHECK(sw.WaitUps(1), "ReconnectMaxTries: initial connect");
+    CHECK(tp->OpenCount() == 1, "ReconnectMaxTries: exactly one Open at Start");
+
+    tp->ScriptFailAllOpens();   // кожен наступний Open реконекту провалюється (без state(true))
+    tp->ForceRemoteClose();     // обрив → супервізор ретраїть, усі спроби фейлять
+
+    // Рівно maxTries спроб реконекту (кожна = 1 Open) поверх початкового Open.
+    CHECK(tp->WaitForOpens(1 + 3), "ReconnectMaxTries: supervisor made maxTries reconnect attempts");
+
+    // Перечекати понад backoff (<=20мс), щоб зловити «вічний цикл», якби латч не спрацював.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    CHECK(tp->OpenCount() == 1 + 3,
+          "ReconnectMaxTries: supervisor idles after maxTries (no infinite Close+Open)");
+    CHECK(!session.IsConnected(), "ReconnectMaxTries: remains disconnected after giving up");
     session.Stop();
 }
 
@@ -948,6 +1043,53 @@ static void TestStopFromUnsolicited() {
     // Фінальний join dispatcher-а — у ~DeviceSession з цього (не-dispatcher) потоку.
     session.reset();
     CHECK(true, "StopFromUnsolicited: destroyed cleanly (final join in dtor)");
+}
+
+// #H4: чанк із 2 unsolicited-кадрами; перший хендлер кличе Stop() з dispatcher-потоку —
+// ДРУГИЙ хендлер того ж drain-циклу НЕ має спрацювати (§14 «нуль колбеків», §6 крок 5).
+static void TestStopFromUnsolicitedMidChunk() {
+    auto transport = std::make_unique<LoopbackTransport>();
+    LoopbackTransport* tp = transport.get();
+    auto session = std::make_unique<DeviceSession>(
+        std::move(transport),
+        std::make_unique<NullTerminatedFramer>(),
+        std::make_unique<ScriptedClassifier>(std::deque<Classification>{
+            { FrameClass::Unsolicited, RejectReason::Busy },   // кадр 1 → Stop()
+            { FrameClass::Unsolicited, RejectReason::Busy }    // кадр 2 → НЕ доставляти
+        }));
+    DeviceSession* sp = session.get();
+
+    std::mutex dmtx;
+    std::condition_variable dcv;
+    std::atomic<int> handlerCalls{ 0 };
+    std::atomic<bool> injected{ false };
+    bool firstDone = false;
+    session->SetUnsolicitedHandler([&, sp](std::vector<uint8_t>) {
+        const int n = handlerCalls.fetch_add(1) + 1;
+        if (n == 1) {
+            // Дочекатися, поки інжектор доставить ВЕСЬ чанк (обидва кадри вже в dispatch-черзі),
+            // аби Stop() гарантовано спрацював, коли 2-й хендлер уже стоїть у черзі drain-циклу.
+            while (!injected.load()) std::this_thread::yield();
+            sp->Stop();   // реентрантний Stop() з першого кадру чанку
+            std::lock_guard<std::mutex> lk(dmtx); firstDone = true; dcv.notify_all();
+        }
+    });
+    CHECK(session->Start(), "StopMidChunk: Start connects");
+
+    // Два кадри в ОДНОМУ чанку → framer віддає 2 → OnBytes ставить у чергу 2 unsolicited.
+    std::vector<uint8_t> chunk = NT("E1");
+    { auto e2 = NT("E2"); chunk.insert(chunk.end(), e2.begin(), e2.end()); }
+    tp->InjectRecv(chunk);        // OnBytes СИНХРОННО на цьому потоці ставить обидва в чергу
+    injected.store(true);         // тепер перший хендлер може кликати Stop()
+
+    {
+        std::unique_lock<std::mutex> lk(dmtx);
+        CHECK(dcv.wait_for(lk, std::chrono::seconds(3), [&] { return firstDone; }),
+              "StopMidChunk: first handler ran and called Stop()");
+    }
+    session.reset();   // ~DeviceSession — фінальний join dispatcher
+    CHECK(handlerCalls.load() == 1,
+          "StopMidChunk: second unsolicited NOT delivered after reentrant Stop()");
 }
 
 // Precedence (§5.3): Send провалюється із СИНХРОННИМ state(false). pending має
@@ -1454,10 +1596,13 @@ int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     RunGuarded("TestDesyncBlocksPrimaryNotService", TestDesyncBlocksPrimaryNotService);
     RunGuarded("TestStaleFrameAfterReconnect", TestStaleFrameAfterReconnect);
     RunGuarded("TestServiceTimeoutQuarantine", TestServiceTimeoutQuarantine);
+    RunGuarded("TestServiceQuarantineExpiresWithoutDuplicate", TestServiceQuarantineExpiresWithoutDuplicate);
     RunGuarded("TestDisconnectDuringPending", TestDisconnectDuringPending);
     RunGuarded("TestInitialOpenFailure", TestInitialOpenFailure);
+    RunGuarded("TestReconnectMaxTries", TestReconnectMaxTries);
     RunGuarded("TestReentrantRequestFromUnsolicited", TestReentrantRequestFromUnsolicited);
     RunGuarded("TestStopFromUnsolicited", TestStopFromUnsolicited);
+    RunGuarded("TestStopFromUnsolicitedMidChunk", TestStopFromUnsolicitedMidChunk);
     RunGuarded("TestSendFailedVsDisconnected", TestSendFailedVsDisconnected);
     RunGuarded("TestCallbackQuiescenceAfterClose", TestCallbackQuiescenceAfterClose);
     RunGuarded("TestWireTraceOrder", TestWireTraceOrder);

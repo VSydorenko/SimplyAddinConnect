@@ -34,6 +34,8 @@ DeviceSession::DeviceSession(std::unique_ptr<ITransport> transport,
       framer_(std::move(framer)),
       classifier_(std::move(classifier)),
       cfg_(cfg) {
+    // §4.4/§14: під'єднати ліміт буфера кадрувальника з конфіга сесії (#L).
+    if (framer_) framer_->SetMaxBufferedBytes(cfg_.maxBufferedBytes);
 }
 
 DeviceSession::~DeviceSession() {
@@ -219,10 +221,14 @@ RequestResult DeviceSession::DoRequest(Pending& pending, bool isPrimary,
             reconnectRequested_ = true;
             supervisorCv_.notify_all();
         } else {
-            // §7/§14: service-таймаут без desync, але карантинимо дискримінатор цього
-            // service — наступний ServiceResponse-кадр (пізній дубль) проковтнути, щоб він
-            // не завершив новий service.
+            // §7/§14/#H2: service-таймаут без desync, але карантинимо дискримінатор цього
+            // service — пізній дубль/reject проковтнути, щоб він не завершив новий service.
+            // Карантин ОБМЕЖЕНИЙ і scoped: діє лише в межах вікна (~ один serviceTimeout)
+            // і лише в поточній генерації; після вікна/зміни epoch кадр — легітимний.
             ++serviceQuarantine_;
+            serviceQuarantineEpoch_ = epoch_;
+            serviceQuarantineDeadline_ = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(cfg_.serviceTimeoutMs > 0 ? cfg_.serviceTimeoutMs : 0);
         }
     }
 
@@ -270,6 +276,20 @@ void DeviceSession::OnBytes(const std::vector<uint8_t>& chunk) {
         const bool serviceLive =
             pendingService_.active && !pendingService_.done && pendingService_.epoch == epoch_;
 
+        // #H2: карантин дискримінатора service — пізній дубль/reject таймаутнутого service
+        // проковтнути (щоб не завершив/десинхронізував новий), але ЛИШЕ поки карантин
+        // ПЛАУЗИБЕЛЬНО належить таймаутнутому запиту: у межах вікна і тієї ж генерації.
+        // Після вікна/зміни epoch — карантин знімаємо, кадр трактуємо як легітимний.
+        auto quarantineSwallowsService = [&]() -> bool {
+            if (serviceQuarantine_ <= 0) return false;
+            const bool plausible =
+                serviceQuarantineEpoch_ == epoch_ &&
+                std::chrono::steady_clock::now() < serviceQuarantineDeadline_;
+            if (plausible) { --serviceQuarantine_; return true; }
+            serviceQuarantine_ = 0;   // вікно минуло / інша генерація → карантин зняти
+            return false;
+        };
+
         switch (cls.cls) {
         case FrameClass::PrimaryResponse:
             if (primaryLive) {
@@ -279,16 +299,13 @@ void DeviceSession::OnBytes(const std::vector<uint8_t>& chunk) {
             }
             break;
         case FrameClass::ServiceResponse:
-            // Карантин (§7/§14): пізній дубль timed-out service — проковтнути, НЕ завершувати
-            // поточний service. Карантин діє до наступного кадру/реконекту.
-            if (serviceQuarantine_ > 0) {
-                --serviceQuarantine_;
-                break;
-            }
+            // Карантин (§7/§14/#H2): пізній дубль timed-out service — проковтнути (bounded).
+            if (quarantineSwallowsService()) break;
             // Доріжка service серіалізована серед service, але паралельна primary.
             if (serviceLive) {
                 pendingService_.result = { RequestStatus::Response, frame };
                 pendingService_.done = true;
+                serviceQuarantine_ = 0;   // #H2: новий service завершено — карантин зняти
                 cv_.notify_all();
             }
             break;
@@ -301,13 +318,19 @@ void DeviceSession::OnBytes(const std::vector<uint8_t>& chunk) {
             }
             break;
         case FrameClass::RejectService:
+            // #H2: пізній reject таймаутнутого service не має завершити новий.
+            if (quarantineSwallowsService()) break;
             if (serviceLive) {
                 pendingService_.result = { MapReject(cls.reason), {} };
                 pendingService_.done = true;
+                serviceQuarantine_ = 0;   // #H2: новий service завершено — карантин зняти
                 cv_.notify_all();
             }
             break;
         case FrameClass::RejectBoth:
+            // #H2: пізній reject таймаутнутого service не має ДЕСИНХРОНІЗУВАТИ/завершити
+            // новий — якщо карантин плаузибельно ковтає цей кадр, трактуємо як старий (skip).
+            if (quarantineSwallowsService()) break;
             // Неоднозначний reject при обох pending: немає причинного ID, який запит
             // відхилено → завершити ОБИДВІ доріжки + перевести сесію в desync (§7).
             if (primaryLive) {
@@ -348,7 +371,10 @@ void DeviceSession::OnTransportState(bool up) {
             serviceQuarantine_ = 0;   // карантин діє «до реконекту» — скидаємо
             // Обрив трактуємо як запит на реконект, ОКРІМ навмисного Close супервізора
             // (інакше після нашого ж Close залишився б хибний reconnectRequested_ → цикл).
-            if (!expectedClose_) reconnectRequested_ = true;
+            if (!expectedClose_) {
+                reconnectRequested_ = true;
+                reconnectGaveUp_ = false;   // #H3: новий намір реконекту — скинути give-up латч
+            }
         }
         cv_.notify_all();
         supervisorCv_.notify_all();
@@ -391,10 +417,17 @@ void DeviceSession::ReconnectLoop() {
             supervisorCv_.wait(lk, [this] {
                 return stopping_ ||
                        (desiredUp_ && cfg_.autoReconnect &&
-                        (reconnectRequested_ || !connected_));
+                        (reconnectRequested_ ||
+                         (!connected_ && !reconnectGaveUp_)));   // #H3: give-up латч гасить цикл
             });
             if (stopping_) return;
 
+            // #H3: свіжий намір реконекту (reconnectRequested_ від обриву/зовн.запиту) →
+            // новий бюджет спроб; продовження внутрішнього ретраю tries НЕ обнуляє.
+            if (reconnectRequested_) {
+                tries = 0;
+                reconnectGaveUp_ = false;
+            }
             // Споживаємо запит; завершуємо ще-активні pending як Disconnected (обрив/реконект).
             reconnectRequested_ = false;
             FinishPendingLocked(RequestStatus::Disconnected);
@@ -439,18 +472,19 @@ void DeviceSession::ReconnectLoop() {
             tries = 0;
             // desynchronized_ НЕ знімаємо автоматично — лише MarkSynchronized() (§5).
         } else {
-            // Невдача: збільшити backoff і спробувати знову (доки не досягнуто maxTries).
+            // Невдача: збільшити backoff. Наступну спробу драйвить сам предикат супервізора
+            // (!connected_ && !reconnectGaveUp_) — reconnectRequested_ тут НЕ ставимо, інакше
+            // «свіжий-намір → tries=0» обнуляв би бюджет спроб щоітерації, і maxTries ніколи
+            // б не досягався (#H3).
             backoff = (std::min)(backoff * 2, cfg_.reconnectMaxDelayMs);
             ++tries;
             if (cfg_.reconnectMaxTries > 0 && tries >= cfg_.reconnectMaxTries) {
+                std::lock_guard<std::mutex> lk(m_);
+                reconnectGaveUp_ = true;   // латч: цикл Close+Open спиняється (предикат гасне)
                 NEUTRAL_REPORT_WARN("DeviceSession", "Реконект вичерпав спроби: " +
                                     std::to_string(tries));
-                // Лишаємось відключеними; чекаємо наступної події (нового reconnectRequested_).
-            } else {
-                std::lock_guard<std::mutex> lk(m_);
-                reconnectRequested_ = true;
-                supervisorCv_.notify_all();
             }
+            // else: латч не ставимо — предикат сам ретраїть після backoff.
         }
     }
 }
@@ -459,7 +493,9 @@ void DeviceSession::DispatchLoop() {
     std::unique_lock<std::mutex> lk(dispatchMutex_);
     for (;;) {
         dispatchCv_.wait(lk, [this] { return dispatchStop_ || !dispatchQueue_.empty(); });
-        while (!dispatchQueue_.empty()) {
+        // #H4: внутрішній drain перевіряє dispatchStop_ — реентрантний Stop() з першого
+        // хендлера чанку не має пропускати наступні колбеки (§14 «нуль колбеків», §6 крок 5).
+        while (!dispatchStop_ && !dispatchQueue_.empty()) {
             auto fn = std::move(dispatchQueue_.front());
             dispatchQueue_.pop_front();
             lk.unlock();
@@ -470,7 +506,10 @@ void DeviceSession::DispatchLoop() {
             }
             lk.lock();
         }
-        if (dispatchStop_) return;
+        if (dispatchStop_) {
+            dispatchQueue_.clear();   // #H4: недоставлені події скинути — після Stop колбеків нема
+            return;
+        }
     }
 }
 

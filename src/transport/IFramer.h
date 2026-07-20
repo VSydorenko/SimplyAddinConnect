@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <cstdint>
+#include <cstddef>
 
 /**
  * @file IFramer.h
@@ -31,4 +32,9 @@ public:
 
     /// Скинути внутрішній буфер.
     virtual void Reset() = 0;
+
+    /// Оновити ліміт буфера кадрувальника (§4.4/§14). За замовчуванням — no-op,
+    /// щоб кадрувальники без ліміту лишалися сумісними; DeviceSession під'єднує
+    /// SessionConfig::maxBufferedBytes у конструкторі.
+    virtual void SetMaxBufferedBytes(std::size_t /*maxBufferedBytes*/) {}
 };
