@@ -112,6 +112,9 @@ protected:
 	void AddFunction(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction &handler, const MethDefaults &defs = {});
 public:
 	static std::u16string AddComponent(const std::u16string& name, CompFunction creator);
+	// Фабрика компонент за ім'ям. Публічна — потрібна L1-харнесу core_selftest
+	// (створює пробні компоненти без платформи 1С); у DLL її кличе GetClassObject.
+	static AddInNative* CreateObject(const std::u16string& name);
 	VariantHelper result;
 	static std::u16string getComponentNames();
 	static std::u16string upper(std::u16string& str);
@@ -145,7 +148,6 @@ private:
 
 	friend const WCHAR_T* GetClassNames();
 	friend long GetClassObject(const WCHAR_T*, IComponentBase**);
-	static AddInNative* CreateObject(const std::u16string& name);
 
 	static std::map<std::u16string, CompFunction> components;
 	std::vector<Prop> properties;
