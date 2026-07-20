@@ -29,9 +29,9 @@ TestComponent::TestComponent()
 		[&]() { this->result = this->getTestString(); });
 
 	AddProcedure(
-		u"SetText", u"УстановитьТекст", 
-		[&](VH par) { this->setTestString(par); }, 
-		{{0, u"default: "}});
+		u"SetText", u"УстановитьТекст",
+		[&](VH par) { this->setTestString(par); },
+		MethDefaults{{0, u"default: "}});
 
 	// Добавление метода для генерации тестовой ошибки
 	AddProcedure(

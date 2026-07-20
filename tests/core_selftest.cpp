@@ -191,6 +191,56 @@ static void TestBaseEnableLogging() {
     comp->Done(); delete comp;
 }
 
+// ---- Декларативні параметри: ParamSpec + валідація required перед хендлером ----
+static void TestParamValidation() {
+    struct ParamProbe : public AddInNative {
+        ParamProbe() {
+            AddFunction(u"Pay", u"Оплатить",
+                Ret([](VH amount, VH merchant) {
+                    (void)merchant; return (double)amount > 0;
+                }),
+                std::vector<ParamSpec>{
+                    { u"Amount", u"Сумма", /*required*/ true, std::nullopt },
+                    { u"MerchantId", u"ИдМерчанта", false, DefaultHelper(u"0") },
+                });
+        }
+    };
+    AddInNative::AddComponent(u"ParamProbe", []() -> AddInNative* { return new ParamProbe; });
+    AddInNative* comp = AddInNative::CreateObject(u"ParamProbe");
+    MockConnect connect; MockMemory memory;
+    comp->Init(&connect); comp->setMemManager(&memory);
+    long m = comp->FindMethod((WCHAR_T*)u"Pay");
+    CHECK(m >= 0, "FindMethod(Pay)");
+
+    // 1) Порожній обов'язковий параметр → false + AddError з ім'ям параметра
+    tVariant args[2]; std::memset(args, 0, sizeof(args));
+    args[0].vt = VTYPE_EMPTY; args[1].vt = VTYPE_EMPTY;
+    tVariant ret{}; std::memset(&ret, 0, sizeof(ret)); ret.vt = VTYPE_EMPTY;
+    CHECK(!comp->CallAsFunc(m, &ret, args, 2), "empty required param rejected");
+    bool msgOk = !connect.errors.empty() &&
+        connect.errors.back().find(u"Amount") != std::u16string::npos;
+    CHECK(msgOk, "AddError mentions param name");
+
+    // 2) Валідний виклик проходить
+    args[0].vt = VTYPE_R8; args[0].dblVal = 10.5;
+    connect.errors.clear();
+    CHECK(comp->CallAsFunc(m, &ret, args, 2), "valid call passes");
+    CHECK(connect.errors.empty(), "no AddError on valid call");
+    comp->Done(); delete comp;
+}
+
+// ---- Захист індексів методів/властивостей від негативних/завеликих значень ----
+static void TestIndexHardening() {
+    AddInNative* comp = AddInNative::CreateObject(u"CoreProbe");
+    MockConnect connect; MockMemory memory;
+    comp->Init(&connect); comp->setMemManager(&memory);
+    tVariant ret{}; std::memset(&ret, 0, sizeof(ret)); ret.vt = VTYPE_EMPTY;
+    CHECK(!comp->CallAsFunc(-1, &ret, nullptr, 0), "negative method index rejected");
+    CHECK(!comp->CallAsFunc(9999, &ret, nullptr, 0), "out-of-range method index rejected");
+    CHECK(!comp->GetPropVal(-1, &ret), "negative prop index rejected");
+    comp->Done(); delete comp;
+}
+
 int main() {
     // Небуферизований stdout: щоб при аварійному завершенні (AV) не втратити
     // останні рядки й точно локалізувати місце падіння.
@@ -203,6 +253,8 @@ int main() {
     TestRegisterComponentMacro();
     TestShutdownLoggingNoDeadlock();
     TestBaseEnableLogging();
+    TestParamValidation();
+    TestIndexHardening();
     std::printf("=== %s (failed: %d) ===\n", g_failed ? "FAIL" : "OK", g_failed);
     return g_failed ? 1 : 0;
 }

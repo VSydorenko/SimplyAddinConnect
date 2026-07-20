@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <variant>
+#include <optional>
 #include <string_view>
 #include <functional>
 #include <type_traits>
@@ -87,6 +88,18 @@ protected:
 
 	using VH = VariantHelper;
 	using MethDefaults = std::map<long, DefaultHelper>;
+
+	// Декларативний опис параметра методу: імена (en/ru), ознака обов'язковості
+	// й опційне значення за замовчуванням. За наявності byDefault воно потрапляє
+	// в MethDefaults методу; required без byDefault перевіряється в ValidateParams
+	// перед викликом хендлера (порожній аргумент → AddError + return false).
+	struct ParamSpec {
+		std::u16string nameEn;
+		std::u16string nameRu;
+		bool required = false;
+		std::optional<DefaultHelper> byDefault{};
+	};
+
 	using PropFunction = std::function<void(VH)>;
 	using MethFunction0 = std::function<void()>;
 	using MethFunction1 = std::function<void(VH)>;
@@ -111,6 +124,13 @@ protected:
 	void AddProperty(const std::u16string& nameEn, const std::u16string& nameRu, const PropFunction &getter, const PropFunction &setter = nullptr);
 	void AddProcedure(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction &handler, const MethDefaults &defs = {});
 	void AddFunction(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction &handler, const MethDefaults &defs = {});
+
+	// Перевантаження з декларативним описом параметрів: дефолти беруться зі spec-ів,
+	// а required-параметри валідуються перед викликом хендлера (див. ValidateParams).
+	void AddProcedure(const std::u16string& nameEn, const std::u16string& nameRu,
+	                  const MethFunction& handler, const std::vector<ParamSpec>& params);
+	void AddFunction(const std::u16string& nameEn, const std::u16string& nameRu,
+	                 const MethFunction& handler, const std::vector<ParamSpec>& params);
 
 	// Обгортає value-повертаючу лямбду у void-хендлер, який присвоює this->result.
 	// Потрібно, бо MethFunction — це std::function<void(...)>: значення, повернуте
@@ -164,9 +184,15 @@ private:
 		MethFunction handler;
 		MethDefaults defs;
 		bool hasRetVal;
+		std::vector<ParamSpec> params;
 	};
 
 	bool CallMethod(MethFunction* function, tVariant* paParams, Meth* meth, const long lSizeArray);
+	// Перевіряє required-параметри без дефолту перед викликом хендлера: за порожнім
+	// чи відсутнім аргументом реєструє AddError з ім'ям параметра й повертає false.
+	bool ValidateParams(Meth& m, tVariant* paParams, const long lSizeArray);
+	// Будує MethDefaults зі spec-ів: параметри з byDefault стають дефолтами 1С.
+	static MethDefaults DefaultsFromSpecs(const std::vector<ParamSpec>& params);
 	VariantHelper VA(tVariant* pvar) { return VariantHelper(pvar, this); }
 	VariantHelper VA(tVariant* pvar, Prop* prop) { return VariantHelper(pvar, this, prop); }
 	VariantHelper VA(tVariant* pvar, Meth* meth, long number) { return VariantHelper(pvar + number, this, meth, number); }
