@@ -118,18 +118,21 @@ endif()
 add_executable(label_printer_selftest ${CMAKE_SOURCE_DIR}/tests/label_printer_selftest.cpp)
 target_sources(label_printer_selftest PRIVATE
     $<TARGET_OBJECTS:driver_label_printer_component>   # LabelRaster/GfEncoder/BarcodeZpl
+    $<TARGET_OBJECTS:transport_component>              # TransportSpoolerRaw (Winspool RAW) + TCP/COM/WS
     $<TARGET_OBJECTS:helpers_component>                # ServiceTools (конвертації рядків, NEUTRAL_REPORT)
     $<TARGET_OBJECTS:base_component>                   # AddInNative::MB2WCHAR/WCHAR2MB (за ServiceTools)
 )
 target_include_directories(label_printer_selftest PRIVATE
-    ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src ${SPDLOG_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR})
+    ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src ${SPDLOG_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR}
+    ${IXWEBSOCKET_INCLUDE_DIR})            # transport_component тягне ixwebsocket-заголовки (WSClient)
 set_target_properties(label_printer_selftest PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
     OUTPUT_NAME "label_printer_selftest${_TEST_ARCH_SUFFIX}"
 )
-# gdiplus — растр LabelRaster; ole32 — CreateStreamOnHGlobal; spdlog — логери ServiceTools.
-target_link_libraries(label_printer_selftest PRIVATE gdiplus ole32 spdlog::spdlog)
+# gdiplus — растр LabelRaster; ole32 — CreateStreamOnHGlobal; winspool — TransportSpoolerRaw;
+# ws2_32+ixwebsocket — TransportTCP/COM/WSClient із transport_component; spdlog — логери ServiceTools.
+target_link_libraries(label_printer_selftest PRIVATE gdiplus ole32 winspool ws2_32 ixwebsocket spdlog::spdlog)
 if(MSVC)
     target_compile_options(label_printer_selftest PRIVATE /utf-8)
 endif()

@@ -26,6 +26,7 @@ set(HEADER_FILES
     src/transport/Transport_COM.h
     src/transport/Transport_TCP.h
     src/transport/Transport_WSClient.h
+    src/transport/Transport_SpoolerRaw.h
     # src/helpers/BPOS1Parser.h
     src/helpers/UAPKIConnect/UAPKIConnectHelper.h
     # src/components/AddinECRCommX.h
@@ -48,6 +49,7 @@ set(SOURCE_FILES
     src/transport/Transport_COM.cpp
     src/transport/Transport_TCP.cpp
     src/transport/Transport_WSClient.cpp
+    src/transport/Transport_SpoolerRaw.cpp
     # src/helpers/BPOS1Parser.cpp
     src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp
     # src/components/AddinECRCommX.cpp
@@ -125,6 +127,8 @@ add_library(transport_component OBJECT
     src/transport/Transport_TCP.cpp
     src/transport/Transport_WSClient.h
     src/transport/Transport_WSClient.cpp
+    src/transport/Transport_SpoolerRaw.h
+    src/transport/Transport_SpoolerRaw.cpp
 )
 
 ## @var wire_component

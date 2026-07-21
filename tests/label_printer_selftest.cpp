@@ -7,6 +7,7 @@
 #include "../src/drivers/label_printer/BarcodeZpl.h"
 #include "../src/drivers/label_printer/LabelRaster.h"
 #include "../src/drivers/label_printer/LabelZplGenerator.h"
+#include "../src/transport/Transport_SpoolerRaw.h"
 using namespace labelprinter;
 
 static int g_failures = 0;
@@ -119,6 +120,19 @@ static void TestGenerator() {
     CHECK(zi.find("^PR") != std::string::npos && zi.find("^MD") != std::string::npos, "init has darkness+speed");
 }
 
+static void TestSpooler() {
+    TransportSpoolerRaw t("FakePrinter");
+    std::vector<uint8_t> got;
+    t.SetSendFunctionForTest([&](const std::vector<uint8_t>& d){ got = d; return (int)d.size(); });
+    CHECK(t.Open(), "spooler Open (stubbed)");
+    std::vector<uint8_t> payload = {'^','X','A','^','X','Z'};
+    CHECK(t.Send(payload) == (int)payload.size(), "Send returns full byte count");
+    CHECK(got == payload, "test seam captured exact bytes");
+    CHECK(t.IsOpen(), "IsOpen true after Open");
+    t.Close();
+    CHECK(!t.IsOpen(), "IsOpen false after Close");
+}
+
 int main() {
     TestUnits();
     TestGfEncoder();
@@ -127,6 +141,7 @@ int main() {
     TestRaster();
     TestRasterImage();
     TestGenerator();
+    TestSpooler();
     std::printf(g_failures ? "\nFAILED: %d\n" : "\nALL PASS\n", g_failures);
     return g_failures ? 1 : 0;
 }
