@@ -4,6 +4,7 @@
 #include <string>
 #include <chrono>
 #include <atomic>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include "../../platform/ResultEnvelope.h"
 #include "../../platform/JobEngine.h"
@@ -50,6 +51,12 @@ public:
 
     /// Увімкнути/вимкнути wire-трасування (діє з наступного Connect).
     void SetTrace(bool on) { traceEnabled_.store(on); }
+
+    /// Опційний обробник подій термінала (state/status/result) → у 1С через ExternalEvent.
+    /// Викликається з poller/worker-потоку; nullptr → події не емітяться (за замовчуванням).
+    using EventHandler = std::function<void(const std::string& event, const std::string& dataJson)>;
+    void SetEventHandler(EventHandler h);
+
     ResultEnvelope Purchase(const std::string& amount, const nlohmann::json& extra = {});
     ResultEnvelope Refund(const std::string& amount, const std::string& rrn, const nlohmann::json& extra = {});
     ResultEnvelope CheckConnection();
@@ -110,6 +117,12 @@ private:
     std::atomic<bool> inRecovery_{ false };
     /// Wire-трасування: якщо true — MakeSession чіпляє SetWireTraceHandler (діє з наступного Connect).
     std::atomic<bool> traceEnabled_{ false };
+
+    /// Події термінала → 1С (опційно). EmitEvent будує JSON і кличе eventHandler_ (якщо є).
+    void EmitEvent(const std::string& event, const nlohmann::json& data);
+    static std::string StatusText(int code);   ///< getLastStatMsgCode → людський текст (укр)
+    EventHandler eventHandler_;
+    std::mutex eventMutex_;                     ///< захист eventHandler_ (set із 1С vs виклик з poller)
 
     mutable std::mutex sendGateMutex_;
     std::chrono::steady_clock::time_point lastSend_{};

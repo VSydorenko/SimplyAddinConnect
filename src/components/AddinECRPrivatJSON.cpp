@@ -132,5 +132,23 @@ void AddinECRPrivatJSON::RegisterMethods() {
         }),
         std::vector<ParamSpec>{ ParamSpec{ u"enable", u"Включить", false, DefaultHelper(true) } });
 
+    // Опційний пуш подій термінала в 1С через ВнешнееСобытие. За замовчуванням вимкнено;
+    // якщо у 1С немає обробника ВнешнееСобытие — PostExternalEvent просто нічого не робить (не падає).
+    AddFunction(u"EnableEvents", u"ВключитьСобытия",
+        Ret([this](VH enable) -> bool {
+            bool on = static_cast<bool>(enable);
+            if (on) {
+                // Обробник кличеться з poller/worker-потоку → PostExternalEvent потокобезпечний.
+                driver_.SetEventHandler([this](const std::string& ev, const std::string& data) {
+                    this->PostExternalEvent(AddInNative::MB2WCHAR(ev), AddInNative::MB2WCHAR(data));
+                });
+            } else {
+                driver_.SetEventHandler(nullptr);
+            }
+            REPORT_INFO(std::string("Події термінала ") + (on ? "увімкнено" : "вимкнено"));
+            return on;
+        }),
+        std::vector<ParamSpec>{ ParamSpec{ u"enable", u"Включить", false, DefaultHelper(true) } });
+
     REPORT_INFO("Реєстрація методів ECRPrivatJSON завершена");
 }

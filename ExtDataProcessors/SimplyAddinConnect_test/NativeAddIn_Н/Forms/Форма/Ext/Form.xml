@@ -16,6 +16,7 @@
 		</ChildItems>
 	</AutoCommandBar>
 	<Events>
+		<Event name="ExternalEvent">ВнешнееСобытие</Event>
 		<Event name="OnCreateAtServer">ПриСозданииНаСервере</Event>
 	</Events>
 	<ChildItems>
@@ -240,7 +241,6 @@
 				</v8:item>
 			</Title>
 			<Group>Vertical</Group>
-			<ShowTitle>true</ShowTitle>
 			<ExtendedTooltip name="ГруппаECRРасширеннаяПодсказка" id="201"/>
 			<ChildItems>
 				<InputField name="ШляхДоКомпоненты" id="243">
@@ -364,8 +364,24 @@
 							<CommandName>Form.Command.ВключитьТрассировкуECR</CommandName>
 							<ExtendedTooltip name="КнопкаВключитьТрассировкуECRTooltip" id="239"/>
 						</Button>
+						<Button name="КнопкаВключитьСобытияECR" id="250">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ВключитьСобытияECR</CommandName>
+							<ExtendedTooltip name="КнопкаВключитьСобытияECRTooltip" id="251"/>
+						</Button>
 					</ChildItems>
 				</UsualGroup>
+				<InputField name="СтатусТерминалаТекст" id="246">
+					<DataPath>СтатусТерминалаТекст</DataPath>
+					<Title>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Онлайн-статус терминала</v8:content>
+						</v8:item>
+					</Title>
+					<ContextMenu name="СтатусТерминалаТекстContextMenu" id="247"/>
+					<ExtendedTooltip name="СтатусТерминалаТекстExtendedTooltip" id="248"/>
+				</InputField>
 				<InputField name="РезультатТекст" id="240">
 					<DataPath>РезультатТекст</DataPath>
 					<Title>
@@ -593,8 +609,33 @@
 				</v8:StringQualifiers>
 			</Type>
 		</Attribute>
+		<Attribute name="СтатусТерминалаТекст" id="14">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Онлайн-статус терминала</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
 	</Attributes>
 	<Commands>
+		<Command name="ВключитьСобытияECR" id="25">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Включить события</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ВключитьСобытияECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
 		<Command name="СоздатьОбъектДрайвераECR" id="13">
 			<Title>
 				<v8:item>

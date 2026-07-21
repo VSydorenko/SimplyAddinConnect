@@ -196,6 +196,37 @@ ResultEnvelope EcrPrivatJsonDriver::MapResult(const RequestResult& r) {
 
 int EcrPrivatJsonDriver::LastStatus() const { return lastStatus_.load(); }
 
+void EcrPrivatJsonDriver::SetEventHandler(EventHandler h) {
+    std::lock_guard<std::mutex> lk(eventMutex_);
+    eventHandler_ = std::move(h);
+}
+
+void EcrPrivatJsonDriver::EmitEvent(const std::string& event, const nlohmann::json& data) {
+    EventHandler h;
+    { std::lock_guard<std::mutex> lk(eventMutex_); h = eventHandler_; }   // копія під локом
+    if (!h) return;   // події вимкнено (за замовчуванням) → нічого не робимо
+    // Виклик ПОЗА локом (PostExternalEvent у фасаді бере свій м'ютекс). UTF-8 JSON без винятків.
+    h(event, data.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+}
+
+std::string EcrPrivatJsonDriver::StatusText(int code) {
+    switch (code) {
+        case 0:  return "Готово / очікування";
+        case 1:  return "Картку зчитано";
+        case 2:  return "Використано чіп-картку";
+        case 3:  return "Авторизація на хості...";
+        case 4:  return "Очікування дій касира";
+        case 5:  return "Друк чека";
+        case 6:  return "Введіть PIN-код";
+        case 7:  return "Картку вилучено";
+        case 8:  return "Оберіть застосунок картки";
+        case 9:  return "Вставте / піднесіть картку";
+        case 10: return "Виконується...";
+        case 11: return "Коригування транзакції";
+        default: return "Статус " + std::to_string(code);
+    }
+}
+
 void EcrPrivatJsonDriver::RequestInterrupt() { interruptRequested_.store(true); }
 
 void EcrPrivatJsonDriver::PollerLoop(std::atomic<bool>& stop) {
@@ -216,7 +247,13 @@ void EcrPrivatJsonDriver::PollerLoop(std::atomic<bool>& stop) {
             ParsedResponse pr = EcrJsonCodec::Parse(s.frame);
             if (pr.valid && pr.params.is_object()) {
                 std::string code = pr.params.value("LastStatMsgCode", std::string{});
-                if (!code.empty()) { try { lastStatus_.store(std::stoi(code)); } catch (...) {} }
+                if (!code.empty()) {
+                    try {
+                        int c = std::stoi(code);
+                        if (c != lastStatus_.exchange(c))   // статус змінився → подія в 1С
+                            EmitEvent("status", { {"code", c}, {"text", StatusText(c)}, {"state", "Running"} });
+                    } catch (...) {}
+                }
             }
         }
     }
@@ -237,6 +274,7 @@ ResultEnvelope EcrPrivatJsonDriver::ExecuteInternal(const std::string& method,
     if (!IsConnected()) return ResultEnvelope::Fail("NOT_CONNECTED", "Термінал не підключено");
     lastStatus_.store(-1);
     interruptSent_.store(false);   // interruptRequested_ ТУТ НЕ чіпаємо (fix E)
+    EmitEvent("state", { {"state", "Running"}, {"method", method} });   // старт операції → у 1С
     auto req = EcrJsonCodec::BuildRequest(method, 0, params.is_null() ? nlohmann::json(nullptr) : params);
 
     RequestResult r;
@@ -255,14 +293,18 @@ ResultEnvelope EcrPrivatJsonDriver::ExecuteInternal(const std::string& method,
     }   // poller зупинено+join тут
 
     // Обрив у польоті транзакції: session у desync — best-effort відновлення (service вільний).
+    ResultEnvelope env;
     if (r.status == RequestStatus::Timeout && session_ && session_->IsDesynchronized() && !inRecovery_.load()) {
         inRecovery_.store(true);
-        auto res = RecoverAfterDesync();
+        env = RecoverAfterDesync();
         inRecovery_.store(false);
-        return res;
+    } else {
+        env = MapResult(r);
     }
-
-    return MapResult(r);
+    // Завершення операції → у 1С (фінальний результат: approved/declined/помилка).
+    EmitEvent("result", { {"ok", env.ok}, {"code", env.code}, {"description", env.description},
+                          {"state", env.ok ? "Done" : "Error"}, {"payload", env.payload} });
+    return env;
 }
 
 ResultEnvelope EcrPrivatJsonDriver::RecoverAfterDesync() {
