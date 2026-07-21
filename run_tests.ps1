@@ -52,6 +52,8 @@ $CoreSelftestExe = Join-Path $BinRelease ("core_selftest" + $ArchSuffix + ".exe"
 $WireSelftestExe = Join-Path $BinRelease ("wire_selftest" + $ArchSuffix + ".exe")
 $EcrSelftestExe  = Join-Path $BinRelease ("ecr_privatjson_selftest" + $ArchSuffix + ".exe")
 $EcrNativeHostExe= Join-Path $BinRelease ("ecr_native_host" + $ArchSuffix + ".exe")
+$LabelSelftestExe = Join-Path $BinRelease ("label_printer_selftest" + $ArchSuffix + ".exe")
+$LabelNativeHostExe = Join-Path $BinRelease ("label_native_host" + $ArchSuffix + ".exe")
 $DataDir      = Join-Path $Root 'tests/data'
 $ScenDir      = Join-Path $Root 'tests/scenarios'
 
@@ -386,6 +388,67 @@ else {
     else {
         $fails = ($txt -split "`n" | Where-Object { $_ -match '\[FAIL\]' }) -join ' | '
         Add-Result 'L2-ecr' 'ecr_native_host' 'FAIL' "exit=$($p.ExitCode) $fails"
+    }
+    Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
+}
+
+# =====================================================================
+# ЕТАП L-p1: label_printer_selftest — драйвер принтера етикеток (ZPL).
+# Кодек ^GF/штрихкоди/растр GDI+/генератор/транспорти/e2e проти LabelEmulator.
+# Не залежить від UAPKI: збирається завжди при BUILD_TESTS=ON. Критерій — exit 0
+# (усі CHECK — [PASS]).
+# =====================================================================
+Section 'ЕТАП L-p1: label_printer_selftest драйвера принтера етикеток'
+
+if (-not (Test-Path $LabelSelftestExe)) {
+    Add-Result 'L-p1' 'label_printer_selftest' 'FAIL' `
+        "немає label_printer_selftest.exe: $LabelSelftestExe — зберіть з -WithTests (збирається завжди при BUILD_TESTS=ON, без UAPKI)"
+}
+else {
+    $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("label_selftest_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+    $p = Start-Process -FilePath $LabelSelftestExe `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+    $txt = ''
+    if (Test-Path $outF) { $txt = Get-Content -Raw $outF }
+    if ($p.ExitCode -eq 0) {
+        $nPassLines = ([regex]::Matches($txt, '\[PASS\]')).Count
+        Add-Result 'L-p1' 'label_printer_selftest' 'PASS' "усі CHECK пройшли (PASS: $nPassLines)"
+    }
+    else {
+        $fails = ($txt -split "`n" | Where-Object { $_ -match '\[FAIL\]' }) -join ' | '
+        Add-Result 'L-p1' 'label_printer_selftest' 'FAIL' "exit=$($p.ExitCode) $fails"
+    }
+    Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
+}
+
+# =====================================================================
+# ЕТАП L-p3: label_native_host — компонента LabelPrinter через ГОЛОВНУ DLL
+# (LoadLibraryW+GetClassObject → IComponentBase) проти in-process LabelEmulator.
+# Не залежить від UAPKI: проходить і в режимі -NoUapki (потребує головну DLL + exe
+# з -WithTests). Критерій — exit-код 0 (усі CHECK — PASS).
+# =====================================================================
+Section 'ЕТАП L-p3: label_native_host компоненти LabelPrinter через DLL'
+
+if (-not (Test-Path $MainDll)) {
+    Add-Result 'L-p3' 'label_native_host' 'BLOCKED' "немає головної DLL: $MainDll — зберіть build_project.ps1"
+}
+elseif (-not (Test-Path $LabelNativeHostExe)) {
+    Add-Result 'L-p3' 'label_native_host' 'BLOCKED' `
+        "немає label_native_host.exe: $LabelNativeHostExe — зберіть з -WithTests (збирається завжди при BUILD_TESTS=ON, без UAPKI)"
+}
+else {
+    $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("label_native_host_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+    $p = Start-Process -FilePath $LabelNativeHostExe `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+    $txt = ''
+    if (Test-Path $outF) { $txt = Get-Content -Raw $outF }
+    if ($p.ExitCode -eq 0) {
+        $nPassLines = ([regex]::Matches($txt, '\[PASS\]')).Count
+        Add-Result 'L-p3' 'label_native_host' 'PASS' "усі CHECK пройшли (PASS: $nPassLines)"
+    }
+    else {
+        $fails = ($txt -split "`n" | Where-Object { $_ -match '\[FAIL\]' }) -join ' | '
+        Add-Result 'L-p3' 'label_native_host' 'FAIL' "exit=$($p.ExitCode) $fails"
     }
     Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
 }
