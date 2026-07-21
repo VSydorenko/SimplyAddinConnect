@@ -77,6 +77,40 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# ecr_privatjson_selftest — харнес пілотного драйвера ECRPrivatJSON (без UAPKI).
+# Кодек/класифікатор/емулятор/e2e поверх DeviceSession+TransportTCP проти власного
+# протокол-обізнаного TCP-емулятора термінала (support/TerminalEmulator).
+# ---------------------------------------------------------------------------
+add_executable(ecr_privatjson_selftest ecr_privatjson_selftest.cpp
+    support/TerminalEmulator.cpp
+    $<TARGET_OBJECTS:driver_ecr_privatjson_component>
+    $<TARGET_OBJECTS:platform_component>
+    $<TARGET_OBJECTS:transport_component>   # реальний TransportTCP/COM для e2e
+    $<TARGET_OBJECTS:wire_component>        # DeviceSession/NullTerminatedFramer/IFrameClassifier
+    $<TARGET_OBJECTS:helpers_component>
+    $<TARGET_OBJECTS:base_component>
+)
+set_target_properties(ecr_privatjson_selftest PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "ecr_privatjson_selftest${_TEST_ARCH_SUFFIX}"
+)
+target_include_directories(ecr_privatjson_selftest PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}                   # корінь: Transport_WSClient.h тягне "extern/ixwebsocket/..."
+    ${SPDLOG_INCLUDE_DIR}
+    ${NLOHMANN_JSON_INCLUDE_DIR}
+    ${IXWEBSOCKET_INCLUDE_DIR}            # transport_component тягне ixwebsocket-заголовки
+)
+target_compile_definitions(ecr_privatjson_selftest PRIVATE _WINDOWS UNICODE _UNICODE)
+# ixwebsocket+ws2_32 — символи transport_component (WSClient, Winsock); емулятор — Winsock.
+target_link_libraries(ecr_privatjson_selftest PRIVATE spdlog::spdlog ixwebsocket ws2_32)
+if(MSVC)
+    target_compile_options(ecr_privatjson_selftest PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
 # Далі — цілі, що потребують крипто-ядра UAPKI (uapki_bundle існує лише при
 # BUILD_WITH_UAPKI). Без нього тихо пропускаємо решту файлу.
 # ---------------------------------------------------------------------------

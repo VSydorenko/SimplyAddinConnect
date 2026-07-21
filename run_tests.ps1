@@ -50,6 +50,7 @@ $SelfTestExe  = Join-Path $BinRelease "uapki_selftest$ArchSuffix.exe"
 $NativeHostExe= Join-Path $BinRelease "native_host$ArchSuffix.exe"
 $CoreSelftestExe = Join-Path $BinRelease ("core_selftest" + $ArchSuffix + ".exe")
 $WireSelftestExe = Join-Path $BinRelease ("wire_selftest" + $ArchSuffix + ".exe")
+$EcrSelftestExe  = Join-Path $BinRelease ("ecr_privatjson_selftest" + $ArchSuffix + ".exe")
 $DataDir      = Join-Path $Root 'tests/data'
 $ScenDir      = Join-Path $Root 'tests/scenarios'
 
@@ -324,6 +325,34 @@ else {
     else {
         $fails = ($txt -split "`n" | Where-Object { $_ -match '\[FAIL\]' }) -join ' | '
         Add-Result 'L0.6' 'wire_selftest' 'FAIL' "exit=$($p.ExitCode) $fails"
+    }
+    Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
+}
+
+# =====================================================================
+# ЕТАП 0.7 (L0.7): ecr_privatjson_selftest — пілотний драйвер ECRPrivatJSON
+# (кодек/класифікатор/емулятор/transport-e2e). Не залежить від UAPKI: збирається
+# завжди при BUILD_TESTS=ON. Критерій — exit-код 0 (усі CHECK — PASS).
+# =====================================================================
+Section 'ЕТАП 0.7 (L0.7): ecr_privatjson_selftest пілотного драйвера'
+
+if (-not (Test-Path $EcrSelftestExe)) {
+    Add-Result 'L0.7' 'ecr_privatjson_selftest' 'FAIL' `
+        "немає ecr_privatjson_selftest.exe: $EcrSelftestExe — зберіть з -WithTests (збирається завжди при BUILD_TESTS=ON, без UAPKI)"
+}
+else {
+    $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("ecr_selftest_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+    $p = Start-Process -FilePath $EcrSelftestExe `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+    $txt = ''
+    if (Test-Path $outF) { $txt = Get-Content -Raw $outF }
+    if ($p.ExitCode -eq 0) {
+        $nPassLines = ([regex]::Matches($txt, '\[PASS\]')).Count
+        Add-Result 'L0.7' 'ecr_privatjson_selftest' 'PASS' "усі CHECK пройшли (PASS: $nPassLines)"
+    }
+    else {
+        $fails = ($txt -split "`n" | Where-Object { $_ -match '\[FAIL\]' }) -join ' | '
+        Add-Result 'L0.7' 'ecr_privatjson_selftest' 'FAIL' "exit=$($p.ExitCode) $fails"
     }
     Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
 }
