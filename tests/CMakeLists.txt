@@ -126,6 +126,29 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# ecr_native_host — L3-харнес компоненти ECRPrivatJSON поверх ГОЛОВНОЇ DLL.
+# Емулює платформу 1С: вантажить головну DLL через LoadLibraryW у рантаймі й
+# викликає компоненту через IComponentBase (Подключить/Оплата). Термінал —
+# in-process TerminalEmulator. Не залежить від UAPKI — тому ДО гейта нижче.
+# ---------------------------------------------------------------------------
+add_executable(ecr_native_host ecr_native_host.cpp support/TerminalEmulator.cpp)
+set_target_properties(ecr_native_host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "ecr_native_host${_TEST_ARCH_SUFFIX}")
+target_include_directories(ecr_native_host PRIVATE
+    ${CMAKE_SOURCE_DIR}/include            # SDK 1С: ComponentBase.h, AddInDefBase.h, ...
+    ${CMAKE_SOURCE_DIR}/src                # support/TerminalEmulator.h тягне nlohmann-хедер із src-контексту
+    ${CMAKE_SOURCE_DIR}                    # корінь: "support/TerminalEmulator.h"
+    ${NLOHMANN_JSON_INCLUDE_DIR})
+# _WINDOWS — КРИТИЧНО: types.h саме за ним вмикає WCHAR_T=wchar_t та ADDIN_API=__stdcall;
+# головна DLL зібрана з _WINDOWS, тож ABI (vtable calling convention) мусить збігатися.
+target_compile_definitions(ecr_native_host PRIVATE _WINDOWS UNICODE _UNICODE
+    HOST_BIN_DIR="${CMAKE_SOURCE_DIR}/bin/Release")
+target_link_libraries(ecr_native_host PRIVATE ws2_32)   # TerminalEmulator — Winsock
+if(MSVC)
+    target_compile_options(ecr_native_host PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
 # Далі — цілі, що потребують крипто-ядра UAPKI (uapki_bundle існує лише при
 # BUILD_WITH_UAPKI). Без нього тихо пропускаємо решту файлу.
 # ---------------------------------------------------------------------------
