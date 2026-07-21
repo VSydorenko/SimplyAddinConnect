@@ -239,67 +239,141 @@
 					<v8:lang>ru</v8:lang>
 					<v8:content>ECR ПриватJSON (новый драйвер)</v8:content>
 				</v8:item>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>ECR ПриватJSON (новый драйвер)</v8:content>
+				</v8:item>
 			</Title>
-			<Group>Vertical</Group>
+			<Group>AlwaysHorizontal</Group>
 			<ExtendedTooltip name="ГруппаECRРасширеннаяПодсказка" id="201"/>
 			<ChildItems>
-				<InputField name="ШляхДоКомпоненты" id="243">
-					<DataPath>ШляхДоКомпоненты</DataPath>
+				<UsualGroup name="ГруппаПеременные" id="252">
 					<Title>
 						<v8:item>
-							<v8:lang>ru</v8:lang>
-							<v8:content>Путь к компоненте (zip сборки; пусто — встроенный макет)</v8:content>
+							<v8:lang>uk</v8:lang>
+							<v8:content>Группа переменные</v8:content>
 						</v8:item>
 					</Title>
-					<ContextMenu name="ШляхДоКомпонентыContextMenu" id="244"/>
-					<ExtendedTooltip name="ШляхДоКомпонентыExtendedTooltip" id="245"/>
-				</InputField>
-				<InputField name="СтрокаПодключения" id="202">
-					<DataPath>СтрокаПодключения</DataPath>
-					<Title>
+					<ToolTip>
 						<v8:item>
-							<v8:lang>ru</v8:lang>
-							<v8:content>Строка подключения</v8:content>
+							<v8:lang>uk</v8:lang>
+							<v8:content>Группа переменные</v8:content>
 						</v8:item>
-					</Title>
-					<ContextMenu name="СтрокаПодключенияContextMenu" id="203"/>
-					<ExtendedTooltip name="СтрокаПодключенияExtendedTooltip" id="204"/>
-				</InputField>
-				<InputField name="Сумма" id="205">
-					<DataPath>Сумма</DataPath>
-					<Title>
-						<v8:item>
-							<v8:lang>ru</v8:lang>
-							<v8:content>Сумма</v8:content>
-						</v8:item>
-					</Title>
-					<ContextMenu name="СуммаContextMenu" id="206"/>
-					<ExtendedTooltip name="СуммаExtendedTooltip" id="207"/>
-				</InputField>
-				<InputField name="RRN" id="208">
-					<DataPath>RRN</DataPath>
-					<Title>
-						<v8:item>
-							<v8:lang>ru</v8:lang>
-							<v8:content>RRN</v8:content>
-						</v8:item>
-					</Title>
-					<ContextMenu name="RRNContextMenu" id="209"/>
-					<ExtendedTooltip name="RRNExtendedTooltip" id="210"/>
-				</InputField>
-				<InputField name="НомерЧека" id="211">
-					<DataPath>НомерЧека</DataPath>
-					<Title>
-						<v8:item>
-							<v8:lang>ru</v8:lang>
-							<v8:content>Номер чека</v8:content>
-						</v8:item>
-					</Title>
-					<ContextMenu name="НомерЧекаContextMenu" id="212"/>
-					<ExtendedTooltip name="НомерЧекаExtendedTooltip" id="213"/>
-				</InputField>
+					</ToolTip>
+					<Group>Vertical</Group>
+					<ShowTitle>false</ShowTitle>
+					<ExtendedTooltip name="ГруппаПеременныеРасширеннаяПодсказка" id="253"/>
+					<ChildItems>
+						<InputField name="ШляхДоКомпоненты" id="243">
+							<DataPath>ШляхДоКомпоненты</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Путь к компоненте (zip сборки; пусто — встроенный макет)</v8:content>
+								</v8:item>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>Путь к компоненте (zip сборки; пусто — встроенный макет)</v8:content>
+								</v8:item>
+							</Title>
+							<ContextMenu name="ШляхДоКомпонентыContextMenu" id="244"/>
+							<ExtendedTooltip name="ШляхДоКомпонентыExtendedTooltip" id="245"/>
+						</InputField>
+						<InputField name="СтрокаПодключения" id="202">
+							<DataPath>СтрокаПодключения</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Строка подключения</v8:content>
+								</v8:item>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>Строка подключения</v8:content>
+								</v8:item>
+							</Title>
+							<ContextMenu name="СтрокаПодключенияContextMenu" id="203"/>
+							<ExtendedTooltip name="СтрокаПодключенияExtendedTooltip" id="204"/>
+						</InputField>
+						<InputField name="Сумма" id="205">
+							<DataPath>Сумма</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Сумма</v8:content>
+								</v8:item>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>Сумма</v8:content>
+								</v8:item>
+							</Title>
+							<ContextMenu name="СуммаContextMenu" id="206"/>
+							<ExtendedTooltip name="СуммаExtendedTooltip" id="207"/>
+						</InputField>
+						<InputField name="RRN" id="208">
+							<DataPath>RRN</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>RRN</v8:content>
+								</v8:item>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>RRN</v8:content>
+								</v8:item>
+							</Title>
+							<ContextMenu name="RRNContextMenu" id="209"/>
+							<ExtendedTooltip name="RRNExtendedTooltip" id="210"/>
+						</InputField>
+						<InputField name="НомерЧека" id="211">
+							<DataPath>НомерЧека</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Номер чека</v8:content>
+								</v8:item>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>Номер чека</v8:content>
+								</v8:item>
+							</Title>
+							<ContextMenu name="НомерЧекаContextMenu" id="212"/>
+							<ExtendedTooltip name="НомерЧекаExtendedTooltip" id="213"/>
+						</InputField>
+						<InputField name="СтатусТерминалаТекст" id="246">
+							<DataPath>СтатусТерминалаТекст</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Онлайн-статус терминала</v8:content>
+								</v8:item>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>Онлайн-статус терминала</v8:content>
+								</v8:item>
+							</Title>
+							<ContextMenu name="СтатусТерминалаТекстContextMenu" id="247"/>
+							<ExtendedTooltip name="СтатусТерминалаТекстExtendedTooltip" id="248"/>
+						</InputField>
+						<InputField name="РезультатТекст" id="240">
+							<DataPath>РезультатТекст</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Результат (детальніше — у вікні повідомлень)</v8:content>
+								</v8:item>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>Результат (детальніше — у вікні повідомлень)</v8:content>
+								</v8:item>
+							</Title>
+							<MultiLine>true</MultiLine>
+							<ContextMenu name="РезультатТекстContextMenu" id="241"/>
+							<ExtendedTooltip name="РезультатТекстExtendedTooltip" id="242"/>
+						</InputField>
+					</ChildItems>
+				</UsualGroup>
 				<UsualGroup name="ГруппаECRКнопки" id="214">
-					<Group>Horizontal</Group>
+					<Group>Vertical</Group>
 					<Representation>None</Representation>
 					<ShowTitle>false</ShowTitle>
 					<ExtendedTooltip name="ГруппаECRКнопкиРасширеннаяПодсказка" id="215"/>
@@ -371,28 +445,6 @@
 						</Button>
 					</ChildItems>
 				</UsualGroup>
-				<InputField name="СтатусТерминалаТекст" id="246">
-					<DataPath>СтатусТерминалаТекст</DataPath>
-					<Title>
-						<v8:item>
-							<v8:lang>ru</v8:lang>
-							<v8:content>Онлайн-статус терминала</v8:content>
-						</v8:item>
-					</Title>
-					<ContextMenu name="СтатусТерминалаТекстContextMenu" id="247"/>
-					<ExtendedTooltip name="СтатусТерминалаТекстExtendedTooltip" id="248"/>
-				</InputField>
-				<InputField name="РезультатТекст" id="240">
-					<DataPath>РезультатТекст</DataPath>
-					<Title>
-						<v8:item>
-							<v8:lang>ru</v8:lang>
-							<v8:content>Результат (детальніше — у вікні повідомлень)</v8:content>
-						</v8:item>
-					</Title>
-					<ContextMenu name="РезультатТекстContextMenu" id="241"/>
-					<ExtendedTooltip name="РезультатТекстExtendedTooltip" id="242"/>
-				</InputField>
 			</ChildItems>
 		</UsualGroup>
 	</ChildItems>
