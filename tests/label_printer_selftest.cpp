@@ -63,6 +63,69 @@ static void TestBarcodeZpl() {
     CHECK(BarcodeZpl::EscapeFd("A^B~C").find("^FH")!=std::string::npos, "escape adds ^FH for special chars");
 }
 
+// РЕГРЕС FIX B: EAN128 (GS1-128) FNC1-послідовність ">;>8" має лишитись КЕРУЮЧОЮ у ^FD,
+// а не бути hex-екранованою під ^FH (стара версія клала ">;>8" у data, EscapeFd бив '>' -> "_3E",
+// знищуючи FNC1/subset-C).
+static void TestEan128Fnc1() {
+    BarcodeField b; b.fieldName="B"; b.type="EAN128"; b.geom={1,1,0,10,0};
+    auto e = BarcodeZpl::Emit(b, "0104820000000015", 8);   // all-digits payload
+    CHECK(e.ok, "EAN128 emits ok");
+    CHECK(e.zpl.find(">;>8") != std::string::npos, "EAN128 FNC1 sequence '>;>8' intact as control");
+    CHECK(e.zpl.find("_3E") == std::string::npos, "EAN128 FNC1 '>' NOT hex-escaped to _3E");
+}
+
+// РЕГРЕС FIX F: ^BY тепер рахується з geom.width; надто вузьке поле -> ok=false (BARCODE_TOO_WIDE),
+// достатньо широке -> ok. Стара версія жорстко ^BY2 без перевірки влізання.
+static void TestBarcodeModuleWidth() {
+    BarcodeField narrow; narrow.fieldName="B"; narrow.type="Code128"; narrow.geom={0,0,1.0,10,0}; // 1мм @8=8dots
+    auto en = BarcodeZpl::Emit(narrow, "1234567890123456", 8);
+    CHECK(!en.ok && (en.errCode=="BARCODE_TOO_WIDE" || en.errCode=="RENDER_ERROR"),
+          "too-narrow field -> ok=false (BARCODE_TOO_WIDE)");
+    BarcodeField wide = narrow; wide.geom={0,0,80.0,10,0};                                        // 80мм @8=640dots
+    auto ew = BarcodeZpl::Emit(wide, "1234567890123456", 8);
+    CHECK(ew.ok && ew.zpl.find("^BY") != std::string::npos, "wide-enough field -> ok, ^BY present");
+    // поле без заданої ширини (width=0) лишається на дефолтному ^BY2 (сумісність)
+    BarcodeField noW; noW.fieldName="B"; noW.type="EAN13"; noW.geom={1,1,0,10,0};
+    CHECK(BarcodeZpl::Emit(noW,"4008110271538",8).zpl.find("^BY2")!=std::string::npos, "width=0 -> default ^BY2");
+}
+
+// РЕГРЕС FIX H: FieldGeom.orientation мапиться у ZPL-орієнтацію (перший параметр баркод-команди).
+// Стара версія жорстко клала 'N', ігноруючи orientation.
+static void TestBarcodeOrientation() {
+    BarcodeField b; b.fieldName="B"; b.type="Code128"; b.geom={1,1,0,10,90};   // 90 -> R
+    CHECK(BarcodeZpl::Emit(b,"ABC",8).zpl.find("^BCR,")!=std::string::npos, "orientation 90 -> ^BCR (rotated)");
+    BarcodeField b0=b; b0.geom.orientation=0;
+    CHECK(BarcodeZpl::Emit(b0,"ABC",8).zpl.find("^BCN,")!=std::string::npos, "orientation 0 -> ^BCN (normal)");
+    BarcodeField b180=b; b180.geom.orientation=180;
+    CHECK(BarcodeZpl::Emit(b180,"ABC",8).zpl.find("^BCI,")!=std::string::npos, "orientation 180 -> ^BCI (inverted)");
+}
+
+// РЕГРЕС FIX G: розширення/extensions -> зрозумілий UNSUPPORTED_BARCODE («відкладено до v2»).
+static void TestDeferredBarcodeTypes() {
+    BarcodeField a; a.fieldName="B"; a.type="EAN13Addon2"; a.geom={1,1,0,10,0};
+    auto ea = BarcodeZpl::Emit(a,"12345",8);
+    CHECK(!ea.ok && ea.errCode=="UNSUPPORTED_BARCODE" && ea.errDesc.find("v2")!=std::string::npos,
+          "EAN13Addon2 -> UNSUPPORTED_BARCODE (відкладено до v2)");
+}
+
+// РЕГРЕС FIX A: static-штрихкод задається Base64 (§5) -> генератор декодує його ПЕРЕД Emit.
+// Стара версія подавала Base64 як-є; digitsOnly вихоплював цифри з base64-рядка -> хибний ^FD.
+static void TestStaticBarcodeBase64() {
+    GdiplusRuntime gdi;
+    LabelFormatting fmt; fmt.width=60; fmt.height=40;
+    BarcodeField bc; bc.fieldName="Bar"; bc.type="EAN13"; bc.isStatic=true;
+    bc.staticValueBase64 = std::string("NDAwODExMDI3MTUzOA==");   // Base64("4008110271538")
+    bc.geom={1,22,0,10,0};
+    fmt.barcodes.push_back(bc);
+    LabelInstance inst; inst.quantity=1;                          // немає запису для Bar -> береться static (Base64)
+    DeviceProfile dp; dp.dotsPerMm=8;
+    auto r = LabelZplGenerator::BuildLabel(fmt, inst, dp);
+    CHECK(r.ok, "static-barcode Base64 label builds ok");
+    std::string z(r.zpl.begin(), r.zpl.end());
+    CHECK(z.find("^FD400811027153") != std::string::npos,
+          "static barcode Base64 decoded to value (not raw base64 digits)");
+}
+
 static long CountBlack(const Bitmap1& bm) {
     long ones = 0;
     for (auto b : bm.rows) for (int i = 0; i < 8; ++i) ones += (b >> i) & 1;
@@ -355,6 +418,11 @@ int main() {
     TestGfEncoder();
     TestGfTiling();
     TestBarcodeZpl();
+    TestEan128Fnc1();
+    TestBarcodeModuleWidth();
+    TestBarcodeOrientation();
+    TestDeferredBarcodeTypes();
+    TestStaticBarcodeBase64();
     TestRaster();
     TestRasterImage();
     TestGenerator();

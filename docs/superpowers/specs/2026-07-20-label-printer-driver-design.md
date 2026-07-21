@@ -164,8 +164,8 @@ struct LabelBatch { std::optional<LabelFormatting> formatting; std::vector<Label
 |---|---|---|
 | EAN13 | `^BE` | приймає **12 цифр**, 13-ту (контрольну) рахує принтер → **нормалізувати вхід** (контракт може дати 13) |
 | EAN8 | `^B8` | 7 цифр + контрольна |
-| EAN13Addon2 / Addon5 | `^BE` + **`^BS`** | основний код `^BE`, розширення (2/5) — окрема команда `^BS` |
-| UPC/додатки | `^BS` | UPC/EAN Extensions |
+| EAN13Addon2 / Addon5 | **відкладено до v2** | у v1 → `UNSUPPORTED_BARCODE` («відкладено до v2»); реалізація (`^BE` + `^BS`) — у v2 |
+| UPC/додатки (extensions) | **відкладено до v2** | у v1 → `UNSUPPORTED_BARCODE` («відкладено до v2»); реалізація (`^BS`, UPC/EAN Extensions) — у v2 |
 | Code128 | `^BC` | режим/орієнтація `^BCo,h,f,g,e,m` (перший параметр — орієнтація `N/R/I/B`) |
 | EAN128 (GS1-128) | `^BC` + **FNC1** | FNC1 у даних (`>8`) + коректне кодування AI (окремий GS1-препроцесор) |
 | Code39 | `^B3` | |

@@ -2,6 +2,8 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
+#include <cstdint>
 #include "LabelModel.h"
 #include "GfEncoder.h"
 
@@ -34,6 +36,11 @@ public:
     //            ініціалізовано, LockBits fail, виняток) — тоді викликач має підняти RENDER_ERROR.
     // Результат — растр розміром mmToDots(width) x mmToDots(height), 1bpp MSB-first, 1=чорний.
     static Bitmap1 Render(const LabelFormatting& fmt, const ValueOf& valueOf, int dotsPerMm, bool& ok);
+
+    // Декодування standard Base64 -> байти (спільний хелпер; використовує і ZPL-генератор
+    // для static-штрихкодів, §5). Нестрогий: пропускає пробіли/переноси, зупиняється на '='.
+    // Повертає false на некоректний символ.
+    static bool DecodeBase64(const std::string& in, std::vector<uint8_t>& out);
 };
 
 } // namespace labelprinter

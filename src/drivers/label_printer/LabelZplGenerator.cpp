@@ -64,8 +64,20 @@ GenResult LabelZplGenerator::BuildLabel(const LabelFormatting& fmt, const LabelI
         for (const auto& bc : fmt.barcodes) {
             std::optional<std::string> v = valueOf(bc.fieldName);
             std::string data;
-            if (v) data = *v;
-            else if (bc.staticValueBase64) data = *bc.staticValueBase64;
+            if (v) {
+                data = *v;                            // динамічний штрихкод — простий текст (§5)
+            } else if (bc.staticValueBase64) {
+                // static-штрихкод: §5 каже ValueBase64 — це Base64, тож декодуємо у корисне значення.
+                std::vector<uint8_t> decoded;
+                if (!LabelRaster::DecodeBase64(*bc.staticValueBase64, decoded)) {
+                    NEUTRAL_REPORT_WARN(kTag, "Некоректний Base64 static-штрихкоду поля: " + bc.fieldName);
+                    r.ok = false;
+                    r.errCode = "BAD_INPUT";
+                    r.errDesc = "Некоректний Base64 static-штрихкоду поля: " + bc.fieldName;
+                    return r;
+                }
+                data.assign(decoded.begin(), decoded.end());
+            }
 
             BarcodeEmit be = BarcodeZpl::Emit(bc, data, dp.dotsPerMm);
             if (!be.ok) {

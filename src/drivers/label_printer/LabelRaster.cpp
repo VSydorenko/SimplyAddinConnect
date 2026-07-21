@@ -48,35 +48,6 @@ GdiplusRuntime::~GdiplusRuntime() {
 // ---------------------------------------------------------------------------
 namespace {
 
-// Декодування standard Base64 у байти. Нестрогий: пропускає пробіли/переноси,
-// зупиняється на '=' (padding). Повертає false на некоректний символ.
-bool DecodeBase64(const std::string& in, std::vector<uint8_t>& out) {
-    static const auto makeTable = []() {
-        std::array<int, 256> t;
-        t.fill(-1);
-        const char* alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        for (int i = 0; i < 64; ++i) t[(unsigned char)alpha[i]] = i;
-        return t;
-    };
-    static const std::array<int, 256> table = makeTable();
-
-    out.clear();
-    int acc = 0, bits = 0;
-    for (unsigned char c : in) {
-        if (c == '=') break;
-        if (c == '\r' || c == '\n' || c == ' ' || c == '\t') continue;
-        int v = table[c];
-        if (v < 0) return false;
-        acc = (acc << 6) | v;
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back((uint8_t)((acc >> bits) & 0xFF));
-        }
-    }
-    return true;
-}
-
 // Чи задає рядок border реальну рамку (не порожньо і не "None").
 bool HasBorder(const std::string& border) {
     if (border.empty()) return false;
@@ -99,7 +70,7 @@ void DrawBorder(Graphics& g, const FieldGeom& geom, int borderWidth, int dotsPer
 // Повертає nullptr на будь-яку помилку (лог усередині).
 Image* LoadImageFromBase64(const std::string& b64) {
     std::vector<uint8_t> bytes;
-    if (!DecodeBase64(b64, bytes) || bytes.empty()) {
+    if (!LabelRaster::DecodeBase64(b64, bytes) || bytes.empty()) {
         NEUTRAL_REPORT_WARN("LabelRaster", "Некоректний або порожній Base64 картинки");
         return nullptr;
     }
@@ -136,6 +107,36 @@ Image* LoadImageFromBase64(const std::string& b64) {
 } // namespace
 
 // ---------------------------------------------------------------------------
+// LabelRaster::DecodeBase64 — спільний Base64-декодер (див. заголовок).
+// ---------------------------------------------------------------------------
+bool LabelRaster::DecodeBase64(const std::string& in, std::vector<uint8_t>& out) {
+    static const auto makeTable = []() {
+        std::array<int, 256> t;
+        t.fill(-1);
+        const char* alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        for (int i = 0; i < 64; ++i) t[(unsigned char)alpha[i]] = i;
+        return t;
+    };
+    static const std::array<int, 256> table = makeTable();
+
+    out.clear();
+    int acc = 0, bits = 0;
+    for (unsigned char c : in) {
+        if (c == '=') break;
+        if (c == '\r' || c == '\n' || c == ' ' || c == '\t') continue;
+        int v = table[c];
+        if (v < 0) return false;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back((uint8_t)((acc >> bits) & 0xFF));
+        }
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // LabelRaster::Render
 // ---------------------------------------------------------------------------
 Bitmap1 LabelRaster::Render(const LabelFormatting& fmt, const ValueOf& valueOf, int dotsPerMm, bool& ok) {
@@ -147,6 +148,19 @@ Bitmap1 LabelRaster::Render(const LabelFormatting& fmt, const ValueOf& valueOf, 
         NEUTRAL_REPORT_ERROR("LabelRaster", "Некоректний розмір етикетки в дотах: " + std::to_string(W) + "x" + std::to_string(H));
         return out;                                                  // ok лишається false — реальний збій
     }
+
+    // Орієнтація растрових полів (текст/картинка) у v1 не реалізована (штрихкоди — через ZPL-орієнтацію).
+    // Замість тихого ігнорування — явна помилка рендеру (каже викликачу підняти RENDER_ERROR).
+    for (const auto& tf : fmt.texts)
+        if (tf.geom.orientation != 0) {
+            NEUTRAL_REPORT_ERROR("LabelRaster", "Орієнтація текстового поля !=0 не підтримується у v1 (растр): поле " + tf.fieldName);
+            return out;                                              // ok=false -> RENDER_ERROR
+        }
+    for (const auto& imf : fmt.images)
+        if (imf.geom.orientation != 0) {
+            NEUTRAL_REPORT_ERROR("LabelRaster", "Орієнтація поля-картинки !=0 не підтримується у v1 (растр): поле " + imf.fieldName);
+            return out;                                              // ok=false -> RENDER_ERROR
+        }
 
     try {
         Bitmap bmp(W, H, PixelFormat32bppARGB);
