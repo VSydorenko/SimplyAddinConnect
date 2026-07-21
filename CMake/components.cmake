@@ -225,11 +225,15 @@ add_library(driver_label_printer_component OBJECT
     ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelZplGenerator.h
     ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelPrinterDriver.cpp
     ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelPrinterDriver.h
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelXml.cpp
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelXml.h
+    ${CMAKE_SOURCE_DIR}/extern/pugixml/src/pugixml.cpp
 )
 set_target_properties(driver_label_printer_component PROPERTIES
     POSITION_INDEPENDENT_CODE ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX)
 target_include_directories(driver_label_printer_component PRIVATE
-    include ${CMAKE_SOURCE_DIR} src ${SPDLOG_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR})
+    include ${CMAKE_SOURCE_DIR} src ${SPDLOG_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR}
+    ${CMAKE_SOURCE_DIR}/extern/pugixml/src)
 target_compile_definitions(driver_label_printer_component PRIVATE _WINDOWS UNICODE _UNICODE)
 add_dependencies(driver_label_printer_component base_component spdlog nlohmann_json)
 

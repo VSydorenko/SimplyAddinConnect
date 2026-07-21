@@ -10,6 +10,7 @@
 #include "../src/drivers/label_printer/LabelRaster.h"
 #include "../src/drivers/label_printer/LabelZplGenerator.h"
 #include "../src/drivers/label_printer/LabelPrinterDriver.h"
+#include "../src/drivers/label_printer/LabelXml.h"
 #include "../src/transport/Transport.h"
 #include "../src/transport/Transport_SpoolerRaw.h"
 using namespace labelprinter;
@@ -174,6 +175,57 @@ static void TestDriverBatch() {
     drv.Disconnect(id); CHECK(!drv.IsConnected(id), "disconnected");
 }
 
+static void TestXml() {
+    const char* xml = R"(<?xml version="1.0"?><Data>
+      <Formatting Width="60" Height="40">
+        <Text FieldName="Name" Left="1" Top="1" Width="55" Height="10" FontName="Tahoma" FontSize="8"/>
+        <Barcode FieldName="Bar" Type="EAN13" Left="1" Top="22" Height="10" PrintHRI="true" FontSize="8"/>
+        <UserData FieldName="U" Static="true" Value="X"/>
+      </Formatting>
+      <Labels>
+        <Label Quantity="2"><Record FieldName="Name" Value="Блокнот"/><Record FieldName="Bar" Value="4008110271538"/></Label>
+        <Label><Record FieldName="Name" Value=""/><Record FieldName="Bar"/></Label>
+      </Labels></Data>)";
+    LabelBatch b; std::string err;
+    CHECK(LabelXml::ParseLabelsTable(xml, b, err), "parse LabelsTable ok");
+    CHECK(b.formatting && b.formatting->width == 60 && b.formatting->height == 40, "formatting geometry");
+    CHECK(b.formatting->texts.size() == 1 && b.formatting->barcodes.size() == 1, "fields parsed");
+    CHECK(b.formatting->userData.size() == 1 && b.formatting->userData[0].isStatic &&
+          b.formatting->userData[0].defaultOrStaticValue.has_value(), "userdata static value parsed");
+    CHECK(b.labels.size() == 2 && b.labels[0].quantity == 2, "labels + quantity");
+    CHECK(b.labels[1].quantity == 1, "missing Quantity defaults to 1");
+    CHECK(b.labels[0].records[0].value.has_value() && *b.labels[0].records[0].value == "Блокнот", "record value present");
+    // value-семантика: порожній рядок (Value="") != відсутній атрибут (немає Value)
+    CHECK(b.labels[1].records[0].value.has_value() && b.labels[1].records[0].value->empty(),
+          "empty Value attribute -> present-but-empty optional");
+    CHECK(!b.labels[1].records[1].value.has_value(), "missing Value attribute -> nullopt (absent != empty)");
+
+    // XML без Formatting (regular/last пакет) -> formatting відсутнє, labels є
+    const char* xml2 = R"(<Data><Labels><Label Quantity="3"><Record FieldName="Name" Value="A"/></Label></Labels></Data>)";
+    LabelBatch b2; std::string err2;
+    CHECK(LabelXml::ParseLabelsTable(xml2, b2, err2), "parse without Formatting ok");
+    CHECK(!b2.formatting.has_value() && b2.labels.size() == 1 && b2.labels[0].quantity == 3, "no formatting, labels cached upstream");
+
+    // ConnectionParameters
+    const char* cp = R"(<?xml version="1.0" encoding="UTF-8"?><Parameters>
+      <Parameter Name="TransportKind" Value="tcp"/>
+      <Parameter Name="Host" Value="192.168.0.50"/>
+      <Parameter Name="Port" Value="9100"/>
+      <Parameter Name="DotsPerMm" Value="12"/>
+      <Parameter Name="Darkness" Value="20"/>
+      <Parameter Name="UnknownParam" Value="ignore-me"/>
+    </Parameters>)";
+    DeviceProfile dp; std::string errc;
+    CHECK(LabelXml::ParseConnectionParameters(cp, dp, errc), "parse ConnectionParameters ok");
+    CHECK(dp.transport == DeviceProfile::Transport::Tcp, "TransportKind=tcp");
+    CHECK(dp.host == "192.168.0.50" && dp.port == 9100, "host+port parsed");
+    CHECK(dp.dotsPerMm == 12 && dp.darkness == 20, "dotsPerMm+darkness parsed, unknown ignored");
+
+    // Некоректний XML -> false + err
+    LabelBatch bbad; std::string errbad;
+    CHECK(!LabelXml::ParseLabelsTable("<Data><Labels>", bbad, errbad) && !errbad.empty(), "malformed XML -> fail with err");
+}
+
 int main() {
     TestUnits();
     TestGfEncoder();
@@ -184,6 +236,7 @@ int main() {
     TestGenerator();
     TestSpooler();
     TestDriverBatch();
+    TestXml();
     std::printf(g_failures ? "\nFAILED: %d\n" : "\nALL PASS\n", g_failures);
     return g_failures ? 1 : 0;
 }

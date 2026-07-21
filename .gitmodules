@@ -11,3 +11,6 @@
 [submodule "extern/ixwebsocket"]
 	path = extern/ixwebsocket
 	url = https://github.com/machinezone/IXWebSocket.git
+[submodule "extern/pugixml"]
+	path = extern/pugixml
+	url = https://github.com/zeux/pugixml
