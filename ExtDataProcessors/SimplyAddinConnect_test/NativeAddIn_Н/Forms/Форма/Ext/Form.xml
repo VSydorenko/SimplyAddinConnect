@@ -232,6 +232,142 @@
 				</UsualGroup>
 			</ChildItems>
 		</UsualGroup>
+		<UsualGroup name="ГруппаECR" id="200">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>ECR ПриватJSON (новый драйвер)</v8:content>
+				</v8:item>
+			</Title>
+			<Group>Vertical</Group>
+			<ShowTitle>true</ShowTitle>
+			<ExtendedTooltip name="ГруппаECRРасширеннаяПодсказка" id="201"/>
+			<ChildItems>
+				<InputField name="СтрокаПодключения" id="202">
+					<DataPath>СтрокаПодключения</DataPath>
+					<Title>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Строка подключения</v8:content>
+						</v8:item>
+					</Title>
+					<ContextMenu name="СтрокаПодключенияContextMenu" id="203"/>
+					<ExtendedTooltip name="СтрокаПодключенияExtendedTooltip" id="204"/>
+				</InputField>
+				<InputField name="Сумма" id="205">
+					<DataPath>Сумма</DataPath>
+					<Title>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Сумма</v8:content>
+						</v8:item>
+					</Title>
+					<ContextMenu name="СуммаContextMenu" id="206"/>
+					<ExtendedTooltip name="СуммаExtendedTooltip" id="207"/>
+				</InputField>
+				<InputField name="RRN" id="208">
+					<DataPath>RRN</DataPath>
+					<Title>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>RRN</v8:content>
+						</v8:item>
+					</Title>
+					<ContextMenu name="RRNContextMenu" id="209"/>
+					<ExtendedTooltip name="RRNExtendedTooltip" id="210"/>
+				</InputField>
+				<InputField name="НомерЧека" id="211">
+					<DataPath>НомерЧека</DataPath>
+					<Title>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Номер чека</v8:content>
+						</v8:item>
+					</Title>
+					<ContextMenu name="НомерЧекаContextMenu" id="212"/>
+					<ExtendedTooltip name="НомерЧекаExtendedTooltip" id="213"/>
+				</InputField>
+				<UsualGroup name="ГруппаECRКнопки" id="214">
+					<Group>Horizontal</Group>
+					<Representation>None</Representation>
+					<ShowTitle>false</ShowTitle>
+					<ExtendedTooltip name="ГруппаECRКнопкиРасширеннаяПодсказка" id="215"/>
+					<ChildItems>
+						<Button name="КнопкаСоздатьОбъектДрайвераECR" id="216">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.СоздатьОбъектДрайвераECR</CommandName>
+							<ExtendedTooltip name="КнопкаСоздатьОбъектДрайвераECRTooltip" id="217"/>
+						</Button>
+						<Button name="КнопкаПодключитьECR" id="218">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ПодключитьECR</CommandName>
+							<ExtendedTooltip name="КнопкаПодключитьECRTooltip" id="219"/>
+						</Button>
+						<Button name="КнопкаОтключитьECR" id="220">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ОтключитьECR</CommandName>
+							<ExtendedTooltip name="КнопкаОтключитьECRTooltip" id="221"/>
+						</Button>
+						<Button name="КнопкаПроверитьСвязьECR" id="222">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ПроверитьСвязьECR</CommandName>
+							<ExtendedTooltip name="КнопкаПроверитьСвязьECRTooltip" id="223"/>
+						</Button>
+						<Button name="КнопкаВерсияПОECR" id="224">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ВерсияПОECR</CommandName>
+							<ExtendedTooltip name="КнопкаВерсияПОECRTooltip" id="225"/>
+						</Button>
+						<Button name="КнопкаОплатаECR" id="226">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ОплатаECR</CommandName>
+							<ExtendedTooltip name="КнопкаОплатаECRTooltip" id="227"/>
+						</Button>
+						<Button name="КнопкаВозвратECR" id="228">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ВозвратECR</CommandName>
+							<ExtendedTooltip name="КнопкаВозвратECRTooltip" id="229"/>
+						</Button>
+						<Button name="КнопкаПолучитьЧекECR" id="230">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ПолучитьЧекECR</CommandName>
+							<ExtendedTooltip name="КнопкаПолучитьЧекECRTooltip" id="231"/>
+						</Button>
+						<Button name="КнопкаНачатьОплатуECR" id="232">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.НачатьОплатуECR</CommandName>
+							<ExtendedTooltip name="КнопкаНачатьОплатуECRTooltip" id="233"/>
+						</Button>
+						<Button name="КнопкаПрерватьОперациюECR" id="234">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ПрерватьОперациюECR</CommandName>
+							<ExtendedTooltip name="КнопкаПрерватьОперациюECRTooltip" id="235"/>
+						</Button>
+						<Button name="КнопкаОпроситьСостояниеECR" id="236">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ОпроситьСостояниеECR</CommandName>
+							<ExtendedTooltip name="КнопкаОпроситьСостояниеECRTooltip" id="237"/>
+						</Button>
+						<Button name="КнопкаВключитьТрассировкуECR" id="238">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ВключитьТрассировкуECR</CommandName>
+							<ExtendedTooltip name="КнопкаВключитьТрассировкуECRTooltip" id="239"/>
+						</Button>
+					</ChildItems>
+				</UsualGroup>
+				<InputField name="РезультатТекст" id="240">
+					<DataPath>РезультатТекст</DataPath>
+					<Title>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Результат (детальніше — у вікні повідомлень)</v8:content>
+						</v8:item>
+					</Title>
+					<ContextMenu name="РезультатТекстContextMenu" id="241"/>
+					<ExtendedTooltip name="РезультатТекстExtendedTooltip" id="242"/>
+				</InputField>
+			</ChildItems>
+		</UsualGroup>
 	</ChildItems>
 	<Attributes>
 		<Attribute name="Объект" id="1">
@@ -356,8 +492,203 @@
 				</v8:StringQualifiers>
 			</Type>
 		</Attribute>
+		<Attribute name="СтрокаПодключения" id="8">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Строка подключения</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="Сумма" id="9">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Сумма</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="RRN" id="10">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>RRN</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="НомерЧека" id="11">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Номер чека</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="РезультатТекст" id="12">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Результат</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
 	</Attributes>
 	<Commands>
+		<Command name="СоздатьОбъектДрайвераECR" id="13">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Створити обʼєкт драйвера</v8:content>
+				</v8:item>
+			</Title>
+			<Action>СоздатьОбъектДрайвераECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ПодключитьECR" id="14">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Подключить</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ПодключитьECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ОтключитьECR" id="15">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Отключить</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ОтключитьECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ПроверитьСвязьECR" id="16">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>ПроверитьСвязь</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ПроверитьСвязьECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ВерсияПОECR" id="17">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>ВерсияПО</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ВерсияПОECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ОплатаECR" id="18">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Оплата</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ОплатаECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ВозвратECR" id="19">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Возврат</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ВозвратECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ПолучитьЧекECR" id="20">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>ПолучитьЧек</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ПолучитьЧекECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="НачатьОплатуECR" id="21">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>НачатьОплату</v8:content>
+				</v8:item>
+			</Title>
+			<Action>НачатьОплатуECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ПрерватьОперациюECR" id="22">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>ПрерватьОперацию</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ПрерватьОперациюECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ОпроситьСостояниеECR" id="23">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Опросить состояние</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ОпроситьСостояниеECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ВключитьТрассировкуECR" id="24">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>ВключитьТрассировку</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ВключитьТрассировкуECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
 		<Command name="ТестКомпоненты" id="1">
 			<Title>
 				<v8:item>
