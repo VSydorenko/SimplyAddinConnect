@@ -26,7 +26,10 @@
 `ITransport` → `IFramer`/`NullTerminatedFramer` → `IFrameClassifier` → `DeviceSession`) поверх
 платформи-каркаса (`src/platform/`: `ResultEnvelope`, `JobEngine`). Фундамент драйвер-незалежний —
 див. [device-core.md](device-core.md). Перший драйвер на ньому — **ECRPrivatJSON**
-([ecrprivatjson.md](ecrprivatjson.md), компонента 1С `ECRPrivatJSON`).
+([ecrprivatjson.md](ecrprivatjson.md), компонента 1С `ECRPrivatJSON`). Другий драйвер —
+**LabelPrinter** ([label_printer.md](label_printer.md), компонента 1С `LabelPrinter`, БПО-фасад):
+друк односпрямований і синхронний, тож `DeviceSession` він **не** задіює — перевикористовує лише
+`ResultEnvelope` та `ITransport`.
 
 UAPKI — **лише одна з підсистем**, а не суть усього проєкту. Архітектура шарова: верхні шари
 не знають про деталі нижніх, зв'язок — через інтерфейси (`IComponentBase`, `ITransport`) і хелпери.
@@ -40,8 +43,9 @@ UAPKI — **лише одна з підсистем**, а не суть усьо
 | 01 | Ядро (`AddInNative`) | [core.md](core.md) | Міст до SDK 1С, реєстр компонент, `VariantHelper`, модель методів/властивостей |
 | 02 | Фундамент драйверів (device-core) | [device-core.md](device-core.md) | Транспорт/framer/класифікатор/`DeviceSession` + платформа `ResultEnvelope`/`JobEngine`; контракт для нових драйверів |
 | 03 | Драйвер ECRPrivatJSON | [ecrprivatjson.md](ecrprivatjson.md) | Платіжний термінал ПриватБанк: кодек/класифікатор, `Connect`, операції/poller/interrupt/async, фасад `ECRPrivatJSON` |
-| 04 | UAPKI | [uapki.md](uapki.md) | ЕЦП/крипто: JSON-API `process()`, провайдер `cm-pkcs12`, потрійний пошук каталогу |
-| 05 | Збірка й пакування | [build-and-packaging.md](build-and-packaging.md) | Модульний CMake, `build_project.ps1`, ZIP + `manifest.xml`, доставка в 1С |
+| 04 | Драйвер LabelPrinter | [label_printer.md](label_printer.md) | Принтер етикеток (ZPL): БПО-фасад `LabelPrinter`, гібридний рендер (нативні штрихкоди + растр GDI+ у `^GF`), batch state machine, spooler-RAW/TCP:9100 |
+| 05 | UAPKI | [uapki.md](uapki.md) | ЕЦП/крипто: JSON-API `process()`, провайдер `cm-pkcs12`, потрійний пошук каталогу |
+| 06 | Збірка й пакування | [build-and-packaging.md](build-and-packaging.md) | Модульний CMake, `build_project.ps1`, ZIP + `manifest.xml`, доставка в 1С |
 
 > Прикладна інтеграція з 1С (методи, приклади коду, тестування — для 1С-розробника) винесена в
 > окрему теку [docs/integration-1c/](../integration-1c/README.md), по документу на драйвер.
