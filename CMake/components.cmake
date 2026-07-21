@@ -152,6 +152,54 @@ target_include_directories(wire_component PRIVATE
 target_compile_definitions(wire_component PRIVATE _WINDOWS UNICODE _UNICODE)
 add_dependencies(wire_component base_component spdlog)
 
+## @var platform_component
+## @brief Платформа-каркас драйверів обладнання (ResultEnvelope — уніфікований результат).
+## @note Основа для драйверів; входить у фінальну DLL.
+add_library(platform_component OBJECT
+    src/platform/ResultEnvelope.h
+    src/platform/ResultEnvelope.cpp
+)
+set_target_properties(platform_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+target_include_directories(platform_component PRIVATE
+    include
+    ${CMAKE_SOURCE_DIR}
+    src
+    ${SPDLOG_INCLUDE_DIR}
+    ${NLOHMANN_JSON_INCLUDE_DIR}
+)
+target_compile_definitions(platform_component PRIVATE _WINDOWS UNICODE _UNICODE)
+add_dependencies(platform_component base_component spdlog nlohmann_json)
+
+## @var driver_ecr_privatjson_component
+## @brief Пілотний драйвер ECRPrivatJSON: кодек JSON, класифікатор кадрів, життєвий цикл.
+## @note Уся Privat-специфіка (кодек+класифікатор); входить у фінальну DLL.
+add_library(driver_ecr_privatjson_component OBJECT
+    src/drivers/ecr_privatjson/EcrJsonCodec.h
+    src/drivers/ecr_privatjson/EcrJsonCodec.cpp
+    src/drivers/ecr_privatjson/EcrPrivatJsonClassifier.h
+    src/drivers/ecr_privatjson/EcrPrivatJsonClassifier.cpp
+    src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h
+    src/drivers/ecr_privatjson/EcrPrivatJsonDriver.cpp
+)
+set_target_properties(driver_ecr_privatjson_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+target_include_directories(driver_ecr_privatjson_component PRIVATE
+    include
+    ${CMAKE_SOURCE_DIR}
+    src
+    ${SPDLOG_INCLUDE_DIR}
+    ${NLOHMANN_JSON_INCLUDE_DIR}
+)
+target_compile_definitions(driver_ecr_privatjson_component PRIVATE _WINDOWS UNICODE _UNICODE)
+add_dependencies(driver_ecr_privatjson_component base_component spdlog nlohmann_json wire_component transport_component helpers_component)
+
 ## @var uapki_helper_component
 ## @brief Вспомогательный компонент для работы с библиотекой UAPKI
 if(BUILD_WITH_UAPKI)
@@ -246,6 +294,8 @@ add_library(${TARGET} SHARED
     $<TARGET_OBJECTS:helpers_component>
     $<TARGET_OBJECTS:transport_component>
     $<TARGET_OBJECTS:wire_component>
+    $<TARGET_OBJECTS:platform_component>
+    $<TARGET_OBJECTS:driver_ecr_privatjson_component>
     # $<TARGET_OBJECTS:ecrcommx_component>
     # $<TARGET_OBJECTS:posapi_component>
 
