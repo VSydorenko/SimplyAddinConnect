@@ -51,6 +51,9 @@ public:
     /// Останній прочитаний getLastStatMsgCode (-1, якщо ще не було).
     int LastStatus() const;
 
+    /// Запит на скасування активної операції: poller надішле interrupt на service-доріжці.
+    void RequestInterrupt();
+
     // Send-арбітр (спека §7): мін. інтервал 0.1с між ФАКТИЧНИМИ відправленнями.
     // Використовуватиметься в Частині 2; тут — інфраструктура.
     void GateSend();   // блокує до дозволеного моменту, оновлює мітку
@@ -73,6 +76,15 @@ private:
     std::atomic<int> lastStatus_{ -1 };
     static constexpr int kPollIntervalMs = 500;    ///< 0.5с полінг статусу
     static constexpr int kServiceTimeoutMs = 3000;
+
+    // Скасування: 1С ставить interruptRequested_, poller шле interrupt один раз (interruptSent_).
+    std::atomic<bool> interruptRequested_{ false };
+    std::atomic<bool> interruptSent_{ false };
+
+    /// Best-effort відновлення після desync (Timeout+IsDesynchronized): полінг статусу до
+    /// спокою → MarkSynchronized() → GetReceiptInfo. Викликати ПІСЛЯ зупинки poller-а.
+    ResultEnvelope RecoverAfterDesync();
+    static constexpr int kRecoverPollTries = 5;
 
     mutable std::mutex sendGateMutex_;
     std::chrono::steady_clock::time_point lastSend_{};

@@ -265,6 +265,36 @@ static void TestDriverStatusPoll() {
     emu.Stop();
 }
 
+static void TestDriverInterrupt() {
+    TerminalEmulator emu;
+    emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","params":{"responseCode":"0000"},"error":false})"; });
+    std::atomic<bool> interruptSeen{false};
+    emu.OnRequest("ServiceMessage", [&](const nlohmann::json& q)->std::string{
+        auto mt = q.contains("params") ? q["params"].value("msgType","") : std::string{};
+        if (mt == "identify") return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"PAX","model":"s800"},"error":false})";
+        if (mt == "getLastStatMsgCode") return R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":"6"},"error":false})";
+        if (mt == "interrupt") { interruptSeen.store(true); return R"({"method":"ServiceMessage","params":{"msgType":"interruptTransmitted"},"error":false})"; }
+        return "";
+    });
+    // Purchase «висить», доки не прийде interrupt: емулятор чекає прапорець, тоді віддає 1001.
+    emu.OnRequest("Purchase", [&](const nlohmann::json&)->std::string{
+        for (int i = 0; i < 100 && !interruptSeen.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        return R"({"method":"Purchase","params":{"responseCode":"1001"},"error":true,"errorDescription":"Oперація скасов."})";
+    });
+    CHECK(emu.Start(), "Interrupt: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "Interrupt: Connect");
+
+    std::thread canceller([&]{ std::this_thread::sleep_for(std::chrono::milliseconds(300)); drv.RequestInterrupt(); });
+    auto pr = drv.Purchase("10.00");
+    canceller.join();
+    CHECK(interruptSeen.load(), "Interrupt: термінал отримав interrupt");
+    CHECK(!pr.ok && pr.code == "1001", "Interrupt: Purchase завершився responseCode 1001 (скасовано)");
+    drv.Disconnect();
+    emu.Stop();
+}
+
 int main() {
     TestResultEnvelope();
     TestEcrJsonCodec();
@@ -275,6 +305,7 @@ int main() {
     TestJobEngine();
     TestDriverPurchaseHappy();
     TestDriverStatusPoll();
+    TestDriverInterrupt();
     std::printf(g_failed ? "\nFAILED: %d\n" : "\nOK\n", g_failed);
     return g_failed ? 1 : 0;
 }

@@ -166,10 +166,19 @@ ResultEnvelope EcrPrivatJsonDriver::MapResult(const RequestResult& r) {
 
 int EcrPrivatJsonDriver::LastStatus() const { return lastStatus_.load(); }
 
+void EcrPrivatJsonDriver::RequestInterrupt() { interruptRequested_.store(true); }
+
 void EcrPrivatJsonDriver::PollerLoop(std::atomic<bool>& stop) {
     while (!stop.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
         if (stop.load() || !session_) break;
+        // Скасування: раз надсилаємо interrupt на service-доріжці; фінальну 1001 ловить worker.
+        if (interruptRequested_.load() && !interruptSent_.load()) {
+            auto intr = EcrJsonCodec::BuildRequest("ServiceMessage", 0, {{"msgType", "interrupt"}});
+            GateSend();
+            session_->RequestService(intr, kServiceTimeoutMs);
+            interruptSent_.store(true);
+        }
         auto stat = EcrJsonCodec::BuildRequest("ServiceMessage", 0, {{"msgType", "getLastStatMsgCode"}});
         GateSend();
         RequestResult s = session_->RequestService(stat, kServiceTimeoutMs);
@@ -187,6 +196,8 @@ ResultEnvelope EcrPrivatJsonDriver::Execute(const std::string& method,
                                             const nlohmann::json& params, int timeoutMs) {
     if (!IsConnected()) return ResultEnvelope::Fail("NOT_CONNECTED", "Термінал не підключено");
     lastStatus_.store(-1);
+    interruptRequested_.store(false);
+    interruptSent_.store(false);
     auto req = EcrJsonCodec::BuildRequest(method, 0, params.is_null() ? nlohmann::json(nullptr) : params);
 
     std::atomic<bool> pollerStop{ false };
@@ -197,7 +208,33 @@ ResultEnvelope EcrPrivatJsonDriver::Execute(const std::string& method,
 
     pollerStop.store(true);
     poller.join();
+
+    // Обрив у польоті транзакції: session у desync — best-effort відновлення (service вільний).
+    if (r.status == RequestStatus::Timeout && session_ && session_->IsDesynchronized())
+        return RecoverAfterDesync();
+
     return MapResult(r);
+}
+
+ResultEnvelope EcrPrivatJsonDriver::RecoverAfterDesync() {
+    NEUTRAL_REPORT_WARN("ECRPrivatJSON", "Відновлення після десинхронізації: полінг статусу термінала");
+    // Полимо getLastStatMsgCode доки термінал не заспокоїться (bounded), потім знімаємо desync.
+    for (int i = 0; i < kRecoverPollTries && session_; ++i) {
+        auto stat = EcrJsonCodec::BuildRequest("ServiceMessage", 0, {{"msgType", "getLastStatMsgCode"}});
+        GateSend();
+        RequestResult s = session_->RequestService(stat, kServiceTimeoutMs);
+        if (s.status == RequestStatus::Response) {
+            ParsedResponse pr = EcrJsonCodec::Parse(s.frame);
+            if (pr.valid && pr.params.is_object()) {
+                std::string code = pr.params.value("LastStatMsgCode", std::string{});
+                if (!code.empty()) { try { lastStatus_.store(std::stoi(code)); } catch (...) {} }
+            }
+            break;   // термінал відповідає на service → вважаємо спокоєм
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
+    }
+    if (session_) session_->MarkSynchronized();
+    return GetReceiptInfo(std::string{});   // best-effort: деталі останнього чека
 }
 
 ResultEnvelope EcrPrivatJsonDriver::Purchase(const std::string& amount, const nlohmann::json& extra) {
