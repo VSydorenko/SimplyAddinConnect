@@ -1,6 +1,6 @@
 # Пілотний драйвер ECRPrivatJSON — дизайн-специфікація
 
-*Дата: 2026-07-21. Статус: затверджено напрям (3 розвилки вирішено з користувачем), специфікація на рев'ю.*
+*Дата: 2026-07-21. Версія: **v2** (після Codex-аудиту: 5 critical + 14 major верифіковано по коду/спеці й враховано). Статус: затверджено напрям (4 розвилки вирішено з користувачем), специфікація на рев'ю.*
 
 *Підготовлено за результатами глибокого дослідження: повне прочитання новішої специфікації
 `ECR протокол ПриватБанк (JSON based) 1.0.3.5_integrator (ukr)_14012026` (3261 рядок) зі звіркою
@@ -41,6 +41,7 @@
 | **Порядок** | Вертикальний зріз: платформа + драйвер разом, e2e проти емулятора з дня 1 | Платформа доведена реальним споживачем, не проєктується у вакуумі; урок §2.2 архдоку — «жодних тестів проти вигаданих форматів»; розділення ядро↔драйвери збережене |
 | **WS у пілоті** | Ні — TCP:2000 + COM 115200; WS-клієнт пізніше окремим кроком | Пілот легший, тестова поверхня менша; native-топологія достатня (див. §4) |
 | **Тестування** | Емулятор-only — власний протокол-обізнаний TCP-емулятор; реальне залізо — окрема задача | Готового банківського емулятора термінала немає; архітектура дозволяє пізню верифікацію без переробки |
+| **Схема конекту (A7)** | Еталонна схема буквально: connect→Ping→dc→connect→Identify→dc→connect→keepalive | Спека: ця схема «гарантує роботу з терміналами будь-яких вендорів»; відхилення «не гарантуються» |
 
 ## 3. Ключові факти протоколу (верифіковано)
 
@@ -85,21 +86,35 @@ Windows, тримає TCP:2000/COM до термінала, піднімає WS-
 - **Хендшейк:** `{"method":"PingDevice","step":0}` — **особливість: провідний `0x00` НА ПОЧАТКУ**
   (`00 7b...7d 00`); усі інші кадри — `0x00` лише в кінці. Після відповіді таймаут 1с (Verifone
   3-5с). Далі `Identify` (`ServiceMessage`/`msgType:identify`) → `vendor`/`model`.
+- **Дві категорії методів (визначає доріжку й поведінку `deviceBusy`):** (а) **справжні
+  `ServiceMessage`** — `method:"ServiceMessage"` + `msgType` (identify, getLastStatMsgCode,
+  getDiscountName, interrupt, correctTransaction, getMerchantList, getMaskList, debug); ЛИШЕ вони
+  асинхронні й дозволені під час іншої операції; (б) **несервісні методи** — власне `method`
+  (PingDevice, CheckConnection, GetTerminalInfo, Purchase, Refund, GetReceiptInfo, …); їх НЕ можна
+  слати під час активної операції.
 - **3 логічні потоки в 1 конекті:** (1) поточна операція; (2) асинхронні `ServiceMessage` —
-  будь-коли, навіть під час іншого методу; (3) `ServiceMessage Busy` (deviceBusy) у відповідь на
-  конкуруючий несервісний запит. `deviceBusy` — unsolicited, відповіді не потребує.
-- **Пауза на рішення каси (`correctTransaction`):** базовий Purchase/Cashback → полінг
-  `getLastStatMsgCode` (0.5-1с); **код `11`** → `getDiscountName` (discountName/pan/posEntryMode/
-  hash) → каса вирішує → `correctTransaction{amount,discount}` (картку/PIN повторно не запитують)
-  → `correctionTransmitted` у межах Adjust Timeout; інакше продаж триває з початковою сумою.
-- **Interrupt:** `msgType:interrupt` → `interruptTransmitted` + відповідь активної транзакції з
-  `responseCode 1001`.
-- **Статус-коди `getLastStatMsgCode`:** `0` спокій (завершено/не почато) … `1` card read,
-  `3` authorization, `4` waiting cashier, `5` printing, `6` pin, `9` waiting card, `10` in
-  progress, `11` correct transaction. `getLastResult`: `0` успіх / `2` in progress.
+  будь-коли, навіть під час іншого методу; (3) `deviceBusy` — **відповідь-відмова термінала на
+  конкуруючий НЕсервісний запит**, коли він зайнятий. Це НЕ «unsolicited» у строгому сенсі: корелює
+  із запитом, що його спричинив; окремої відповіді від каси не потребує; генерується лише терміналом.
+- **Пауза на рішення каси (correctTransaction):** базовий Purchase/Cashback → полінг
+  `getLastStatMsgCode` (0.5-1с); **коли `getLastStatMsgCode==11`** («correct transaction») →
+  `getDiscountName` (discountName/pan/posEntryMode/hash) → каса вирішує → сервісний
+  `correctTransaction{amount,discount}` (картку/PIN повторно не запитують) → термінал шле
+  `correctionTransmitted` (ack корекції) у межах Adjust Timeout; **операція завершується ФІНАЛЬНОЮ
+  primary-відповіддю Purchase/Cashback, а не `correctionTransmitted`** — після корекції продаж
+  продовжується. Інакше продаж триває з початковою сумою.
+- **Interrupt:** сервісний `msgType:interrupt` → термінал шле `interruptTransmitted` (ack) І
+  фінальну відповідь активної транзакції з `responseCode 1001`.
+- **Статус-коди `getLastStatMsgCode`:** `0` спокій (завершено/не почато), `1` card read,
+  `2` chip card used, `3` authorization, `4` waiting cashier, `5` printing, `6` pin,
+  `7` card removed, `8` EMV multi aid's, `9` waiting card, `10` in progress, `11` correct
+  transaction. `getLastResult`: `0` успіх / `2` in progress.
 - **Помилки:** `responseCode≥1000` → скорочена відповідь (1000 general, 1001 canceled, 1002 EMV
   decline, 1003 log full, 1004 no host, 1005 no paper, 1006 crypto keys, 1007 no reader, 1008
-  already complete); `0010` = Partial approval (`error:false`, каса вирішує доплату).
+  already complete). **Partial approval (`responseCode 0010`, `error:false`)** — часткове схвалення
+  суми; каса обирає ГІЛКУ: покупка в межах схваленої суми (+ доплата готівкою); коригування
+  (зменшення) суми; доплата іншою карткою (новий `Purchase`); або скасування
+  (`Withdrawal`/`WithdrawalPartly`). Потребує окремого стану JobEngine (§7).
 - **Автопідтвердження** завжди (окремий `confirm` не слати). Відновлення після обриву: якщо каса
   не отримала відповідь, а термінал завершив (`getLastStatMsgCode=0`) — тягнути результат через
   `GetReceiptInfo(invoiceNumber)`.
@@ -109,16 +124,23 @@ Windows, тримає TCP:2000/COM до термінала, піднімає WS-
 
 ### 3.5 Каталог операцій
 
-- **Фінансові (primary):** `Purchase{amount,discount,merchantId,facepay,subMerchant}`,
-  `Refund{amount,discount,merchantId,rrn}`, `Withdrawal(скасування){invoiceNumber}`,
-  `WithdrawalPartly{amount,invoiceNumber}`, `Cashback{amount,amountCash,merchantId}`,
-  `Preauthorization{amount,merchantId}`, `SaleCompletion{amount,addamount,approvalCode,rrn}`.
-- **Сервісні/звітні:** `CheckConnection`, `PingDevice`, `GetTerminalInfo`, `GetBalance`,
-  `Audit{merchantId,getTotals}`, `Verify`/`VerifyCopy`, `PrintReceiptNum`, `PrintBatchJournal`,
-  `GetReceiptInfo`, `ReadCardDiscount`, `GetPhoneNumber`, `GetOTPpassword`.
-- **Іменні сервіси розстрочки/PbP** (merchantId/service ID хардкодом, Табл.1.1),
-  `ServiceGeneric{amount,param,srvNum,merchantId}`, **бонусні картки** (`prompt.line`, 3DES
-  pinblock).
+Категоризація за доріжкою (визначає `RequestPrimary` vs `RequestService` — див. §5, §7):
+
+- **Несервісні методи → primary-доріжка** (власне `method`; блокують термінал):
+  - фінансові: `Purchase{amount,discount,merchantId,facepay,subMerchant}`,
+    `Refund{amount,discount,merchantId,rrn,subMerchant}`, `Withdrawal(скасування){invoiceNumber}`,
+    `WithdrawalPartly{amount,invoiceNumber}`, `Cashback{amount,amountCash,merchantId,subMerchant}`,
+    `Preauthorization{amount,merchantId}`, `SaleCompletion{amount,addamount,approvalCode,rrn}`;
+  - звітні/інфо: `CheckConnection`, `PingDevice`, `GetTerminalInfo`, `GetBalance`,
+    `Audit{merchantId,getTotals}`, `Verify`/`VerifyCopy`, `PrintReceiptNum`, `PrintBatchJournal`,
+    `GetReceiptInfo`, `ReadCardDiscount`, `GetPhoneNumber`, `GetOTPpassword`;
+  - іменні сервіси розстрочки/PbP (`ServiceRefund`, `ServicePbP`, `ServiceRefPbP`, …; merchantId/
+    service ID хардкодом, Табл.1.1), `ServiceGeneric{amount,param,srvNum,merchantId}`, бонусні
+    картки (`ReadBonusCard`/`GetPinBonusCard`/`PinChangeBonusCard`; `prompt.line`, 3DES pinblock).
+- **`ServiceMessage` (msgType) → service-доріжка** (асинхронні, можуть іти під час primary):
+  `identify`, `getLastStatMsgCode`/`getLastStatMsgDescription`, `getDiscountName`,
+  `correctTransaction`, `interrupt`, `getMerchantList`, `getMaskList`, `debug`; unsolicited від
+  термінала: `deviceBusy`, `interruptTransmitted`, `correctionTransmitted`, `methodNotImplemented`.
 
 ## 4. Цільова архітектура
 
@@ -126,7 +148,7 @@ Windows, тримає TCP:2000/COM до термінала, піднімає WS-
 1С:Підприємство
    │ tVariant / IComponentBase / ExternalEvent
 ┌──▼──────────────────────────────────────────────────────────────┐
-│ ЯДРО 1С (Є)   AddInNative · EventBridge · Ret() · ParamSpec       │
+│ ЯДРО 1С (Є)   AddInNative · PostExternalEvent · Ret() · ParamSpec │
 │               · REGISTER_COMPONENT                                │
 ├──────────────────────────────────────────────────────────────────┤
 │ ПЛАТФОРМА (НОВЕ)   OperationRegistry · JobEngine · ResultEnvelope │
@@ -150,75 +172,100 @@ Windows, тримає TCP:2000/COM до термінала, піднімає WS-
 Єдиний шлях, без власного буфера драйвера:
 
 ```
-Transport.OnData → DeviceSession::OnBytes → framer_(NullTerminatedFramer).Feed → кадри[]
-   → classifier_(EcrPrivatJsonClassifier).Classify(PendingView{primary,service}, frame)
-      → PrimaryResponse   → pendingPrimary_.result
-      → ServiceResponse   → pendingService_.result
-      → RejectPrimary(Busy/Unsupported)  → RequestStatus::Busy/Unsupported на primary
-      → RejectService(...)               → …на service
-      → RejectBoth                       → desync (§7 wire-дизайну)
-      → Unsolicited       → unsolicitedHandler_ (dispatcher-потік)
+SetDataReceivedCallback → DeviceSession::OnBytes → framer_(NullTerminatedFramer).Feed → кадри[]
+   → classifier_->Classify(PendingView{primary,service}, frame) → Classification{cls, reason}
+      FrameClass::PrimaryResponse                           → pendingPrimary_.result
+      FrameClass::ServiceResponse                           → pendingService_.result
+      FrameClass::RejectPrimary (reason Busy|Unsupported)   → RequestStatus Busy|Unsupported (primary)
+      FrameClass::RejectService (reason ...)                → …(service)
+      FrameClass::RejectBoth                                → desync (§7 wire-дизайну)
+      FrameClass::Unsolicited                               → unsolicitedHandler_ (dispatcher-потік)
 ```
 
 Драйвер лише формує `RequestPrimary(payload, timeoutMs, FrameOptions)` /
 `RequestService(...)` і читає `RequestResult{status, frame}`. Власного приймання/буфера **не має**.
+`Classify` повертає `Classification{FrameClass cls; RejectReason reason;}` (реальні типи з
+`IFrameClassifier.h`), а не суміщений enum.
 
 **`EcrPrivatJsonClassifier::Classify`** (уся логіка розрізнення потоків):
-1. Розпарсити `method` вхідного кадру.
-2. Якщо `method` збігається з `method` у `pending.primary` → `PrimaryResponse`.
-3. Якщо `method=="ServiceMessage"`:
-   - `params.msgType=="deviceBusy"` → `RejectPrimary{Busy}` (термінал зайнятий, primary
-     відхилено; політика повтору — у драйвері);
-   - `msgType` відповідає активному service-запиту (identify / getLastStatMsgCode /
-     getDiscountName / …) → `ServiceResponse`;
-   - `msgType` ∈ {`interruptTransmitted`, `correctionTransmitted`} → `Unsolicited`
-     (сигнал стану для JobEngine);
-   - `msgType=="methodNotImplemented"` → `RejectService/RejectPrimary{Unsupported}` за контекстом.
-4. Якщо `method` збігається з `pending.service` → `ServiceResponse`.
-5. Інакше (немає відповідного pending) → `Unsolicited`.
+1. Розпарсити `method` (і `params.msgType`, якщо `method=="ServiceMessage"`).
+2. `method` == `method` у `pending.primary` (не-`ServiceMessage`) → `{PrimaryResponse}`.
+3. `method=="ServiceMessage"`:
+   - `msgType` корелює з активним service-запитом — **у т.ч. `interrupt`→`interruptTransmitted`,
+     `correctTransaction`→`correctionTransmitted`** (це ВІДПОВІДІ на service-запити, НЕ unsolicited),
+     а також identify / getLastStatMsgCode / getDiscountName → `{ServiceResponse}`;
+   - `msgType=="deviceBusy"`: якщо активний primary → `{RejectPrimary, Busy}` (політика повтору —
+     у драйвері); якщо primary немає → `{Unsolicited}`;
+   - `msgType=="methodNotImplemented"`: кадр НЕ називає відхилений метод, тож при обох активних
+     pending → `{RejectBoth}`; при одній доріжці → `{RejectService|RejectPrimary, Unsupported}`;
+   - інший `msgType` без відповідного pending → `{Unsolicited}`.
+4. `method` == `method` у `pending.service` → `{ServiceResponse}`.
+5. Інакше → `{Unsolicited}`.
 
-Двохдоріжкова модель `DeviceSession` прямо підтримує **полінг статусу під час операції**:
-`Purchase` займає primary-доріжку, а `getLastStatMsgCode` летить по service-доріжці паралельно.
+Двохдоріжкова модель `DeviceSession` прямо підтримує **полінг статусу під час операції**: `Purchase`
+займає primary-доріжку, а `getLastStatMsgCode` (справжній `ServiceMessage`) летить по service-доріжці
+паралельно й НЕ провокує `deviceBusy` — на відміну від несервісних `PingDevice`/`CheckConnection`.
 
 ## 6. Життєвий цикл з'єднання
 
+Драйвер реалізує **еталонну схему буквально** (рішення A7), перевикористовуючи `DeviceSession`
+короткими сесіями для хендшейку/Identify і однією постійною для основного режиму. Транспорт:
+`TransportTCP(host, 2000)` або `TransportCOM(port, 115200, 8, 'N', 1.0f)` — драйвер **явно** передає
+baud `115200` (дефолт `TransportCOM` — 9600). Рядок: `"tcp://host:2000"` | `"COM3:115200,8,N,1"`.
+
 `EcrPrivatJsonDriver::Connect(connString)`:
-1. Зібрати `DeviceSession(transport, NullTerminatedFramer, EcrPrivatJsonClassifier, SessionConfig)`;
-   `transport` — `TransportTCP(host, 2000)` або `TransportCOM(port, 115200, 8, 'N', 1)` за
-   рядком підключення (`"tcp://host:2000"` | `"COM3:115200,8,N,1"`).
-2. `Start()` (підписка колбеків + reader + dispatcher + Open у межах `connectDeadlineMs`).
-3. **Хендшейк:** `RequestPrimary(PingDevice, opts{leadingDelimiter=true})` → перевірити відповідь
-   → пауза 1с (конфіг; Verifone 3-5с).
-4. **Identify:** `RequestService(ServiceMessage/identify)` → зберегти `vendor`/`model` (можливе
-   розгалуження поведінки за вендором, напр. таймаути Verifone).
-5. **Основний режим:** з'єднання лишається відкритим; **keepalive** — драйверний періодичний
-   `RequestService(CheckConnection|PingDevice)` (період — конфіг, дефолт напр. 20с);
-   реконект делеговано супервізору `DeviceSession` (`autoReconnect`, backoff).
-6. Після протокольного відновлення транзакції драйвер знімає desync через `MarkSynchronized()`.
+1. **Хендшейк** (коротка сесія): зібрати `DeviceSession`, **спершу поставити user-колбеки**
+   (`SetUnsolicitedHandler`/`SetConnectionStateHandler`/`SetWireTraceHandler` — сеттери дозволені
+   ЛИШЕ до `Start()`; після — no-op+WARN), потім `Start()`. `RequestPrimary(pingPayload, timeoutMs,
+   FrameOptions{/*leadingDelimiter=*/true})` → перевірити відповідь → пауза 1с (конфіг; Verifone
+   3-5с) → **`Stop()` (дисконект)**.
+2. **Identify** (коротка сесія): новий `DeviceSession`+колбеки+`Start()` → `RequestService(identify)`
+   → зберегти `vendor`/`model` (можливе розгалуження за вендором) → **`Stop()` (дисконект)**.
+3. **Основний режим** (постійна сесія): новий `DeviceSession`+колбеки+`Start()`; з'єднання лишається
+   відкритим, дескриптор глобальний, не відключаємось; реконект делеговано супервізору
+   `DeviceSession` (`autoReconnect`, backoff).
+4. **Keepalive — ЛИШЕ в idle:** коли операції немає, драйверний таймер шле `PingDevice`/
+   `CheckConnection` (несервісні, primary-доріжка) з періодом-конфігом (~20с). **Під час активної
+   операції keepalive НЕ шлемо** — стан термінала бачимо з полінгу `getLastStatMsgCode` (service).
+5. **Відновлення після desync:** primary-timeout САМ виставляє `desynchronized_`
+   (`DeviceSession.cpp`); реконект його НЕ знімає — лише `MarkSynchronized()`; а primary під час
+   desync заборонено кодом. Тому драйвер з'ясовує наслідок операції по **service-доріжці**
+   (`getLastStatMsgCode` — не блокується desync; `0` = термінал завершив/у спокої), викликає
+   `MarkSynchronized()`, і лише тоді відновлює primary (напр. `GetReceiptInfo(invoiceNumber)`).
 
 ## 7. Модель операцій (платформа)
 
-- **`OperationRegistry`** — кожна операція описується один раз: імена en/ru, `ParamSpec[]`
-  (тип, обов'язковість, дефолт), таймаут, прапорець «підтримує паузу на рішення каси», обробник.
-  З опису — авто-реєстрація типізованого 1С-методу (синхронна + асинхронна форма) і валідація
-  параметрів у ядрі (порожній обов'язковий → `AddError` з ім'ям параметра, без виклику обробника).
-- **`JobEngine`** — виконавець операції на одному worker-потоці екземпляра драйвера. Стани:
-  `Idle → Running → [AwaitingCashDecision] → Done | Error`.
+- **`OperationRegistry`** — кожна операція описується один раз: імена en/ru, параметри, таймаут,
+  прапорець «підтримує паузу на рішення каси», обробник → авто-реєстрація 1С-методу (синхронна +
+  асинхронна форма) і валідація параметрів. **Примітка:** наявний `ParamSpec` (`AddInNative.h`) має
+  лише `nameEn/nameRu/required/byDefault` — **без поля типу**; для типізованої валідації `ParamSpec`
+  розширюється полем типу в межах цієї роботи (або тип перевіряється в обробнику).
+- **`JobEngine`** — машина станів операції. Стани (розширено):
+  `Idle → Running → [AwaitingCashDecision | AwaitingPartialDecision | Interrupting] → Done | Error`.
+  Визначені також: таймаут рішення каси, обрив у стані очікування, повторний sync/async-виклик під
+  час активного job (відхиляється як `Concurrent`).
   - синхронно: `Оплата(...)` = start + wait;
   - асинхронно: `НачатьОплату(...)` → `ПолучитьСостояние()`/`ПолучитьСтатусОперации()`
-    (полінг з `ОбработчикОжидания`) → `ПолучитьРезультат()`; опційно подія через `EventBridge`;
-  - пауза: у `AwaitingCashDecision` — `ПодтвердитьОперацию()`/`СкорректироватьСумму()`/
-    `ОтклонитьОперацию()`.
-  Keepalive і полінг `getLastStatMsgCode` — **на рівні драйвера**, не JobEngine (JobEngine —
-  загальна машина станів, не знає протоколу).
+    (полінг з `ОбработчикОжидания`) → `ПолучитьРезультат()`; опційно подія через `PostExternalEvent`;
+  - пауза: `ПодтвердитьОперацию()`/`СкорректироватьСумму()`/`ОтклонитьОперацию()`.
+- **Потокова модель (важливо):** `RequestPrimary` **блокує** свій потік до відповіді/таймауту
+  (`DoRequest`→`cv_.wait_for`). Тому драйвер має **ДВА потоки**: (1) worker JobEngine, що тримає
+  активний `RequestPrimary` операції; (2) окремий **poller/timer-потік**, який під час `Running`
+  полить `getLastStatMsgCode` через `RequestService` (0.5-1с), а в idle шле keepalive.
+- **Send-арбітр (0.1с):** спека забороняє слати дві команди одночасно (пауза 0.1с). Драйвер
+  серіалізує ФАКТИЧНІ відправлення обох доріжок через власний send-gate з мінімальним інтервалом
+  0.1с (бо `DeviceSession` серіалізує лише в межах доріжки, не між ними).
 - **`ResultEnvelope`** — `{ok:bool, code:string, description:string, payload:json}`. У 1С: функція
-  повертає `ok`, деталі — `ПолучитьРезультатJSON()`/типізовані геттери.
+  повертає `ok`, деталі — `ПолучитьРезультатJSON()`/геттери.
 
-**Флоу Purchase з паузою:** JobEngine `Running` → драйвер полить `getLastStatMsgCode` (service,
-0.5-1с) → код `11` → JobEngine `AwaitingCashDecision`, драйвер тягне `getDiscountName` → 1С
-викликає `СкорректироватьСумму`/`Подтвердить` → драйвер шле `correctTransaction` → чекає
-`correctionTransmitted` (Adjust Timeout) → `Done`. `interrupt` → `ПрерватьОперацию` (responseCode
-1001). `deviceBusy` → помилка/повтор за політикою.
+**Флоу Purchase з паузою:** worker шле `RequestPrimary(Purchase)` і блокується; poller полить
+`getLastStatMsgCode` (service) 0.5-1с. Код `11` → `AwaitingCashDecision`, драйвер тягне
+`getDiscountName` → 1С викликає `СкорректироватьСумму`/`Подтвердить` → драйвер шле сервісний
+`correctTransaction` → приходить `correctionTransmitted` (ServiceResponse, ack) → **операція
+завершується, коли повертається ФІНАЛЬНА primary-відповідь Purchase** (не ack корекції). `interrupt`
+(service) → `interruptTransmitted` (ack) + primary-відповідь `responseCode 1001` → `Done`.
+`deviceBusy` на primary → повтор/помилка за політикою. 1С-події зі зміни стану — з worker/poller-потоку
+лише через `PostExternalEvent`.
 
 ## 8. Операції зрізу vs повний каталог
 
@@ -228,10 +275,13 @@ Transport.OnData → DeviceSession::OnBytes → framer_(NullTerminatedFramer).Fe
 `deviceBusy`. Цей набір вправляє **всі** платформені механізми (реєстр, JobEngine, пауза,
 класифікатор, обидві доріжки).
 
-**Інкрементально після зрізу** (уже без нових механізмів, лише описи операцій + парсинг полів):
-`Withdrawal[Partly]`, `Cashback`, `Preauthorization`, `SaleCompletion`, `GetBalance`,
-`Audit`, `Verify`/`VerifyCopy`, друк, сервіси розстрочки/`ServiceGeneric`, бонусні картки,
-`GetPhoneNumber`/`GetOTPpassword`, поле `adv`.
+**Інкрементально після зрізу** (переважно описи операцій + парсинг полів): `Withdrawal[Partly]`,
+`Cashback`, `Preauthorization`, `SaleCompletion`, `GetBalance`, `Audit`, `Verify`/`VerifyCopy`,
+друк, сервіси розстрочки/`ServiceGeneric`, бонусні картки, `GetPhoneNumber`/`GetOTPpassword`,
+поле `adv`. **Виняток — Partial approval** (потребує стану `AwaitingPartialDecision` і запуску
+`WithdrawalPartly`/нового `Purchase`/`Withdrawal`) і **interrupt** (очікування ack + фінальної
+1001) — це НЕ «без нових механізмів»: відповідні стани закладаємо в JobEngine ще у зрізі, а гілки
+наповнюємо при додаванні операцій.
 
 ## 9. Обробка помилок
 
@@ -239,36 +289,49 @@ Transport.OnData → DeviceSession::OnBytes → framer_(NullTerminatedFramer).Fe
   `0010` → Partial approval (`error:false`).
 - Уніфікація в `ResultEnvelope`; у 1С — `REPORT_ERROR` (лог + `AddError`) → `return false`;
   винятки межу 1С не перетинають (`try-catch` з `REPORT_ERROR` у `catch`).
-- Статуси транспорту/сесії (`RequestStatus`: Timeout/Disconnected/SendFailed/Busy/Desynchronized)
-  мапляться на коди `ResultEnvelope` з людиночитним описом.
+- Усі `RequestStatus` мапляться на `ResultEnvelope` з людиночитним описом: `Response` → успіх;
+  `Busy` (deviceBusy) → зайнято/повтор; `Unsupported` (methodNotImplemented) → метод не
+  підтримується терміналом; `Timeout` → таймаут; `Disconnected`/`SendFailed` → помилка зв'язку
+  (реконект); `Stopped` → перервано зупинкою; `Concurrent` → операція вже виконується;
+  `Desynchronized` → потрібне відновлення (§6, п.5).
 
 ## 10. Конвенції 1С-API
 
 Успадкувати `AddInNative`; реєстрація через `REGISTER_COMPONENT(u"ECRPrivatJSON",
 AddinECRPrivatJSON)`. Методи — з `OperationRegistry` (пари en/ru, синхронна+асинхронна форма).
 Результат — через `Ret()` для value-хендлерів або явний `this->result` + геттери
-`ResultEnvelope`. Події зі зміни стану операції — з worker-потоку **лише** через `EventBridge`
-(`PostExternalEvent`), результати методів і `AddError` — лише на потоці виклику 1С.
+`ResultEnvelope`. Події зі зміни стану операції — з worker/poller-потоку **лише** через успадкований
+`AddInNative::PostExternalEvent` (окремого класу `EventBridge` у коді немає — це саме цей механізм);
+результати методів і `AddError` — лише на потоці виклику 1С.
 `EnableLogging`/`ИспользоватьЛогирование` — успадковані, реєструвати не треба.
 
 ## 11. Тестова стратегія (емулятор-only)
 
-- **L0.6 (юніт, розширити наявний `wire_selftest`)** — `EcrPrivatJsonClassifier` і `EcrJsonCodec`
-  на детермінованих кадрах: method-кореляція, `deviceBusy`, `interruptTransmitted`,
-  `correctionTransmitted`, `methodNotImplemented`, провідний `0x00` хендшейку, split/coalesce
-  кадрів у одному читанні.
+- **L0.6 (юніт, розширити `wire_selftest`):**
+  - **рівень framer** (`NullTerminatedFramer`): провідний `0x00` хендшейку (порожня дейтаграма),
+    split/coalesce кадрів у одному читанні — це механіка `Feed`, а НЕ класифікатора;
+  - **рівень класифікатора/кодека** (`EcrPrivatJsonClassifier`/`EcrJsonCodec`): method-кореляція,
+    `deviceBusy`→`RejectPrimary` за наявного primary, `interruptTransmitted`/`correctionTransmitted`
+    →`ServiceResponse`, `methodNotImplemented`→`RejectBoth` при обох pending.
 - **L1/L2 (інтеграція, новий `TerminalEmulator`)** — TCP-сервер на localhost, що приймає
-  `JSON+0x00`, зіставляє за `method` і віддає **скриптовані** відповіді за байтовими прикладами
-  спеки: `PingDevice`(з провідним 0x00)/`Identify`(→PAX s800)/`Purchase` з полінгом
-  `getLastStatMsgCode`/`deviceBusy`/`correctTransaction=11`/помилки 1000-1008/`interrupt`→1001.
-  Наявні `RawTcpEchoServer`/`ReopenTcpEchoServer` (сирий echo) замінюємо цим протокол-обізнаним
-  емулятором. Джерело фікстур — байтові приклади спеки + референс `example.7z`.
-- **L3 (компонента)** — драйвер через 1С-фасад проти емулятора (за зразком `native_host` UAPKI).
-- Інтеграція в `run_tests.ps1` рівнями L0-L3; гейт дивиться exit-код (задокументовані `[SKIP]` —
-  напр. COM-roundtrip без com0com — не FAIL).
+  `JSON+0x00`, зіставляє за `method` і віддає скриптовані відповіді: `PingDevice`(провідний 0x00)/
+  `Identify`(→PAX s800)/`Purchase` з полінгом `getLastStatMsgCode`/при `==11`
+  `correctTransaction`+`correctionTransmitted`+фінальна відповідь/`deviceBusy`/помилки 1000-1008/
+  `interrupt`→1001/Partial approval `0010`. **`TerminalEmulator` ДОДАЄМО, наявні
+  `RawTcpEchoServer`/`ReopenTcpEchoServer` НЕ чіпаємо** — вони тримають generic-регресії wire-стека
+  (raw echo/split/reconnect).
+- **L3 (компонента)** — драйвер через 1С-фасад проти емулятора (за зразком `native_host`). Ціль ECR
+  **не залежить від UAPKI**, тож у `tests/CMakeLists.txt` її оголошуємо **ДО** гейта
+  `if(NOT BUILD_WITH_UAPKI) return()` (він зараз відсікає лише `native_host`).
+- Інтеграція в `run_tests.ps1` рівнями L0-L3; гейт дивиться exit-код (`[SKIP]` — напр. COM-roundtrip
+  без com0com — не FAIL).
+- **Матриця має покрити межові випадки дизайну:** both-pending `methodNotImplemented`, `deviceBusy`
+  на service-доріжці, реконект+повторний хендшейк, desync-відновлення після primary-timeout, колбеки
+  до `Start()`, завершення по фінальній primary-відповіді після `correctionTransmitted`, send-арбітр 0.1с.
 
-Тестова політика (§2.2 архдоку): жодних тестів проти вигаданих форматів — вектори лише з
-байтових прикладів специфікації або реальних дампів.
+Тестова політика (§2.2 архдоку): жодних форматів «з голови». Вектори — з байтових прикладів спеки;
+де спека дає лише JSON-текст (`deviceBusy`, `correctTransaction`, помилки 1000-1008, Partial
+approval) — **нормативне UTF-8-кодування цього JSON + `0x00`** (не вигадка формату) або реальні дампи.
 
 ## 12. Нові файли й CMake
 
@@ -284,23 +347,34 @@ tests/support/TerminalEmulator.{h,cpp}     # протокол-обізнаний
 tests/ecr_privatjson_selftest.cpp          # L1/L2/L3 драйвера (або в межах wire_selftest)
 ```
 
-`CMake/components.cmake` — нові OBJECT-бібліотеки `platform_component`,
-`driver_ecr_privatjson_component`, файли фасаду до `HEADER_FILES`/`SOURCE_FILES`,
-`$<TARGET_OBJECTS:...>` до фінальної SHARED-цілі; `add_dependencies` (мінімум
-`base_component wire_component transport_component spdlog`). `tests/CMakeLists.txt` — емулятор і
-селф-тест лінкуються НЕ в головну DLL (за зразком наявних селф-тестів).
+`CMake/components.cmake` — **склад DLL іде ЛИШЕ через OBJECT-ліби + `$<TARGET_OBJECTS>`** (змінні
+`HEADER_FILES`/`SOURCE_FILES` вестигіальні, у SHARED-ціль не входять — перевірено на `:242`). Тому:
+- `add_library(platform_component OBJECT ...)`, `add_library(driver_ecr_privatjson_component OBJECT ...)`,
+  `add_library(ecr_privatjson_facade_component OBJECT src/components/AddinECRPrivatJSON.cpp)` — і
+  кожну додати як `$<TARGET_OBJECTS:...>` у `add_library(${TARGET} SHARED ...)` (за зразком
+  `uapki_connect_component`); **інакше фасад не потрапить у DLL**;
+- `add_dependencies(...)` — лише порядок збірки; **лінкування окремо**: `target_link_libraries` для
+  зовнішніх (`spdlog::spdlog`, `nlohmann_json`, за потреби `ws2_32`);
+- `tests/CMakeLists.txt` — `TerminalEmulator`+ECR-селф-тест окремими exe (НЕ в DLL), з явним
+  переліком `$<TARGET_OBJECTS:...>` і лінкуванням (за зразком `wire_selftest`), оголошені ДО
+  UAPKI-гейта (§11).
 
 ## 13. Етапи виконання (вертикальний зріз; кожен крок — збірка зелена)
 
-1. **Платформа-каркас:** `ResultEnvelope`, кістяк `OperationRegistry` і `JobEngine` (стани,
-   worker, sync+async форми) — юніт-тести машини станів на моках.
-2. **Кодек+класифікатор:** `EcrJsonCodec` (Build/Parse), `EcrPrivatJsonClassifier` — L0.6-вектори.
-3. **Емулятор термінала:** `TerminalEmulator` зі сценаріями Ping/Identify/GetTerminalInfo.
-4. **Драйвер — транспортний e2e:** `EcrPrivatJsonDriver.Connect` (handshake→Identify→keepalive)
-   проти емулятора по TCP — перший зелений e2e.
-5. **Драйвер — Purchase з паузою:** Purchase/Refund через JobEngine, полінг `getLastStatMsgCode`,
-   `correctTransaction=11`, `interrupt`, `deviceBusy`, `GetReceiptInfo`.
-6. **1С-фасад:** `AddinECRPrivatJSON` (пари en/ru, sync+async, EventBridge), L3 проти емулятора.
+1. **Платформа-каркас:** `ResultEnvelope`, кістяк `OperationRegistry` і `JobEngine` (стани
+   Idle→Running→[AwaitingCashDecision/AwaitingPartialDecision/Interrupting]→Done|Error; worker +
+   poller-потік; send-арбітр 0.1с) — юніт-тести машини станів на моках.
+2. **Кодек+класифікатор:** `EcrJsonCodec` (Build/Parse), `EcrPrivatJsonClassifier` (кореляція,
+   deviceBusy, `*Transmitted`→service, `methodNotImplemented`→RejectBoth) — L0.6-вектори.
+3. **Емулятор термінала:** `TerminalEmulator` (додано, не замінює echo-сервери) зі сценаріями
+   Ping/Identify/GetTerminalInfo.
+4. **Драйвер — транспортний e2e:** `Connect` за **еталонною схемою** (Ping[+dc]→Identify[+dc]→
+   постійний конект; колбеки до `Start()`) проти емулятора по TCP — перший зелений e2e.
+5. **Драйвер — Purchase з паузою:** Purchase/Refund; poller полить `getLastStatMsgCode`; при `==11`
+   — `getDiscountName`+`correctTransaction`+`correctionTransmitted`+фінальна відповідь; `interrupt`;
+   `deviceBusy`; desync-відновлення через service+`GetReceiptInfo`.
+6. **1С-фасад:** `AddinECRPrivatJSON` (пари en/ru, sync+async, події через `PostExternalEvent`), L3
+   проти емулятора.
 7. **Інтеграція в `run_tests.ps1`** (L0-L3) + інкрементальне доповнення каталогу операцій (§8).
 
 ## 14. Поза обсягом
@@ -318,7 +392,9 @@ tests/ecr_privatjson_selftest.cpp          # L1/L2/L3 драйвера (або �
 
 | Питання | Дефолт / підхід |
 |---|---|
-| Період keepalive не заданий спекою | Драйверний періодичний `CheckConnection`/`PingDevice`, конфіг, дефолт ~20с |
+| Схема конекту (A7) | **Вирішено:** еталонна буквально (Ping+dc→Identify+dc→постійний конект) |
+| Період keepalive не заданий спекою | Драйверний `PingDevice`/`CheckConnection` **лише в idle**, конфіг, дефолт ~20с |
+| Send-арбітр 0.1с між командами | Драйверний send-gate (мін. інтервал 0.1с) поверх обох доріжок |
 | Глобальний таймаут операції (~120с зі старої задачі) у 1.0.3.5 явно не знайдено | Пер-операційні таймаути конфігуровані; дефолти консервативні; звірити з ENG-PDF/терміналом |
 | Adjust Timeout для `correctionTransmitted` числом не заданий | Конфіг з безпечним дефолтом; уточнити на залізі |
 | Максимальний розмір кадру/JSON не зазначено | `SessionConfig::maxBufferedBytes` — безпечний ліміт емпірично |
@@ -338,8 +414,11 @@ tests/ecr_privatjson_selftest.cpp          # L1/L2/L3 драйвера (або �
   відповідь з `result`/`vendor`(PAX)/`model`(s800).
 - **GetTerminalInfo:** `{"method":"GetTerminalInfo","step":0}` → повний `[]byte` + NULL-terminated
   варіант (базовий приклад кодування UTF-8→байти).
-- **deviceBusy** (unsolicited): `{"method":"ServiceMessage","step":0,"params":{"msgType":
-  "deviceBusy"},"error":false,"errorDescription":""}`.
+- **deviceBusy** (відмова термінала на несервісний запит; ack не потрібен):
+  `{"method":"ServiceMessage","step":0,"params":{"msgType":"deviceBusy"},"error":false,"errorDescription":""}`.
 - **interrupt→скасування:** `{"error":true,"errorDescription":"Oперація скасов.","method":
   "Purchase","params":{"responseCode":"1001"},"step":0}`.
+- Спека дає hex-дампи лише для Ping/Identify/GetTerminalInfo; решта (`deviceBusy`,
+  `correctTransaction`/`correctionTransmitted`, помилки 1000-1008, Partial approval) — JSON-текст,
+  який фікстури кодують у UTF-8+`0x00` нормативно.
 - Джерело: `ECR протокол ПриватБанк (JSON based) 1.0.3.5` + референс `example.7z` (C#/Go).
