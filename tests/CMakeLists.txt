@@ -112,8 +112,9 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
-# label_printer_selftest — харнес каркасу драйвера принтера етикеток (ZPL).
-# Поки лише LabelModel/LabelUnits; наступні таски додадуть GfEncoder/BarcodeZpl/...
+# label_printer_selftest — L-p1-харнес драйвера LabelPrinter (ZPL, без UAPKI).
+# Одиниці/^GF-енкодер/штрихкоди/растр GDI+/генератор/XML-адаптер/драйвер (batch SM,
+# concurrency) + transport-e2e проти LabelEmulator + смоук БПО-фасаду AddinLabelPrinter.
 # ---------------------------------------------------------------------------
 add_executable(label_printer_selftest ${CMAKE_SOURCE_DIR}/tests/label_printer_selftest.cpp
     support/LabelEmulator.cpp                          # TCP-емулятор-захоплювач ZPL (L-p2 e2e)

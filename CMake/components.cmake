@@ -211,9 +211,10 @@ target_compile_definitions(driver_ecr_privatjson_component PRIVATE _WINDOWS UNIC
 add_dependencies(driver_ecr_privatjson_component base_component spdlog nlohmann_json wire_component transport_component helpers_component)
 
 ## @var driver_label_printer_component
-## @brief Драйвер принтера етикеток (ZPL): моделі даних, одиниці, кодери/класифікатори.
-## @note Поки лише каркас (LabelModel/LabelUnits) — .cpp додаватимуться в наступних тасках;
-##       НЕ входить у фінальну DLL до появи фасаду (Task 12).
+## @brief Драйвер принтера етикеток (ZPL): модель/одиниці, генератор ZPL (LabelZplGenerator),
+##        растр GDI+ (LabelRaster), ^GF-енкодер (GfEncoder), штрихкоди (BarcodeZpl),
+##        XML-адаптер (LabelXml, pugixml вкомпільовано) і оркестратор (LabelPrinterDriver).
+## @note Входить у фінальну DLL разом із label_facade_component (див. add_library(${TARGET} ...)).
 add_library(driver_label_printer_component OBJECT
     ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelModel.h
     ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelUnits.h
