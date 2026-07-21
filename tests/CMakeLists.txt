@@ -117,7 +117,8 @@ endif()
 # ---------------------------------------------------------------------------
 add_executable(label_printer_selftest ${CMAKE_SOURCE_DIR}/tests/label_printer_selftest.cpp)
 target_sources(label_printer_selftest PRIVATE
-    $<TARGET_OBJECTS:driver_label_printer_component>   # LabelRaster/GfEncoder/BarcodeZpl
+    $<TARGET_OBJECTS:driver_label_printer_component>   # LabelRaster/GfEncoder/BarcodeZpl/LabelPrinterDriver
+    $<TARGET_OBJECTS:platform_component>               # ResultEnvelope (результат операції драйвера)
     $<TARGET_OBJECTS:transport_component>              # TransportSpoolerRaw (Winspool RAW) + TCP/COM/WS
     $<TARGET_OBJECTS:helpers_component>                # ServiceTools (конвертації рядків, NEUTRAL_REPORT)
     $<TARGET_OBJECTS:base_component>                   # AddInNative::MB2WCHAR/WCHAR2MB (за ServiceTools)

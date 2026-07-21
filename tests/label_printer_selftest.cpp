@@ -1,12 +1,16 @@
 #include <cstdio>
 #include <string>
 #include <optional>
+#include <memory>
+#include <vector>
 #include "../src/drivers/label_printer/LabelModel.h"
 #include "../src/drivers/label_printer/LabelUnits.h"
 #include "../src/drivers/label_printer/GfEncoder.h"
 #include "../src/drivers/label_printer/BarcodeZpl.h"
 #include "../src/drivers/label_printer/LabelRaster.h"
 #include "../src/drivers/label_printer/LabelZplGenerator.h"
+#include "../src/drivers/label_printer/LabelPrinterDriver.h"
+#include "../src/transport/Transport.h"
 #include "../src/transport/Transport_SpoolerRaw.h"
 using namespace labelprinter;
 
@@ -133,6 +137,43 @@ static void TestSpooler() {
     CHECK(!t.IsOpen(), "IsOpen false after Close");
 }
 
+static void TestDriverBatch() {
+    GdiplusRuntime gdi;
+    LabelPrinterDriver drv;
+    std::vector<uint8_t> captured;
+    drv.SetTransportFactoryForTest([&](const DeviceProfile&) -> std::unique_ptr<ITransport> {
+        struct Fake : ITransport {
+            std::vector<uint8_t>* out; bool open=false;
+            bool Open() override {open=true;return true;}
+            bool Close() override {open=false;return true;}
+            bool IsOpen() const override {return open;}
+            int Send(const std::vector<uint8_t>& d) override {out->insert(out->end(),d.begin(),d.end());return (int)d.size();}
+            void SetDataReceivedCallback(DataReceivedCallback) override{}
+            void SetErrorCallback(ErrorCallback) override{}
+            void SetConnectionStateCallback(ConnectionStateCallback) override{}
+        };
+        auto f=std::make_unique<Fake>(); f->out=&captured; return f;
+    });
+    DeviceProfile dp; dp.dotsPerMm=8;
+    std::string id = drv.Connect(dp);
+    CHECK(!id.empty() && drv.IsConnected(id), "connected, has id");
+
+    LabelBatch b; LabelFormatting fmt; fmt.width=60; fmt.height=40; b.formatting=fmt;
+    b.labels.push_back({1, {}});
+    // "regular" без "first" -> помилка
+    CHECK(!drv.PrintLabels(id, b, "regular").ok, "regular before first -> fail");
+    // "first" зберігає formatting і друкує
+    auto r = drv.PrintLabels(id, b, "first");
+    CHECK(r.ok && r.payload["acceptedInstances"]==1, "first prints, accepted=1");
+    // "regular"/"last" без formatting використовує кеш
+    LabelBatch b2; b2.labels.push_back({3, {}});
+    auto r2 = drv.PrintLabels(id, b2, "last");
+    CHECK(r2.ok && r2.payload["acceptedCopies"]==3, "last uses cached formatting, copies=3");
+    // після "last" кеш очищено -> "regular" знову fail
+    CHECK(!drv.PrintLabels(id, b2, "regular").ok, "cache cleared after last");
+    drv.Disconnect(id); CHECK(!drv.IsConnected(id), "disconnected");
+}
+
 int main() {
     TestUnits();
     TestGfEncoder();
@@ -142,6 +183,7 @@ int main() {
     TestRasterImage();
     TestGenerator();
     TestSpooler();
+    TestDriverBatch();
     std::printf(g_failures ? "\nFAILED: %d\n" : "\nALL PASS\n", g_failures);
     return g_failures ? 1 : 0;
 }

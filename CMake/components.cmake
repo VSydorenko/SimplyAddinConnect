@@ -223,6 +223,8 @@ add_library(driver_label_printer_component OBJECT
     ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelRaster.h
     ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelZplGenerator.cpp
     ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelZplGenerator.h
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelPrinterDriver.cpp
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelPrinterDriver.h
 )
 set_target_properties(driver_label_printer_component PROPERTIES
     POSITION_INDEPENDENT_CODE ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX)
