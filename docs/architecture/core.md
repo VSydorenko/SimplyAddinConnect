@@ -81,10 +81,14 @@ static AddInNative* CreateObject(const std::u16string& name);          // при
 namespace { [[maybe_unused]] auto& _forceTestComponentNames = TestComponent::names; }
 ```
 
-Наразі зареєстровані імена: `AddinUAPKIConnect`,
+Наразі зареєстровані імена: `AddinUAPKIConnect`, `ECRPrivatJSON`,
 `AddInNative` / `SimplyAddinConnect` / `SimplyConnect` (останні три — через
 `TestComponent`). Старий `AddinECRPrivatJSON` видалено на гілці `device-core`
 (непрацездатний драйвер; заміняється фундаментом device-core у `src/transport/`).
+Новий пілотний драйвер **ECRPrivatJSON** (`src/drivers/ecr_privatjson/`) реалізовано повністю
+(Частина 1 wire-спина + Частина 2 операції): фасад `AddinECRPrivatJSON`
+(`src/components/AddinECRPrivatJSON.*`) через `REGISTER_COMPONENT` **зареєстровано** як компоненту
+1С `ECRPrivatJSON`, що делегує драйверу.
 
 ---
 

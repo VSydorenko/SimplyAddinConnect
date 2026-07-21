@@ -77,6 +77,78 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# ecr_privatjson_selftest — харнес пілотного драйвера ECRPrivatJSON (без UAPKI).
+# Кодек/класифікатор/емулятор/e2e поверх DeviceSession+TransportTCP проти власного
+# протокол-обізнаного TCP-емулятора термінала (support/TerminalEmulator).
+# ---------------------------------------------------------------------------
+add_executable(ecr_privatjson_selftest ecr_privatjson_selftest.cpp
+    support/TerminalEmulator.cpp
+    $<TARGET_OBJECTS:ecr_facade_component>       # 1С-фасад AddinECRPrivatJSON (смоук через CreateObject)
+    $<TARGET_OBJECTS:driver_ecr_privatjson_component>
+    $<TARGET_OBJECTS:platform_component>
+    $<TARGET_OBJECTS:transport_component>   # реальний TransportTCP/COM для e2e
+    $<TARGET_OBJECTS:wire_component>        # DeviceSession/NullTerminatedFramer/IFrameClassifier
+    $<TARGET_OBJECTS:helpers_component>
+    $<TARGET_OBJECTS:base_component>
+)
+set_target_properties(ecr_privatjson_selftest PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "ecr_privatjson_selftest${_TEST_ARCH_SUFFIX}"
+)
+target_include_directories(ecr_privatjson_selftest PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}                   # корінь: Transport_WSClient.h тягне "extern/ixwebsocket/..."
+    ${SPDLOG_INCLUDE_DIR}
+    ${NLOHMANN_JSON_INCLUDE_DIR}
+    ${IXWEBSOCKET_INCLUDE_DIR}            # transport_component тягне ixwebsocket-заголовки
+)
+target_compile_definitions(ecr_privatjson_selftest PRIVATE _WINDOWS UNICODE _UNICODE)
+# ixwebsocket+ws2_32 — символи transport_component (WSClient, Winsock); емулятор — Winsock.
+target_link_libraries(ecr_privatjson_selftest PRIVATE spdlog::spdlog ixwebsocket ws2_32)
+if(MSVC)
+    target_compile_options(ecr_privatjson_selftest PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
+# ecr_terminal_emulator — standalone-EXE емулятора термінала (ручний інструмент
+# для тестування ECRPrivatJSON з реальної 1С без обладнання). Не залежить від UAPKI.
+# ---------------------------------------------------------------------------
+add_executable(ecr_terminal_emulator ecr_terminal_emulator_main.cpp support/TerminalEmulator.cpp)
+set_target_properties(ecr_terminal_emulator PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "ecr_terminal_emulator${_TEST_ARCH_SUFFIX}")
+target_include_directories(ecr_terminal_emulator PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR})
+target_compile_definitions(ecr_terminal_emulator PRIVATE _WINDOWS UNICODE _UNICODE)
+target_link_libraries(ecr_terminal_emulator PRIVATE ws2_32)
+if(MSVC)
+    target_compile_options(ecr_terminal_emulator PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
+# ecr_native_host — L3-харнес компоненти ECRPrivatJSON поверх ГОЛОВНОЇ DLL.
+# Емулює платформу 1С: вантажить головну DLL через LoadLibraryW у рантаймі й
+# викликає компоненту через IComponentBase (Подключить/Оплата). Термінал —
+# in-process TerminalEmulator. Не залежить від UAPKI — тому ДО гейта нижче.
+# ---------------------------------------------------------------------------
+add_executable(ecr_native_host ecr_native_host.cpp support/TerminalEmulator.cpp)
+set_target_properties(ecr_native_host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "ecr_native_host${_TEST_ARCH_SUFFIX}")
+target_include_directories(ecr_native_host PRIVATE
+    ${CMAKE_SOURCE_DIR}/include            # SDK 1С: ComponentBase.h, AddInDefBase.h, ...
+    ${CMAKE_SOURCE_DIR}/src                # support/TerminalEmulator.h тягне nlohmann-хедер із src-контексту
+    ${CMAKE_SOURCE_DIR}                    # корінь: "support/TerminalEmulator.h"
+    ${NLOHMANN_JSON_INCLUDE_DIR})
+# _WINDOWS — КРИТИЧНО: types.h саме за ним вмикає WCHAR_T=wchar_t та ADDIN_API=__stdcall;
+# головна DLL зібрана з _WINDOWS, тож ABI (vtable calling convention) мусить збігатися.
+target_compile_definitions(ecr_native_host PRIVATE _WINDOWS UNICODE _UNICODE
+    HOST_BIN_DIR="${CMAKE_SOURCE_DIR}/bin/Release")
+target_link_libraries(ecr_native_host PRIVATE ws2_32)   # TerminalEmulator — Winsock
+if(MSVC)
+    target_compile_options(ecr_native_host PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
 # Далі — цілі, що потребують крипто-ядра UAPKI (uapki_bundle існує лише при
 # BUILD_WITH_UAPKI). Без нього тихо пропускаємо решту файлу.
 # ---------------------------------------------------------------------------

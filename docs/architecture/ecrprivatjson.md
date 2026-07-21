@@ -1,4 +1,18 @@
 > **ІСТОРИЧНИЙ ДОКУМЕНТ.** Старий драйвер ECRPrivatJSON (компонента + `protocols/` + `helpers/`) **ВИДАЛЕНО** в гілці `device-core` (2026-07-20). Він замінюється платформою wire (`ITransport`/`IFramer`/`DeviceSession`, див. `docs/tasks/2026-07-20_design_device_transport_session.md`) і новим драйвером у наступній фазі. Цей файл зберігає опис **ПОПЕРЕДНЬОЇ** реалізації для довідки й **НЕ описує чинний код**.
+>
+> **ЧИННИЙ СТАН (2026-07-21).** Новий пілотний ECRPrivatJSON поверх device-core реалізовано **повністю — Частини 1 і 2**: драйвер `src/drivers/ecr_privatjson/` (кодек `EcrJsonCodec`, класифікатор `EcrPrivatJsonClassifier`, `Connect`, операції `Purchase`/`Refund`/`CheckConnection`/`GetReceiptInfo` поверх `JobEngine` з poller `getLastStatMsgCode`, `interrupt`, best-effort desync-відновленням, асинхронним API) + **зареєстрована компонента 1С `ECRPrivatJSON`** (фасад `src/components/AddinECRPrivatJSON.*`, `REGISTER_COMPONENT`, делегує драйверу). **Фасад poll-based, без подій:** стан операції — `OperationState`/`СостояниеОперации`, результат — `OperationResult`/`РезультатОперацииJSON`, статус термінала — `LastStatus`/`СтатусТерминала`; `AddInNative::PostExternalEvent` для цього НЕ використовується. `EnableTrace`/`ВключитьТрассировку` вмикає wire-трасування драйвера (`DeviceSession::SetWireTraceHandler`), діє з наступного `Connect`. Дизайн — `docs/tasks/2026-07-21_design_ecr_privatjson_driver.md`; плани — `..._plan_ecr_privatjson_p1_foundation.md` (Ч1), `..._plan_ecr_privatjson_p2_operations_and_1c.md` (Ч2). Тест-контур: L0.7 `ecr_privatjson_selftest`, L2-ecr `ecr_native_host` (через головну DLL), standalone `ecr_terminal_emulator`. Верхньорівневий огляд чинного стану — `docs/architecture/README.md`.
+>
+> **Доробки код-рев'ю Ч2 (`7997a28`, 2026-07-21):** гард скасування — `JobEngine::RequestCancel`
+> під м'ютексом переводить `Running → Interrupting` атомарно з виставленням `cancel_`, а
+> `EcrPrivatJsonDriver::StartOperation`/`Execute` скидають прапорці `interruptRequested_`/
+> `interruptSent_` у викликача (не у worker) — cancel одразу після `Start` більше не губиться;
+> RAII-поллер — `ExecuteInternal` зупиняє й `join`-ить poller-потік через деструктор локального
+> guard-об'єкта (діє й при винятку з `RequestPrimary`, без `std::terminate`); не-рекурсивне
+> desync-відновлення — `RecoverAfterDesync` полить `getLastStatMsgCode` **доки код != "0"**
+> (спека §6.5), а не на першій-ліпшій відповіді, і захищене прапорцем `inRecovery_` від
+> повторного входу через власний виклик `ExecuteInternal("GetReceiptInfo", ...)`; JSON-контракт
+> у `catch` — обробники компоненти при винятку повертають валідний `ResultEnvelope::Fail` замість
+> сирого тексту помилки; консистентні `try/catch` на межі 1С в усіх методах фасаду.
 
 # Архітектура стеку ECRPrivatJSON (платіжний термінал)
 

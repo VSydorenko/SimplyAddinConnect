@@ -13,8 +13,23 @@
 Старий драйвер **AddinECRPrivatJSON** (платіжний термінал ПриватБанку) на гілці `device-core`
 **видалено як непрацездатний** — його заміняє **фундамент device-core** у `src/transport/`
 (байтовий транспорт `ITransport` → кадрування `IFramer`/`NullTerminatedFramer` → класифікація
-`IFrameClassifier` → сесія запит/відповідь `DeviceSession`), основа для майбутніх драйверів
-обладнання. Конкретних компонент-драйверів поки нема.
+`IFrameClassifier` → сесія запит/відповідь `DeviceSession`), основа для драйверів обладнання.
+Перший драйвер на цьому фундаменті — **ECRPrivatJSON** (`src/drivers/ecr_privatjson/`) поверх
+платформи-каркаса `src/platform/` (`ResultEnvelope` — уніфікований результат). Реалізовано
+**обидві частини**: wire-спину (Частина 1) — кодек JSON↔байти (`EcrJsonCodec`), класифікатор кадрів
+(`EcrPrivatJsonClassifier`, кореляція за `method`/`msgType`), життєвий цикл
+`EcrPrivatJsonDriver::Connect` за еталонною схемою (Ping+dc→Identify+dc→постійна сесія) — і
+**операції з 1С-фасадом (Частина 2)**: синхронні/асинхронні операції (`Purchase`/`Refund`/
+`CheckConnection`/`GetReceiptInfo`) поверх `JobEngine` (`src/platform/` — машина асинхронного
+завдання), poller статусу `getLastStatMsgCode` + `interrupt` на service-доріжці, best-effort
+відновлення після desync, і **зареєстрована компонента 1С `ECRPrivatJSON`** (фасад
+`AddinECRPrivatJSON` у `src/components/`, `REGISTER_COMPONENT`, делегує драйверу; **poll-based**,
+без подій — стан операції читається методами `OperationState`/`СостояниеОперации`, результат —
+`OperationResult`/`РезультатОперацииJSON`, статус термінала — `LastStatus`/`СтатусТерминала`;
+`EnableTrace`/`ВключитьТрассировку` вмикає wire-трасування драйвера, діє з наступного `Connect`).
+Уся Privat-специфіка ізольована в кодеку+класифікаторі;
+`DeviceSession`/транспорти лишаються загальними. Ручний тест із реальної 1С без обладнання —
+standalone-емулятор термінала `ecr_terminal_emulator`.
 
 Репозиторій: `github.com/VSydorenko/SimplyAddinConnect`. Версія — `VERSION.txt` + `version.h`.
 
@@ -34,10 +49,11 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTe
   DLL додатково вбудовує РЕСУРСОМ (RCDATA) провайдер своєї архітектури й розгортає його сама
   при `INIT` (потрійний пошук каталогу — див. `docs/architecture/uapki.md`); у підсумковий ZIP
   потрапляють обидва варіанти — разом 5 файлів (див. `docs/architecture/uapki.md`, `build-and-packaging.md`);
-- `-WithTests` — збирає тестові консольні exe з `tests/`. **`core_selftest` збирається завжди при
-  `-WithTests`** (L1-харнес ядра `AddInNative` без 1С і без UAPKI); а `uapki_selftest`/`native_host`
-  — **лише разом з `-WithUAPKI`** (залежать від крипто-ядра; без UAPKI ці дві цілі тихо пропущено,
-  тека `tests/` на Windows конфігурується завжди).
+- `-WithTests` — збирає тестові консольні exe з `tests/`. **`core_selftest`, `wire_selftest`,
+  `ecr_privatjson_selftest`, `ecr_terminal_emulator` і `ecr_native_host` збираються завжди при
+  `-WithTests`** (ядрові/ECR-харнеси без UAPKI); а `uapki_selftest`/`native_host` — **лише разом з
+  `-WithUAPKI`** (залежать від крипто-ядра; без UAPKI ці дві цілі тихо пропущено, тека `tests/` на
+  Windows конфігурується завжди).
 
 Скрипт перегенеровує `version.h` (інкремент build), очищає `build_x86/`, `build_x64/`,
 `bin/Release/`, збирає обидві архітектури в Release і пакує в `bin/Release/SimplyAddinConnectWin.zip`.
@@ -47,10 +63,12 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTe
 
 Тека `tests/` **існує**: `tests/CMakeLists.txt` (окремі консольні exe, лінкуються НЕ в головну
 DLL і НЕ підключають `src/core/pch.h`), `tests/core_selftest.cpp` (харнес ядра),
-`tests/wire_selftest.cpp` (харнес device-ядра), `tests/scenarios/*.json`
+`tests/wire_selftest.cpp` (харнес device-ядра), `tests/ecr_privatjson_selftest.cpp` +
+`tests/support/TerminalEmulator.{h,cpp}` (харнес пілотного драйвера ECRPrivatJSON + протокол-обізнаний
+TCP-емулятор термінала), `tests/scenarios/*.json`
 (7 сценаріїв L1), `tests/data/` (тестовий контейнер `test-diia.p12`, сертифікати, CRL — read-only вхід).
 
-Чотири цілі (лише Windows; окремі цілі мають власні умови):
+Сім цілей (лише Windows; окремі цілі мають власні умови):
 - **`core_selftest.exe`** (L0.5) — **збирається завжди при `BUILD_TESTS=ON`, без UAPKI**. Лінкує
   OBJECT-бібліотеки ядра (`base_component`+`helpers_component`) напряму й ганяє перевірки ядра
   `AddInNative` через мок платформи 1С (`MockConnect : IAddInDefBase`, `MockMemory : IMemoryManager`):
@@ -63,6 +81,26 @@ DLL і НЕ підключають `src/core/pch.h`), `tests/core_selftest.cpp` 
   wire-trace, §14-інваріанти) + смоук реального `TransportTCP` (localhost-echo). Задокументовані
   `[SKIP]`-рядки (напр. `ComRoundtrip` — потрібна пара com0com, ручний смоук) — це НЕ FAIL: гейт
   дивиться лише exit-код 0.
+- **`ecr_privatjson_selftest.exe`** (L0.7) — **збирається завжди при `BUILD_TESTS=ON`, без UAPKI**
+  (лінкує `ecr_facade_component`+`driver_ecr_privatjson_component`+`platform_component`+`transport`+
+  `wire`+`helpers`+`base` + `support/TerminalEmulator.cpp`). Ганяє пілотний драйвер ECRPrivatJSON
+  без обладнання: кодек (`BuildRequest`/`Parse`/`PeekMethod`), класифікатор кадрів (§5 — усі гілки),
+  transport-e2e поверх `DeviceSession`+`TransportTCP` проти `TerminalEmulator` (Winsock-сервер на
+  localhost, скриптовані відповіді за `method`) — `Connect` за еталонною схемою, розбір рядка
+  підключення, збереження vendor/model; **Частина 2:** `JobEngine` (Idle→Running→Done/Error,
+  повторний Start→false, виняток→Error), синхронні операції `Purchase`/`Refund` + `MapResult`,
+  poller `getLastStatMsgCode` під час операції, `interrupt` (скасування), асинхронний API
+  (`StartPurchase`/`OperationState`/`TryGetOperationResult`) і смоук 1С-фасаду `ECRPrivatJSON` через
+  `AddInNative::CreateObject` (реєстрація методів). Критерій — exit-код 0 (усі CHECK — PASS).
+- **`ecr_terminal_emulator.exe`** (ручний інструмент, не рівень гейта) — **збирається завжди при
+  `BUILD_TESTS=ON`, без UAPKI**. Standalone-EXE протокол-обізнаного TCP-емулятора термінала
+  (`ecr_terminal_emulator[_x64].exe [port]`, default 2000): слухає localhost і віддає скриптовані
+  JSON-відповіді (`PingDevice`/`ServiceMessage`/`Purchase`/`Refund`/`GetReceiptInfo`/…), доки не
+  Ctrl-C. Призначення — тест компоненти `ECRPrivatJSON` з **реальної 1С без обладнання**.
+- **`ecr_native_host.exe`** (L2-ecr) — **збирається завжди при `BUILD_TESTS=ON`, без UAPKI**. Емулює
+  платформу 1С: вантажить головну DLL через `LoadLibraryW`+`GetClassObject`, створює компоненту
+  **`ECRPrivatJSON`** через `IComponentBase`, викликає `Подключить(tcp://127.0.0.1:<port>)`+`Оплата`
+  проти in-process `TerminalEmulator` і звіряє результат (маршалінг `tVariant`). Exit 0 = OK.
 - **`uapki_selftest.exe`** (L1, лише при `BUILD_WITH_UAPKI=ON`) — лінкує `uapki_bundle` напряму
   (без 1С, без завантаження DLL) і проганяє JSON-сценарії з `tests/scenarios/` через
   `process()`/`json_free()` статичного ядра.
@@ -73,13 +111,15 @@ DLL і НЕ підключають `src/core/pch.h`), `tests/core_selftest.cpp` 
 
 Запуск: `build_project.ps1 -WithUAPKI -WithTests`, потім
 `powershell -File run_tests.ps1 [x64|x86] [-NoUapki]` (оркестратор: L0 dumpbin-інваріанти →
-L0.5 core_selftest ядра → L0.6 wire_selftest device-ядра → L1 selftest по сценаріях →
+L0.5 core_selftest ядра → L0.6 wire_selftest device-ядра → L0.7 ecr_privatjson_selftest драйвера →
+L2-ecr ecr_native_host компоненти ECRPrivatJSON через DLL → L1 selftest по сценаріях →
 L2/L3 native_host; підсумкова таблиця PASS/FAIL/SKIP/BLOCKED, ненульовий exit при провалі).
-L0.5 і L0.6 проходять і без `-WithUAPKI`.
+L0.5, L0.6, L0.7 і L2-ecr проходять і без `-WithUAPKI`.
 
-**Режим без UAPKI (`-NoUapki`):** ганяє лише ядрові рівні (L0.5 core + L0.6 wire) — збирає
-з `-DBUILD_TESTS=ON` **без** `-DBUILD_WITH_UAPKI=ON`; провайдер (L0.2), L1 та L2/L3 → SKIP
-(не FAIL). L0.1 (рівно 3 експорти головної DLL) лишається активним. Швидкий гейт device-ядра
+**Режим без UAPKI (`-NoUapki`):** ганяє ядрові/ECR-рівні (L0.5 core + L0.6 wire + L0.7 ecr +
+L2-ecr ecr_native_host) — збирає з `-DBUILD_TESTS=ON` **без** `-DBUILD_WITH_UAPKI=ON`; провайдер
+(L0.2), L1 та L2/L3 native_host → SKIP (не FAIL). L0.1 (рівно 3 експорти головної DLL) і L2-ecr
+(потребує головну DLL + `ecr_native_host.exe`) лишаються активними. Швидкий гейт device-ядра+ECR
 без важкої статичної збірки крипто-стеку: `powershell -File run_tests.ps1 -NoUapki [x64|x86]`.
 
 Тестові exe лягають у `bin/Release` (через `EXECUTABLE_OUTPUT_PATH`, `output_settings.cmake`) —
@@ -99,8 +139,15 @@ src/components/     # компоненти-фасади для 1С
 src/helpers/        # ServiceTools (логування/конвертації) + хелпери фіч
 src/transport/      # канали COM/TCP/WS-client + device-core (IFramer/NullTerminatedFramer/
                     #   IFrameClassifier/DeviceSession — фундамент драйверів обладнання)
+src/platform/       # платформа-каркас драйверів (ResultEnvelope — уніфікований результат операції;
+                    #   JobEngine — машина асинхронного завдання)
+src/drivers/        # драйвери обладнання поверх device-core; ecr_privatjson/ — пілотний
+                    #   ECRPrivatJSON (EcrJsonCodec/EcrPrivatJsonClassifier/EcrPrivatJsonDriver)
 include/            # заголовки SDK 1С
-tests/              # core_selftest (L0.5) + wire_selftest (L0.6) + uapki_selftest (L1) + native_host (L2/L3) + scenarios/ + data/
+tests/              # core_selftest (L0.5) + wire_selftest (L0.6) + ecr_privatjson_selftest (L0.7,
+                    #   +support/TerminalEmulator) + ecr_native_host (L2-ecr, компонента через DLL) +
+                    #   ecr_terminal_emulator (standalone EXE для 1С) + uapki_selftest (L1) +
+                    #   native_host (L2/L3) + scenarios/ + data/
 docs/architecture/    # архітектура по підсистемах (README + 01..04)
 docs/               # специфікації протоколів (ECR/UAPKI), tasks/
 extern/             # сабмодулі: spdlog, nlohmann_json, ixwebsocket, uapki
