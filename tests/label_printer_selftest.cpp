@@ -1,8 +1,11 @@
 #include <cstdio>
 #include <string>
+#include <optional>
+#include "../src/drivers/label_printer/LabelModel.h"
 #include "../src/drivers/label_printer/LabelUnits.h"
 #include "../src/drivers/label_printer/GfEncoder.h"
 #include "../src/drivers/label_printer/BarcodeZpl.h"
+#include "../src/drivers/label_printer/LabelRaster.h"
 using namespace labelprinter;
 
 static int g_failures = 0;
@@ -49,11 +52,49 @@ static void TestBarcodeZpl() {
     CHECK(BarcodeZpl::EscapeFd("A^B~C").find("^FH")!=std::string::npos, "escape adds ^FH for special chars");
 }
 
+static long CountBlack(const Bitmap1& bm) {
+    long ones = 0;
+    for (auto b : bm.rows) for (int i = 0; i < 8; ++i) ones += (b >> i) & 1;
+    return ones;
+}
+
+static void TestRaster() {
+    GdiplusRuntime gdi;
+    LabelFormatting fmt; fmt.width = 20; fmt.height = 10;
+    TextField tx; tx.fieldName = "T"; tx.geom = {1, 1, 18, 8, 0};
+    tx.fontName = "Arial"; tx.fontSize = 8;
+    tx.defaultOrStaticValue = std::string("Тест"); tx.isStatic = true;
+    fmt.texts.push_back(tx);
+    auto valueOf = [](const std::string&) -> std::optional<std::string> { return std::string("Тест"); };
+    Bitmap1 bm = LabelRaster::Render(fmt, valueOf, 8);
+    CHECK(bm.widthDots == 160 && bm.heightDots == 80, "raster size = label mm * dpmm");
+    CHECK(CountBlack(bm) > 0, "rendered text produced black pixels");
+}
+
+static void TestRasterImage() {
+    // Валідний 1x1 чорний PNG (System.Drawing) — має дати чорні пікселі в зоні картинки.
+    const std::string kBlackPng1x1 =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAAAARnQU1BAACx"
+        "jwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAANSURBVBhXY2BgYPgPAAEEAQBwIGULAAAAAElF"
+        "TkSuQmCC";
+    GdiplusRuntime gdi;
+    LabelFormatting fmt; fmt.width = 20; fmt.height = 10;
+    ImageField img; img.fieldName = "I"; img.geom = {1, 1, 18, 8, 0};
+    img.isStatic = true; img.staticValueBase64 = kBlackPng1x1;
+    fmt.images.push_back(img);
+    auto valueOf = [](const std::string&) -> std::optional<std::string> { return std::nullopt; };
+    Bitmap1 bm = LabelRaster::Render(fmt, valueOf, 8);
+    CHECK(bm.widthDots == 160 && bm.heightDots == 80 && !bm.rows.empty(), "image raster non-empty with correct size");
+    CHECK(CountBlack(bm) > 0, "decoded PNG image produced black pixels");
+}
+
 int main() {
     TestUnits();
     TestGfEncoder();
     TestGfTiling();
     TestBarcodeZpl();
+    TestRaster();
+    TestRasterImage();
     std::printf(g_failures ? "\nFAILED: %d\n" : "\nALL PASS\n", g_failures);
     return g_failures ? 1 : 0;
 }
