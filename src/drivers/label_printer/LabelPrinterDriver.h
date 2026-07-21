@@ -67,9 +67,10 @@ private:
 
     std::unique_ptr<ITransport> MakeTransport(const DeviceProfile& profile) const;
 
-    // Пошук контексту під registryMutex_; повертає сирий вказівник (валідний, доки
-    // виклик тримає ctx->m і немає паралельного Disconnect саме цього DeviceID).
-    DeviceContext* Lookup(const std::string& deviceId) const;
+    // Пошук контексту під registryMutex_; повертає shared_ptr-КОПІЮ (взяту під замком).
+    // Ця копія тримає контекст живим на весь час in-flight операції, навіть якщо
+    // паралельний Disconnect цього ж DeviceID зробить erase з мапи — тобто UAF неможливий.
+    std::shared_ptr<DeviceContext> Lookup(const std::string& deviceId) const;
 
     // Забезпечує відкритий транспорт і надсилає всі байти (all-or-error).
     static ResultEnvelope SendBytes(DeviceContext& ctx, const std::vector<uint8_t>& bytes);
@@ -81,7 +82,7 @@ private:
     GdiplusRuntime gdiplus_;
 
     mutable std::mutex registryMutex_;                            // лише навколо devices_/nextId_
-    std::map<std::string, std::unique_ptr<DeviceContext>> devices_;
+    std::map<std::string, std::shared_ptr<DeviceContext>> devices_;
     unsigned long long nextId_ = 1;                              // джерело детермінованих DeviceID
     TransportFactory transportFactory_;                          // тест-фабрика; порожня → MakeTransport
 };

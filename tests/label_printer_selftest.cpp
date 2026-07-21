@@ -5,6 +5,7 @@
 #include <vector>
 #include <thread>
 #include <chrono>
+#include <atomic>
 #include "support/LabelEmulator.h"
 #include "../src/drivers/label_printer/LabelModel.h"
 #include "../src/drivers/label_printer/LabelUnits.h"
@@ -296,6 +297,108 @@ static void TestDriverTextRasterNoGdiplus() {
     drv.Disconnect(id);
 }
 
+// РЕГРЕС FIX I: усі транспортні відмови (немає транспорту / Open провалився / Send прийняв
+// менше байтів) зводяться до єдиного коду TRANSPORT_ERROR (таксономія §9). Стара версія
+// повертала NO_TRANSPORT/OPEN_FAILED/SEND_FAILED, яких у §9 немає.
+static void TestTransportErrorTaxonomy() {
+    GdiplusRuntime gdi;
+    // 1) Send приймає менше байтів -> TRANSPORT_ERROR.
+    {
+        LabelPrinterDriver drv;
+        drv.SetTransportFactoryForTest([](const DeviceProfile&) -> std::unique_ptr<ITransport> {
+            struct ShortSend : ITransport {
+                bool open=false;
+                bool Open() override {open=true;return true;}
+                bool Close() override {open=false;return true;}
+                bool IsOpen() const override {return open;}
+                int Send(const std::vector<uint8_t>&) override {return 0;}   // прийняв 0 байтів
+                void SetDataReceivedCallback(DataReceivedCallback) override{}
+                void SetErrorCallback(ErrorCallback) override{}
+                void SetConnectionStateCallback(ConnectionStateCallback) override{}
+            };
+            return std::make_unique<ShortSend>();
+        });
+        DeviceProfile dp; dp.dotsPerMm=8;
+        std::string id = drv.Connect(dp);
+        LabelBatch b; LabelFormatting fmt; fmt.width=60; fmt.height=40; b.formatting=fmt;
+        b.labels.push_back({1, {}});
+        auto r = drv.PrintLabels(id, b, "first");
+        CHECK(!r.ok && r.code == "TRANSPORT_ERROR", "short Send -> code TRANSPORT_ERROR (not SEND_FAILED)");
+        drv.Disconnect(id);
+    }
+    // 2) Open провалюється -> TRANSPORT_ERROR (через InitializePrinter).
+    {
+        LabelPrinterDriver drv;
+        drv.SetTransportFactoryForTest([](const DeviceProfile&) -> std::unique_ptr<ITransport> {
+            struct OpenFail : ITransport {
+                bool Open() override {return false;}                          // не відкривається
+                bool Close() override {return true;}
+                bool IsOpen() const override {return false;}
+                int Send(const std::vector<uint8_t>& d) override {return (int)d.size();}
+                void SetDataReceivedCallback(DataReceivedCallback) override{}
+                void SetErrorCallback(ErrorCallback) override{}
+                void SetConnectionStateCallback(ConnectionStateCallback) override{}
+            };
+            return std::make_unique<OpenFail>();
+        });
+        DeviceProfile dp; dp.dotsPerMm=8;
+        std::string id = drv.Connect(dp);
+        auto r = drv.InitializePrinter(id);
+        CHECK(!r.ok && r.code == "TRANSPORT_ERROR", "Open failure -> code TRANSPORT_ERROR (not OPEN_FAILED)");
+        drv.Disconnect(id);
+    }
+}
+
+// РЕГРЕС FIX D: контекст пристрою тримається shared_ptr; Lookup віддає shared-копію.
+// In-flight PrintLabels, що блокує в Send (тримає ctx->m + shared-власника), лишається
+// валідним, поки паралельний Disconnect ТОГО Ж DeviceID робить erase з мапи. На старому
+// коді Lookup віддавав сирий вказівник у unique_ptr-контекст -> потенційний UAF при
+// конкурентному Disconnect. Тут перевіряємо, що операція завершується коректно й без краху.
+static void TestDriverConcurrentDisconnect() {
+    std::atomic<bool> inSend{false};
+    std::atomic<bool> allowSend{false};
+    LabelPrinterDriver drv;
+    drv.SetTransportFactoryForTest([&](const DeviceProfile&) -> std::unique_ptr<ITransport> {
+        struct Gated : ITransport {
+            std::atomic<bool>* inSend; std::atomic<bool>* allow; bool open=false;
+            bool Open() override {open=true;return true;}
+            bool Close() override {open=false;return true;}
+            bool IsOpen() const override {return open;}
+            int Send(const std::vector<uint8_t>& d) override {
+                inSend->store(true);
+                while (!allow->load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                return (int)d.size();
+            }
+            void SetDataReceivedCallback(DataReceivedCallback) override{}
+            void SetErrorCallback(ErrorCallback) override{}
+            void SetConnectionStateCallback(ConnectionStateCallback) override{}
+        };
+        auto g=std::make_unique<Gated>(); g->inSend=&inSend; g->allow=&allowSend; return g;
+    });
+    DeviceProfile dp; dp.dotsPerMm=8;
+    std::string id = drv.Connect(dp);
+
+    LabelBatch b; LabelFormatting fmt; fmt.width=60; fmt.height=40; b.formatting=fmt;
+    b.labels.push_back({1, {}});
+
+    std::atomic<bool> printOk{false};
+    std::thread worker([&]{ printOk.store(drv.PrintLabels(id, b, "first").ok); });
+
+    // Чекаємо, поки друк зайде в Send (тримає ctx->m + shared-копію контексту).
+    for (int i=0; i<500 && !inSend.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    CHECK(inSend.load(), "print reached in-flight Send");
+
+    // Конкурентний Disconnect: erase з мапи, потім блокує на ctx->m до кінця Send.
+    std::thread disc([&]{ drv.Disconnect(id); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    allowSend.store(true);           // відпускаємо Send
+
+    worker.join();
+    disc.join();
+    CHECK(printOk.load(), "in-flight print completed OK despite concurrent Disconnect");
+    CHECK(!drv.IsConnected(id), "device disconnected after concurrent Disconnect");
+}
+
 static void TestXml() {
     const char* xml = R"(<?xml version="1.0"?><Data>
       <Formatting Width="60" Height="40">
@@ -430,6 +533,8 @@ int main() {
     TestSpooler();
     TestDriverBatch();
     TestDriverTextRasterNoGdiplus();
+    TestTransportErrorTaxonomy();
+    TestDriverConcurrentDisconnect();
     TestXml();
     TestFacadeSmoke();
     TestTransportE2E();

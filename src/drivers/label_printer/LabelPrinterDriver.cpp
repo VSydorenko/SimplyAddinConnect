@@ -38,14 +38,15 @@ std::unique_ptr<ITransport> LabelPrinterDriver::MakeTransport(const DeviceProfil
     return std::make_unique<TransportSpoolerRaw>(profile.printerName);
 }
 
-LabelPrinterDriver::DeviceContext* LabelPrinterDriver::Lookup(const std::string& deviceId) const {
+std::shared_ptr<LabelPrinterDriver::DeviceContext>
+LabelPrinterDriver::Lookup(const std::string& deviceId) const {
     std::lock_guard<std::mutex> lk(registryMutex_);
     auto it = devices_.find(deviceId);
-    return it == devices_.end() ? nullptr : it->second.get();
+    return it == devices_.end() ? nullptr : it->second;   // shared-копія під замком
 }
 
 std::string LabelPrinterDriver::Connect(const DeviceProfile& profile) {
-    auto ctx = std::make_unique<DeviceContext>();
+    auto ctx = std::make_shared<DeviceContext>();
     ctx->profile = profile;
     // Фабрику читаємо поза registryMutex_ (тест-хук ставиться до Connect). Створення
     // транспорту не тримає реєстр — щоб паралельні Connect не серіалізувалися на I/O-конструкторах.
@@ -59,15 +60,17 @@ std::string LabelPrinterDriver::Connect(const DeviceProfile& profile) {
 }
 
 void LabelPrinterDriver::Disconnect(const std::string& deviceId) {
-    std::unique_ptr<DeviceContext> ctx;
+    std::shared_ptr<DeviceContext> ctx;
     {
         std::lock_guard<std::mutex> lk(registryMutex_);
         auto it = devices_.find(deviceId);
         if (it == devices_.end()) return;
-        ctx = std::move(it->second);   // виймаємо з реєстру під registryMutex_
+        ctx = std::move(it->second);   // забираємо shared-власника з реєстру під registryMutex_
         devices_.erase(it);
     }
-    // Закриття транспорту — поза registryMutex_ (I/O). Контекст уже вилучено з мапи.
+    // Закриття транспорту — поза registryMutex_ (I/O). Контекст уже вилучено з мапи, але
+    // shared_ptr тримає його живим; in-flight операція зі своєю shared-копією теж
+    // лишається валідною. lock(ctx->m) серіалізує закриття з будь-яким активним Send.
     if (ctx && ctx->transport) {
         std::lock_guard<std::mutex> lk(ctx->m);
         if (ctx->transport->IsOpen()) ctx->transport->Close();
@@ -81,21 +84,23 @@ bool LabelPrinterDriver::IsConnected(const std::string& deviceId) const {
 }
 
 ResultEnvelope LabelPrinterDriver::SendBytes(DeviceContext& ctx, const std::vector<uint8_t>& bytes) {
+    // Усі транспортні відмови зводимо до єдиного коду TRANSPORT_ERROR (таксономія §9);
+    // конкретику лишаємо в description.
     if (!ctx.transport)
-        return ResultEnvelope::Fail("NO_TRANSPORT", "Транспорт пристрою не ініціалізовано");
+        return ResultEnvelope::Fail("TRANSPORT_ERROR", "Транспорт пристрою не ініціалізовано");
     if (!ctx.transport->IsOpen()) {
         if (!ctx.transport->Open())
-            return ResultEnvelope::Fail("OPEN_FAILED", "Не вдалося відкрити канал до принтера");
+            return ResultEnvelope::Fail("TRANSPORT_ERROR", "Не вдалося відкрити канал до принтера");
     }
     const int sent = ctx.transport->Send(bytes);
     if (sent != static_cast<int>(bytes.size()))
-        return ResultEnvelope::Fail("SEND_FAILED",
+        return ResultEnvelope::Fail("TRANSPORT_ERROR",
             "Транспорт прийняв " + std::to_string(sent) + " з " + std::to_string(bytes.size()) + " байтів");
     return ResultEnvelope::Ok();
 }
 
 ResultEnvelope LabelPrinterDriver::InitializePrinter(const std::string& deviceId) {
-    DeviceContext* ctx = Lookup(deviceId);
+    std::shared_ptr<DeviceContext> ctx = Lookup(deviceId);
     if (!ctx)
         return ResultEnvelope::Fail("NOT_CONNECTED", "Пристрій не підключено: " + deviceId);
 
@@ -118,7 +123,7 @@ ResultEnvelope LabelPrinterDriver::InitializePrinter(const std::string& deviceId
 ResultEnvelope LabelPrinterDriver::PrintLabels(const std::string& deviceId,
                                                const LabelBatch& batch,
                                                const std::string& packageStatus) {
-    DeviceContext* ctx = Lookup(deviceId);
+    std::shared_ptr<DeviceContext> ctx = Lookup(deviceId);
     if (!ctx)
         return ResultEnvelope::Fail("NOT_CONNECTED", "Пристрій не підключено: " + deviceId);
 
