@@ -47,6 +47,9 @@ public:
 
     // Синхронні операції (start+wait). Повертають ResultEnvelope (ok/code/description/payload).
     ResultEnvelope Execute(const std::string& method, const nlohmann::json& params, int timeoutMs);
+
+    /// Увімкнути/вимкнути wire-трасування (діє з наступного Connect).
+    void SetTrace(bool on) { traceEnabled_.store(on); }
     ResultEnvelope Purchase(const std::string& amount, const nlohmann::json& extra = {});
     ResultEnvelope Refund(const std::string& amount, const std::string& rrn, const nlohmann::json& extra = {});
     ResultEnvelope CheckConnection();
@@ -94,10 +97,19 @@ private:
     std::atomic<bool> interruptRequested_{ false };
     std::atomic<bool> interruptSent_{ false };
 
+    /// Внутрішній виконавець (без ре-ресету interruptRequested_): sync-шлях і worker
+    /// асинхронного завдання кличуть саме його. Публічний Execute робить reset ПЕРЕД цим.
+    ResultEnvelope ExecuteInternal(const std::string& method, const nlohmann::json& params, int timeoutMs);
+
     /// Best-effort відновлення після desync (Timeout+IsDesynchronized): полінг статусу до
     /// спокою → MarkSynchronized() → GetReceiptInfo. Викликати ПІСЛЯ зупинки poller-а.
     ResultEnvelope RecoverAfterDesync();
     static constexpr int kRecoverPollTries = 5;
+
+    /// Захист від рекурсивного відновлення (RecoverAfterDesync → ExecuteInternal → …).
+    std::atomic<bool> inRecovery_{ false };
+    /// Wire-трасування: якщо true — MakeSession чіпляє SetWireTraceHandler (діє з наступного Connect).
+    std::atomic<bool> traceEnabled_{ false };
 
     mutable std::mutex sendGateMutex_;
     std::chrono::steady_clock::time_point lastSend_{};

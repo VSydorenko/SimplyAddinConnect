@@ -68,6 +68,10 @@ std::unique_ptr<DeviceSession> EcrPrivatJsonDriver::MakeSession(const EcrConnPar
     // Колбеки — ЛИШЕ до Start() (DeviceSession: після Start — no-op+WARN).
     s->SetUnsolicitedHandler([](std::vector<uint8_t>) { /* deviceBusy/нотифікації — Частина 2 */ });
     s->SetConnectionStateHandler([](bool) { /* стан зв'язку — Частина 2 (події в 1С) */ });
+    if (traceEnabled_.load())
+        s->SetWireTraceHandler([](bool tx, std::vector<uint8_t> b) {
+            NEUTRAL_REPORT_TRACE("ECRPrivatJSON", std::string(tx ? "TX " : "RX ") + std::string(b.begin(), b.end()));
+        });
     return s;
 }
 
@@ -84,6 +88,7 @@ bool EcrPrivatJsonDriver::Connect(const std::string& connString) {
     // Identify (best-effort) Vendor()/Model() не віддавали стару ідентичність.
     vendor_.clear();
     model_.clear();
+    job_.ResetToIdle();   // A-defense: прибрати завислий стан завершеного попереднього завдання
     if (!ParseConnString(connString, params_)) {
         NEUTRAL_REPORT_ERROR("ECRPrivatJSON", "Невірний рядок підключення: " + connString);
         return false;
@@ -134,7 +139,11 @@ bool EcrPrivatJsonDriver::Connect(const std::string& connString) {
 
 bool EcrPrivatJsonDriver::StartOperation(const std::string& method, const nlohmann::json& params, int timeoutMs) {
     if (!IsConnected()) return false;
-    return job_.Start([this, method, params, timeoutMs]() { return Execute(method, params, timeoutMs); });
+    // Скидаємо прапорці скасування ТУТ (у викликача), а НЕ у worker: ExecuteInternal їх не
+    // чіпає, тож cancel одразу після Start (fix E) не губиться під ре-ресетом у worker-потоці.
+    interruptRequested_.store(false);
+    interruptSent_.store(false);
+    return job_.Start([this, method, params, timeoutMs]() { return ExecuteInternal(method, params, timeoutMs); });
 }
 
 bool EcrPrivatJsonDriver::StartPurchase(const std::string& amount, const nlohmann::json& extra) {
@@ -149,7 +158,7 @@ bool EcrPrivatJsonDriver::StartRefund(const std::string& amount, const std::stri
 
 JobState EcrPrivatJsonDriver::OperationState() const { return job_.State(); }
 bool EcrPrivatJsonDriver::TryGetOperationResult(ResultEnvelope& out) const { return job_.TryGetResult(out); }
-void EcrPrivatJsonDriver::CancelOperation() { RequestInterrupt(); job_.SetState(JobState::Interrupting); }
+void EcrPrivatJsonDriver::CancelOperation() { RequestInterrupt(); job_.RequestCancel(); }
 
 void EcrPrivatJsonDriver::Disconnect() {
     job_.Join();   // дочекатись worker, щоб не рвати сесію під активним запитом
@@ -215,31 +224,51 @@ void EcrPrivatJsonDriver::PollerLoop(std::atomic<bool>& stop) {
 
 ResultEnvelope EcrPrivatJsonDriver::Execute(const std::string& method,
                                             const nlohmann::json& params, int timeoutMs) {
-    if (!IsConnected()) return ResultEnvelope::Fail("NOT_CONNECTED", "Термінал не підключено");
-    lastStatus_.store(-1);
+    // Публічний sync-шлях: скидаємо прапорці скасування ТУТ (не всередині ExecuteInternal —
+    // fix E: інакше worker ре-ресетив би cancel, виставлений одразу після Start).
     interruptRequested_.store(false);
     interruptSent_.store(false);
+    job_.ResetToIdle();   // fix G: прибрати завислий Done/Error попереднього async-завдання
+    return ExecuteInternal(method, params, timeoutMs);
+}
+
+ResultEnvelope EcrPrivatJsonDriver::ExecuteInternal(const std::string& method,
+                                                    const nlohmann::json& params, int timeoutMs) {
+    if (!IsConnected()) return ResultEnvelope::Fail("NOT_CONNECTED", "Термінал не підключено");
+    lastStatus_.store(-1);
+    interruptSent_.store(false);   // interruptRequested_ ТУТ НЕ чіпаємо (fix E)
     auto req = EcrJsonCodec::BuildRequest(method, 0, params.is_null() ? nlohmann::json(nullptr) : params);
 
-    std::atomic<bool> pollerStop{ false };
-    std::thread poller([this, &pollerStop] { PollerLoop(pollerStop); });
+    RequestResult r;
+    {
+        // RAII-джойнер (fix D): poller зупиняється й join-иться ДО desync-recovery і навіть
+        // при винятку з RequestPrimary — service-доріжка вільна, std::terminate не станеться.
+        std::atomic<bool> pollerStop{ false };
+        std::thread poller([this, &pollerStop] { PollerLoop(pollerStop); });
+        struct PollerJoin {
+            std::atomic<bool>& stop; std::thread& th;
+            ~PollerJoin() { stop.store(true); if (th.joinable()) th.join(); }
+        } pj{ pollerStop, poller };
 
-    GateSend();
-    RequestResult r = session_->RequestPrimary(req, timeoutMs);
-
-    pollerStop.store(true);
-    poller.join();
+        GateSend();
+        r = session_->RequestPrimary(req, timeoutMs);
+    }   // poller зупинено+join тут
 
     // Обрив у польоті транзакції: session у desync — best-effort відновлення (service вільний).
-    if (r.status == RequestStatus::Timeout && session_ && session_->IsDesynchronized())
-        return RecoverAfterDesync();
+    if (r.status == RequestStatus::Timeout && session_ && session_->IsDesynchronized() && !inRecovery_.load()) {
+        inRecovery_.store(true);
+        auto res = RecoverAfterDesync();
+        inRecovery_.store(false);
+        return res;
+    }
 
     return MapResult(r);
 }
 
 ResultEnvelope EcrPrivatJsonDriver::RecoverAfterDesync() {
     NEUTRAL_REPORT_WARN("ECRPrivatJSON", "Відновлення після десинхронізації: полінг статусу термінала");
-    // Полимо getLastStatMsgCode доки термінал не заспокоїться (bounded), потім знімаємо desync.
+    // Полимо getLastStatMsgCode ПОКИ код != "0" (bounded): "0" = термінал у спокої (спека §6.5).
+    // НЕ рвемо на будь-якій Response — лише коли статус реально спокійний.
     for (int i = 0; i < kRecoverPollTries && session_; ++i) {
         auto stat = EcrJsonCodec::BuildRequest("ServiceMessage", 0, {{"msgType", "getLastStatMsgCode"}});
         GateSend();
@@ -248,14 +277,18 @@ ResultEnvelope EcrPrivatJsonDriver::RecoverAfterDesync() {
             ParsedResponse pr = EcrJsonCodec::Parse(s.frame);
             if (pr.valid && pr.params.is_object()) {
                 std::string code = pr.params.value("LastStatMsgCode", std::string{});
-                if (!code.empty()) { try { lastStatus_.store(std::stoi(code)); } catch (...) {} }
+                if (!code.empty()) {
+                    try { lastStatus_.store(std::stoi(code)); } catch (...) {}
+                    if (code == "0") break;   // термінал у спокої (спека §6.5)
+                }
             }
-            break;   // термінал відповідає на service → вважаємо спокоєм
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
     }
     if (session_) session_->MarkSynchronized();
-    return GetReceiptInfo(std::string{});   // best-effort: деталі останнього чека
+    // best-effort: деталі останнього чека. ExecuteInternal (НЕ публічний GetReceiptInfo):
+    // inRecovery_ вже true → повторного recovery не станеться; interruptRequested_ не ресетиться.
+    return ExecuteInternal("GetReceiptInfo", nlohmann::json{{"invoiceNumber", std::string{}}}, kHandshakeTimeoutMs);
 }
 
 ResultEnvelope EcrPrivatJsonDriver::Purchase(const std::string& amount, const nlohmann::json& extra) {

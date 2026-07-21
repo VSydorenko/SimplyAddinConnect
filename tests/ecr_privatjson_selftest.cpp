@@ -326,6 +326,76 @@ static void TestDriverAsync() {
     emu.Stop();
 }
 
+// Скасування асинхронної операції ОДРАЗУ після StartPurchase: перевіряє, що cancel,
+// виставлений негайно після Start, НЕ губиться (fix E — ExecuteInternal не ре-ресетить
+// interruptRequested_) і НЕ зависає (fix A — RequestCancel гардовано).
+static void TestDriverAsyncCancel() {
+    TerminalEmulator emu;
+    emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","params":{"responseCode":"0000"},"error":false})"; });
+    std::atomic<bool> interruptSeen{false};
+    emu.OnRequest("ServiceMessage", [&](const nlohmann::json& q)->std::string{
+        auto mt = q.contains("params") ? q["params"].value("msgType","") : std::string{};
+        if (mt == "identify") return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"PAX","model":"s800"},"error":false})";
+        if (mt == "getLastStatMsgCode") return R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":"6"},"error":false})";
+        if (mt == "interrupt") { interruptSeen.store(true); return R"({"method":"ServiceMessage","params":{"msgType":"interruptTransmitted"},"error":false})"; }
+        return "";
+    });
+    emu.OnRequest("Purchase", [&](const nlohmann::json&)->std::string{
+        for (int i = 0; i < 100 && !interruptSeen.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        return R"({"method":"Purchase","params":{"responseCode":"1001"},"error":true,"errorDescription":"Oперація скасов."})";
+    });
+    CHECK(emu.Start(), "AsyncCancel: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "AsyncCancel: Connect");
+    CHECK(drv.StartPurchase("10.00"), "AsyncCancel: StartPurchase → true");
+    drv.CancelOperation();   // ОДРАЗУ після Start — cancel не має загубитись (fix E)
+
+    // Після CancelOperation стан — Interrupting (гардований перехід із Running); чекаємо,
+    // доки worker не завершиться (Done/Error), тому умова — «поки Running АБО Interrupting».
+    for (int i = 0; i < 300 && (drv.OperationState() == JobState::Running
+                             || drv.OperationState() == JobState::Interrupting); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    CHECK(interruptSeen.load(), "AsyncCancel: термінал отримав interrupt (cancel не загубився)");
+    CHECK(drv.OperationState() == JobState::Done, "AsyncCancel: операція завершилась (Done)");
+    ResultEnvelope out;
+    CHECK(drv.TryGetOperationResult(out) && out.code == "1001", "AsyncCancel: результат code=1001 (скасовано)");
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// CancelOperation з Idle (без активної операції) і після Done НЕ повинен «заклинити» драйвер:
+// наступний StartPurchase має стартувати (fix A — RequestCancel гардовано, не тягне у Interrupting).
+static void TestDriverCancelNoWedge() {
+    TerminalEmulator emu;
+    emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","params":{"responseCode":"0000"},"error":false})"; });
+    emu.OnRequest("ServiceMessage", [](const nlohmann::json& q)->std::string{
+        auto mt = q.contains("params") ? q["params"].value("msgType","") : std::string{};
+        if (mt == "identify") return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"PAX","model":"s800"},"error":false})";
+        if (mt == "getLastStatMsgCode") return R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":"0"},"error":false})";
+        return "";
+    });
+    emu.OnRequest("Purchase", [](const nlohmann::json&){ return R"({"method":"Purchase","params":{"responseCode":"0000","invoiceNumber":"1"},"error":false})"; });
+    CHECK(emu.Start(), "NoWedge: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "NoWedge: Connect");
+
+    drv.CancelOperation();   // з Idle — без активної операції
+    CHECK(drv.StartPurchase("5.00"), "NoWedge: StartPurchase після Cancel(Idle) → true (не завис)");
+    for (int i = 0; i < 200 && drv.OperationState() == JobState::Running; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    CHECK(drv.OperationState() == JobState::Done, "NoWedge: перша операція завершилась (Done)");
+
+    drv.CancelOperation();   // після Done
+    CHECK(drv.StartPurchase("5.00"), "NoWedge: StartPurchase після Cancel(Done) → true (не завис)");
+    for (int i = 0; i < 200 && drv.OperationState() == JobState::Running; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    CHECK(drv.OperationState() == JobState::Done, "NoWedge: друга операція завершилась (Done)");
+    drv.Disconnect();
+    emu.Stop();
+}
+
 // --- 1С-фасад: смоук через AddInNative::CreateObject ------------------------
 // Мінімальний мок платформи 1С (IMemoryManager/IAddInDefBase) для інстанціювання
 // компоненти в процесі — достатньо для реєстрації методів і смоук-виклику.
@@ -372,6 +442,8 @@ int main() {
     TestDriverStatusPoll();
     TestDriverInterrupt();
     TestDriverAsync();
+    TestDriverAsyncCancel();
+    TestDriverCancelNoWedge();
     TestFacadeSmoke();
     std::printf(g_failed ? "\nFAILED: %d\n" : "\nOK\n", g_failed);
     return g_failed ? 1 : 0;

@@ -17,5 +17,4 @@ private:
     void RegisterMethods();
     EcrPrivatJsonDriver driver_;
     std::string lastResultJson_;   ///< останній ResultEnvelope у JSON (для РезультатОперацииJSON)
-    bool traceEnabled_ = false;    ///< легкий прапорець трасування (ВключитьТрассировку)
 };

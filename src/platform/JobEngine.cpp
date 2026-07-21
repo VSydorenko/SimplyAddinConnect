@@ -34,9 +34,18 @@ bool JobEngine::TryGetResult(ResultEnvelope& out) const {
     return true;
 }
 
-void JobEngine::RequestCancel() { cancel_.store(true); }
+void JobEngine::RequestCancel() {
+    std::lock_guard<std::mutex> lk(m_);
+    cancel_.store(true);
+    if (state_ == JobState::Running) state_ = JobState::Interrupting;
+}
 bool JobEngine::CancelRequested() const { return cancel_.load(); }
 
-void JobEngine::SetState(JobState s) { std::lock_guard<std::mutex> lk(m_); state_ = s; }
+void JobEngine::ResetToIdle() {
+    std::lock_guard<std::mutex> lk(m_);
+    if (state_ == JobState::Running || state_ == JobState::Interrupting) return;
+    state_ = JobState::Idle;
+    cancel_.store(false);
+}
 
 void JobEngine::Join() { if (worker_.joinable()) worker_.join(); }

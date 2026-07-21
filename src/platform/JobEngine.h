@@ -19,9 +19,9 @@ public:
     bool Start(std::function<ResultEnvelope()> op);   ///< false, якщо вже Running
     JobState State() const;
     bool TryGetResult(ResultEnvelope& out) const;     ///< true при Done/Error
-    void RequestCancel();
+    void RequestCancel();                              ///< гардовано: cancel_=true; Running→Interrupting
     bool CancelRequested() const;
-    void SetState(JobState s);                         ///< драйвер: перехід (напр. Interrupting)
+    void ResetToIdle();                                ///< скинути завершений (Done/Error) стан у Idle
     void Join();                                       ///< дочекатися worker (Disconnect/dtor)
 
 private:

@@ -31,7 +31,10 @@ void AddinECRPrivatJSON::RegisterMethods() {
         std::vector<ParamSpec>{ ParamSpec{ u"connString", u"СтрокаПодключения", /*required*/true, {} } });
 
     AddProcedure(u"Disconnect", u"Отключить",
-        MethFunction(std::function<void()>([this]() { driver_.Disconnect(); })));
+        MethFunction(std::function<void()>([this]() {
+            try { driver_.Disconnect(); }
+            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка Disconnect: ") + e.what()); }
+        })));
 
     AddFunction(u"IsConnected", u"Подключен",
         Ret([this]() -> bool { return driver_.IsConnected(); }));
@@ -49,44 +52,48 @@ void AddinECRPrivatJSON::RegisterMethods() {
     AddFunction(u"CheckConnection", u"ПроверитьСвязь",
         [this, runSync](VH) {
             try { runSync(driver_.CheckConnection()); }
-            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка ПроверитьСвязь: ") + e.what()); this->result = false; }
+            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка ПроверитьСвязь: ") + e.what()); runSync(ResultEnvelope::Fail("EXCEPTION", e.what())); }
         });
 
     AddFunction(u"GetTerminalInfo", u"ВерсияПО",
         [this, runSync](VH) {
             try { runSync(driver_.Execute("GetTerminalInfo", nlohmann::json::object(), kInfoTimeoutMs)); }
-            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка ВерсияПО: ") + e.what()); this->result = false; }
+            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка ВерсияПО: ") + e.what()); runSync(ResultEnvelope::Fail("EXCEPTION", e.what())); }
         });
 
     AddFunction(u"Purchase", u"Оплата",
         [this, runSync](VH amount) {
             try { runSync(driver_.Purchase(static_cast<std::string>(amount))); }
-            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка Оплата: ") + e.what()); this->result = false; }
+            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка Оплата: ") + e.what()); runSync(ResultEnvelope::Fail("EXCEPTION", e.what())); }
         },
         std::vector<ParamSpec>{ ParamSpec{ u"amount", u"Сумма", true, {} } });
 
     AddFunction(u"Refund", u"Возврат",
         [this, runSync](VH amount, VH rrn) {
             try { runSync(driver_.Refund(static_cast<std::string>(amount), static_cast<std::string>(rrn))); }
-            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка Возврат: ") + e.what()); this->result = false; }
+            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка Возврат: ") + e.what()); runSync(ResultEnvelope::Fail("EXCEPTION", e.what())); }
         },
         std::vector<ParamSpec>{ ParamSpec{ u"amount", u"Сумма", true, {} }, ParamSpec{ u"rrn", u"RRN", true, {} } });
 
     AddFunction(u"GetReceiptInfo", u"ПолучитьЧек",
         [this, runSync](VH invoice) {
             try { runSync(driver_.GetReceiptInfo(static_cast<std::string>(invoice))); }
-            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка ПолучитьЧек: ") + e.what()); this->result = false; }
+            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка ПолучитьЧек: ") + e.what()); runSync(ResultEnvelope::Fail("EXCEPTION", e.what())); }
         },
         std::vector<ParamSpec>{ ParamSpec{ u"invoiceNumber", u"НомерЧека", true, {} } });
 
     // --- Асинхронні операції ------------------------------------------------
     AddFunction(u"StartPurchase", u"НачатьОплату",
-        Ret([this](VH amount) -> bool { return driver_.StartPurchase(static_cast<std::string>(amount)); }),
+        Ret([this](VH amount) -> bool {
+            try { return driver_.StartPurchase(static_cast<std::string>(amount)); }
+            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка НачатьОплату: ") + e.what()); return false; }
+        }),
         std::vector<ParamSpec>{ ParamSpec{ u"amount", u"Сумма", true, {} } });
 
     AddFunction(u"StartRefund", u"НачатьВозврат",
         Ret([this](VH amount, VH rrn) -> bool {
-            return driver_.StartRefund(static_cast<std::string>(amount), static_cast<std::string>(rrn));
+            try { return driver_.StartRefund(static_cast<std::string>(amount), static_cast<std::string>(rrn)); }
+            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка НачатьВозврат: ") + e.what()); return false; }
         }),
         std::vector<ParamSpec>{ ParamSpec{ u"amount", u"Сумма", true, {} }, ParamSpec{ u"rrn", u"RRN", true, {} } });
 
@@ -102,7 +109,10 @@ void AddinECRPrivatJSON::RegisterMethods() {
         }));
 
     AddProcedure(u"CancelOperation", u"ПрерватьОперацию",
-        MethFunction(std::function<void()>([this]() { driver_.CancelOperation(); })));
+        MethFunction(std::function<void()>([this]() {
+            try { driver_.CancelOperation(); }
+            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка ПрерватьОперацию: ") + e.what()); }
+        })));
 
     AddFunction(u"LastStatus", u"СтатусТерминала",
         Ret([this]() -> int { return driver_.LastStatus(); }));
@@ -113,9 +123,10 @@ void AddinECRPrivatJSON::RegisterMethods() {
 
     AddFunction(u"EnableTrace", u"ВключитьТрассировку",
         Ret([this](VH enable) -> bool {
-            traceEnabled_ = static_cast<bool>(enable);
-            REPORT_INFO(std::string("Трасування ") + (traceEnabled_ ? "увімкнено" : "вимкнено"));
-            return traceEnabled_;
+            bool on = static_cast<bool>(enable);
+            driver_.SetTrace(on);
+            REPORT_INFO(std::string("Трасування ") + (on ? "увімкнено" : "вимкнено") + " (діє з наступного Connect)");
+            return on;
         }),
         std::vector<ParamSpec>{ ParamSpec{ u"enable", u"Включить", false, DefaultHelper(true) } });
 
