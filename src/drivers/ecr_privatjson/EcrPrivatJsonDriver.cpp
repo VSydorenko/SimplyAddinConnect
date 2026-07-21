@@ -3,6 +3,7 @@
 #include "EcrJsonCodec.h"
 #include "EcrPrivatJsonClassifier.h"
 #include "../../transport/DeviceSession.h"
+#include "../../transport/RequestTypes.h"
 #include "../../transport/NullTerminatedFramer.h"
 #include "../../transport/Transport_TCP.h"
 #include "../../transport/Transport_COM.h"
@@ -137,3 +138,57 @@ void EcrPrivatJsonDriver::Disconnect() {
 bool EcrPrivatJsonDriver::IsConnected() const { return session_ && session_->IsConnected(); }
 std::string EcrPrivatJsonDriver::Vendor() const { return vendor_; }
 std::string EcrPrivatJsonDriver::Model() const { return model_; }
+
+ResultEnvelope EcrPrivatJsonDriver::MapResult(const RequestResult& r) {
+    switch (r.status) {
+        case RequestStatus::Response: break;   // нижче
+        case RequestStatus::Busy:          return ResultEnvelope::Fail("DEVICE_BUSY", "Термінал зайнятий");
+        case RequestStatus::Unsupported:   return ResultEnvelope::Fail("UNSUPPORTED", "Метод не підтримується терміналом");
+        case RequestStatus::Timeout:       return ResultEnvelope::Fail("TIMEOUT", "Немає відповіді термінала");
+        case RequestStatus::Disconnected:  return ResultEnvelope::Fail("DISCONNECTED", "Обрив зв'язку з терміналом");
+        case RequestStatus::SendFailed:    return ResultEnvelope::Fail("SEND_FAILED", "Помилка відправки");
+        case RequestStatus::Stopped:       return ResultEnvelope::Fail("STOPPED", "Операцію перервано");
+        case RequestStatus::Concurrent:    return ResultEnvelope::Fail("CONCURRENT", "Операція вже виконується");
+        case RequestStatus::Desynchronized:return ResultEnvelope::Fail("DESYNC", "Потрібне відновлення зв'язку");
+        default:                           return ResultEnvelope::Fail("UNKNOWN", "Невідомий статус");
+    }
+    ParsedResponse pr = EcrJsonCodec::Parse(r.frame);
+    if (!pr.valid) return ResultEnvelope::Fail("BAD_RESPONSE", "Невалідна відповідь термінала");
+    ResultEnvelope env;
+    env.payload = pr.params;
+    std::string rc = pr.params.is_object() ? pr.params.value("responseCode", std::string{}) : std::string{};
+    env.code = rc.empty() ? (pr.error ? "ERROR" : "0000") : rc;
+    env.description = pr.errorDescription;
+    // ok: за прапорцем error (спека: 0010 Partial approval приходить із error:false).
+    env.ok = !pr.error;
+    return env;
+}
+
+ResultEnvelope EcrPrivatJsonDriver::Execute(const std::string& method,
+                                            const nlohmann::json& params, int timeoutMs) {
+    if (!IsConnected()) return ResultEnvelope::Fail("NOT_CONNECTED", "Термінал не підключено");
+    auto req = EcrJsonCodec::BuildRequest(method, 0, params.is_null() ? nlohmann::json(nullptr) : params);
+    GateSend();
+    RequestResult r = session_->RequestPrimary(req, timeoutMs);
+    return MapResult(r);
+}
+
+ResultEnvelope EcrPrivatJsonDriver::Purchase(const std::string& amount, const nlohmann::json& extra) {
+    nlohmann::json p = extra.is_object() ? extra : nlohmann::json::object();
+    p["amount"] = amount;
+    return Execute("Purchase", p, kOperationTimeoutMs);
+}
+
+ResultEnvelope EcrPrivatJsonDriver::Refund(const std::string& amount, const std::string& rrn, const nlohmann::json& extra) {
+    nlohmann::json p = extra.is_object() ? extra : nlohmann::json::object();
+    p["amount"] = amount; p["rrn"] = rrn;
+    return Execute("Refund", p, kOperationTimeoutMs);
+}
+
+ResultEnvelope EcrPrivatJsonDriver::CheckConnection() {
+    return Execute("CheckConnection", nlohmann::json::object(), kHandshakeTimeoutMs);
+}
+
+ResultEnvelope EcrPrivatJsonDriver::GetReceiptInfo(const std::string& invoiceNumber) {
+    return Execute("GetReceiptInfo", nlohmann::json{{"invoiceNumber", invoiceNumber}}, kHandshakeTimeoutMs);
+}

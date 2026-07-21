@@ -208,6 +208,38 @@ static void TestJobEngine() {
     CHECK(eng2.State() == JobState::Error, "JobEngine: виняток у op → Error");
 }
 
+static void TestDriverPurchaseHappy() {
+    TerminalEmulator emu;
+    emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","step":0,"params":{"responseCode":"0000"},"error":false,"errorDescription":""})"; });
+    emu.OnRequest("ServiceMessage", [](const nlohmann::json& q)->std::string{
+        auto mt = q.contains("params") ? q["params"].value("msgType","") : std::string{};
+        if (mt == "identify") return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"PAX","model":"s800"},"error":false})";
+        if (mt == "getLastStatMsgCode") return R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":"0"},"error":false})";
+        return "";
+    });
+    emu.OnRequest("Purchase", [](const nlohmann::json&){
+        return R"({"method":"Purchase","step":0,"params":{"responseCode":"0000","invoiceNumber":"42","rrn":"123"},"error":false,"errorDescription":""})";
+    });
+    emu.OnRequest("Refund", [](const nlohmann::json&){
+        return R"({"method":"Refund","step":0,"params":{"responseCode":"1002"},"error":true,"errorDescription":"EMV Decline"})";
+    });
+    CHECK(emu.Start(), "DriverPurchase: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "DriverPurchase: Connect");
+
+    auto pr = drv.Purchase("100.00");
+    CHECK(pr.ok && pr.code == "0000" && pr.payload["invoiceNumber"] == "42",
+          "Purchase happy → ok, code 0000, invoiceNumber");
+
+    auto rf = drv.Refund("50.00", "123");
+    CHECK(!rf.ok && rf.code == "1002" && rf.description == "EMV Decline",
+          "Refund declined → !ok, code 1002, description");
+
+    drv.Disconnect();
+    emu.Stop();
+}
+
 int main() {
     TestResultEnvelope();
     TestEcrJsonCodec();
@@ -216,6 +248,7 @@ int main() {
     TestConnStringParse();
     TestConnectReferenceScheme();
     TestJobEngine();
+    TestDriverPurchaseHappy();
     std::printf(g_failed ? "\nFAILED: %d\n" : "\nOK\n", g_failed);
     return g_failed ? 1 : 0;
 }
