@@ -19,7 +19,8 @@ public:
     using Responder = std::function<std::string(const nlohmann::json& request)>;
 
     ~TerminalEmulator() { Stop(); }
-    bool Start();
+    bool Start() { return Start(0); }
+    bool Start(int port);
     int Port() const { return port_; }
     void Stop();
 

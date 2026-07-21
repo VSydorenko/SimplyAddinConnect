@@ -1,7 +1,7 @@
 #include "TerminalEmulator.h"
 #include <ws2tcpip.h>
 
-bool TerminalEmulator::Start() {
+bool TerminalEmulator::Start(int port) {
     WSADATA w;
     if (WSAStartup(MAKEWORD(2, 2), &w) != 0) return false;
     started_ = true;
@@ -13,7 +13,7 @@ bool TerminalEmulator::Start() {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = 0;   // ефемерний порт
+    addr.sin_port = htons(static_cast<u_short>(port));   // port==0 лишає ефемерний
     if (bind(l, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) return false;
     int len = sizeof(addr);
     if (getsockname(l, reinterpret_cast<sockaddr*>(&addr), &len) == SOCKET_ERROR) return false;

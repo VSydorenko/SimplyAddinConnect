@@ -112,6 +112,20 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# ecr_terminal_emulator — standalone-EXE емулятора термінала (ручний інструмент
+# для тестування ECRPrivatJSON з реальної 1С без обладнання). Не залежить від UAPKI.
+# ---------------------------------------------------------------------------
+add_executable(ecr_terminal_emulator ecr_terminal_emulator_main.cpp support/TerminalEmulator.cpp)
+set_target_properties(ecr_terminal_emulator PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "ecr_terminal_emulator${_TEST_ARCH_SUFFIX}")
+target_include_directories(ecr_terminal_emulator PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR})
+target_compile_definitions(ecr_terminal_emulator PRIVATE _WINDOWS UNICODE _UNICODE)
+target_link_libraries(ecr_terminal_emulator PRIVATE ws2_32)
+if(MSVC)
+    target_compile_options(ecr_terminal_emulator PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
 # Далі — цілі, що потребують крипто-ядра UAPKI (uapki_bundle існує лише при
 # BUILD_WITH_UAPKI). Без нього тихо пропускаємо решту файлу.
 # ---------------------------------------------------------------------------
