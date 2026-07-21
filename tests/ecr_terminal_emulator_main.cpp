@@ -1,7 +1,8 @@
 // Standalone-емулятор термінала ПриватБанк для тестування З 1С без обладнання.
 // Слухає TCP (default 2000), відповідає скриптованими JSON зі специфікації.
 // pch НЕ підключаємо (правило tests/).
-#include "support/TerminalEmulator.h"
+#include "support/TerminalEmulator.h"   // тягне winsock2.h ПЕРШИМ (до windows.h)
+#include <windows.h>                    // SetConsoleOutputCP (winsock2 уже підключено вище)
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -9,8 +10,10 @@
 #include <chrono>
 
 int main(int argc, char** argv) {
+    SetConsoleOutputCP(CP_UTF8);        // вивід у UTF-8 (кирилиця замість крякозябрів)
     int port = (argc > 1) ? std::atoi(argv[1]) : 2000;
     TerminalEmulator emu;
+    emu.SetLog([](const std::string& s){ std::printf("%s\n", s.c_str()); std::fflush(stdout); });
     emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","step":0,"params":{"code":"00","responseCode":"0000"},"error":false,"errorDescription":""})"; });
     emu.OnRequest("ServiceMessage", [](const nlohmann::json& q)->std::string{
         auto mt = q.contains("params") ? q["params"].value("msgType", std::string{}) : std::string{};

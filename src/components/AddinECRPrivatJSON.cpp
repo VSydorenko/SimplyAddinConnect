@@ -49,17 +49,19 @@ void AddinECRPrivatJSON::RegisterMethods() {
         return env.ok;
     };
 
+    // 0-параметрові методи: MethFunction0 (без VH). Раніше були (VH) без ParamSpec → 1С
+    // вважала їх 1-параметровими й давала "Недостаточно фактических параметров" при виклику без аргументів.
     AddFunction(u"CheckConnection", u"ПроверитьСвязь",
-        [this, runSync](VH) {
+        MethFunction(std::function<void()>([this, runSync]() {
             try { runSync(driver_.CheckConnection()); }
             catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка ПроверитьСвязь: ") + e.what()); runSync(ResultEnvelope::Fail("EXCEPTION", e.what())); }
-        });
+        })));
 
     AddFunction(u"GetTerminalInfo", u"ВерсияПО",
-        [this, runSync](VH) {
+        MethFunction(std::function<void()>([this, runSync]() {
             try { runSync(driver_.Execute("GetTerminalInfo", nlohmann::json::object(), kInfoTimeoutMs)); }
             catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка ВерсияПО: ") + e.what()); runSync(ResultEnvelope::Fail("EXCEPTION", e.what())); }
-        });
+        })));
 
     AddFunction(u"Purchase", u"Оплата",
         [this, runSync](VH amount) {

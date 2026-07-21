@@ -66,15 +66,24 @@ void TerminalEmulator::Run() {
     }
 }
 
+void TerminalEmulator::Log(const std::string& line) {
+    if (!log_) return;
+    std::lock_guard<std::mutex> lk(logMutex_);
+    log_(line);
+}
+
 void TerminalEmulator::HandleFrame(SOCKET c, const std::vector<uint8_t>& frame) {
+    std::string raw(frame.begin(), frame.end());
     auto j = nlohmann::json::parse(frame.begin(), frame.end(), nullptr, false);
-    if (j.is_discarded() || !j.is_object()) return;
+    if (j.is_discarded() || !j.is_object()) { Log("RECV (невалідний JSON): " + raw); return; }
     std::string method = j.value("method", std::string{});
+    Log("RECV [" + method + "] " + raw);
     auto it = handlers_.find(method);
-    if (it == handlers_.end()) return;   // нема сценарію — мовчимо
+    if (it == handlers_.end()) { Log("  -> нема сценарію для [" + method + "], мовчимо"); return; }
 
     std::string resp = it->second(j);
-    if (resp.empty()) return;   // responder без відповіді — не шлемо лоне-термінатор
+    if (resp.empty()) { Log("  -> responder без відповіді"); return; }
+    Log("SEND " + resp);
     std::vector<uint8_t> out(resp.begin(), resp.end());
     out.push_back(0);   // термінатор кадру
     // Send під m'ютексом: байти відповідей різних worker-ів не перемішуються на сокеті.

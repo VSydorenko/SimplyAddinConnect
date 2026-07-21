@@ -27,9 +27,14 @@ public:
     /// Зареєструвати відповідь на кадр із заданим method (responder повертає JSON-рядок).
     void OnRequest(std::string method, Responder responder) { handlers_[std::move(method)] = std::move(responder); }
 
+    /// Логер обміну (RECV/SEND). Опційно: standalone-емулятор друкує в консоль, тести — не ставлять.
+    using Logger = std::function<void(const std::string&)>;
+    void SetLog(Logger log) { log_ = std::move(log); }
+
 private:
     void Run();
     void HandleFrame(SOCKET c, const std::vector<uint8_t>& frame);
+    void Log(const std::string& line);
 
     std::map<std::string, Responder> handlers_;
     std::atomic<SOCKET> listen_{ INVALID_SOCKET };
@@ -45,4 +50,7 @@ private:
     // читання наступних кадрів (poller getLastStatMsgCode / interrupt під час операції).
     std::mutex sendMutex_;
     std::vector<std::thread> workers_;
+
+    Logger log_;                 ///< опційний логер обміну (nullptr → не логуємо)
+    std::mutex logMutex_;        ///< серіалізація рядків логу з конкурентних worker-ів
 };
