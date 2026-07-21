@@ -9,9 +9,13 @@
 #include "../src/transport/Transport_TCP.h"
 #include "../src/transport/NullTerminatedFramer.h"
 #include "../src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h"
+#include "../src/platform/JobEngine.h"
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 static int g_failed = 0;
 #define CHECK(c,n) do{ if(c){std::printf("[PASS] %s\n",n);} else {std::printf("[FAIL] %s\n",n);++g_failed;} }while(0)
@@ -176,6 +180,34 @@ static void TestConnectReferenceScheme() {
     emu.Stop();
 }
 
+static void TestJobEngine() {
+    JobEngine eng;
+    CHECK(eng.State() == JobState::Idle, "JobEngine: стартовий стан Idle");
+
+    std::atomic<bool> release{false};
+    bool started = eng.Start([&]() -> ResultEnvelope {
+        while (!release.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        return ResultEnvelope::Ok({{"done", true}});
+    });
+    CHECK(started && eng.State() == JobState::Running, "JobEngine: Start → Running");
+    CHECK(eng.Start([]{ return ResultEnvelope::Ok(); }) == false, "JobEngine: повторний Start під час Running → false");
+
+    eng.RequestCancel();
+    CHECK(eng.CancelRequested(), "JobEngine: RequestCancel виставляє прапорець");
+
+    release.store(true);
+    eng.Join();
+    CHECK(eng.State() == JobState::Done, "JobEngine: після завершення op → Done");
+    ResultEnvelope out;
+    CHECK(eng.TryGetResult(out) && out.ok && out.payload["done"] == true, "JobEngine: результат op збережено");
+
+    // op кидає → Error
+    JobEngine eng2;
+    eng2.Start([]() -> ResultEnvelope { throw std::runtime_error("boom"); });
+    eng2.Join();
+    CHECK(eng2.State() == JobState::Error, "JobEngine: виняток у op → Error");
+}
+
 int main() {
     TestResultEnvelope();
     TestEcrJsonCodec();
@@ -183,6 +215,7 @@ int main() {
     TestEmulatorPing();
     TestConnStringParse();
     TestConnectReferenceScheme();
+    TestJobEngine();
     std::printf(g_failed ? "\nFAILED: %d\n" : "\nOK\n", g_failed);
     return g_failed ? 1 : 0;
 }

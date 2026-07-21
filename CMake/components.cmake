@@ -158,6 +158,8 @@ add_dependencies(wire_component base_component spdlog)
 add_library(platform_component OBJECT
     src/platform/ResultEnvelope.h
     src/platform/ResultEnvelope.cpp
+    src/platform/JobEngine.h
+    src/platform/JobEngine.cpp
 )
 set_target_properties(platform_component PROPERTIES
     POSITION_INDEPENDENT_CODE ON
