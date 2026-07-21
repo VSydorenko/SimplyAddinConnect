@@ -204,6 +204,21 @@ target_include_directories(driver_ecr_privatjson_component PRIVATE
 target_compile_definitions(driver_ecr_privatjson_component PRIVATE _WINDOWS UNICODE _UNICODE)
 add_dependencies(driver_ecr_privatjson_component base_component spdlog nlohmann_json wire_component transport_component helpers_component)
 
+## @var driver_label_printer_component
+## @brief Драйвер принтера етикеток (ZPL): моделі даних, одиниці, кодери/класифікатори.
+## @note Поки лише каркас (LabelModel/LabelUnits) — .cpp додаватимуться в наступних тасках;
+##       НЕ входить у фінальну DLL до появи фасаду (Task 12).
+add_library(driver_label_printer_component OBJECT
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelModel.h
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelUnits.h
+)
+set_target_properties(driver_label_printer_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX)
+target_include_directories(driver_label_printer_component PRIVATE
+    include ${CMAKE_SOURCE_DIR} src ${SPDLOG_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR})
+target_compile_definitions(driver_label_printer_component PRIVATE _WINDOWS UNICODE _UNICODE)
+add_dependencies(driver_label_printer_component base_component spdlog nlohmann_json)
+
 ## @var ecr_facade_component
 ## @brief 1С-фасад AddinECRPrivatJSON: реєстрація методів компоненти, делегування драйверу.
 ## @note Компонента-фасад над пілотним драйвером; входить у фінальну DLL.

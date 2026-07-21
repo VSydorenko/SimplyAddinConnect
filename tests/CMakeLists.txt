@@ -112,6 +112,22 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# label_printer_selftest — харнес каркасу драйвера принтера етикеток (ZPL).
+# Поки лише LabelModel/LabelUnits; наступні таски додадуть GfEncoder/BarcodeZpl/...
+# ---------------------------------------------------------------------------
+add_executable(label_printer_selftest ${CMAKE_SOURCE_DIR}/tests/label_printer_selftest.cpp)
+target_include_directories(label_printer_selftest PRIVATE
+    ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src ${SPDLOG_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR})
+set_target_properties(label_printer_selftest PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "label_printer_selftest${_TEST_ARCH_SUFFIX}"
+)
+if(MSVC)
+    target_compile_options(label_printer_selftest PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
 # ecr_terminal_emulator — standalone-EXE емулятора термінала (ручний інструмент
 # для тестування ECRPrivatJSON з реальної 1С без обладнання). Не залежить від UAPKI.
 # ---------------------------------------------------------------------------
