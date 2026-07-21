@@ -6,6 +6,7 @@
 #include <atomic>
 #include <nlohmann/json.hpp>
 #include "../../platform/ResultEnvelope.h"
+#include "../../platform/JobEngine.h"
 
 class DeviceSession;
 class ITransport;
@@ -54,6 +55,14 @@ public:
     /// Запит на скасування активної операції: poller надішле interrupt на service-доріжці.
     void RequestInterrupt();
 
+    // Асинхронний API поверх JobEngine (неблокуючий; результат — TryGetOperationResult).
+    bool StartOperation(const std::string& method, const nlohmann::json& params, int timeoutMs);
+    bool StartPurchase(const std::string& amount, const nlohmann::json& extra = {});
+    bool StartRefund(const std::string& amount, const std::string& rrn, const nlohmann::json& extra = {});
+    JobState OperationState() const;
+    bool TryGetOperationResult(ResultEnvelope& out) const;
+    void CancelOperation();   ///< RequestInterrupt() + JobEngine → Interrupting
+
     // Send-арбітр (спека §7): мін. інтервал 0.1с між ФАКТИЧНИМИ відправленнями.
     // Використовуватиметься в Частині 2; тут — інфраструктура.
     void GateSend();   // блокує до дозволеного моменту, оновлює мітку
@@ -66,6 +75,7 @@ private:
     EcrConnParams params_{};
     std::unique_ptr<DeviceSession> session_;   ///< постійна сесія (після Connect)
     std::string vendor_, model_;
+    JobEngine job_;                            ///< одне активне асинхронне завдання
 
     static ResultEnvelope MapResult(const RequestResult& r);
     static constexpr int kOperationTimeoutMs = 120000;   ///< до 120с на фінансову операцію

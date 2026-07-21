@@ -295,6 +295,36 @@ static void TestDriverInterrupt() {
     emu.Stop();
 }
 
+static void TestDriverAsync() {
+    TerminalEmulator emu;
+    emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","params":{"responseCode":"0000"},"error":false})"; });
+    emu.OnRequest("ServiceMessage", [](const nlohmann::json& q)->std::string{
+        auto mt = q.contains("params") ? q["params"].value("msgType","") : std::string{};
+        if (mt == "identify") return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"PAX","model":"s800"},"error":false})";
+        if (mt == "getLastStatMsgCode") return R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":"0"},"error":false})";
+        return "";
+    });
+    emu.OnRequest("Purchase", [](const nlohmann::json&)->std::string{
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        return R"({"method":"Purchase","params":{"responseCode":"0000","invoiceNumber":"9"},"error":false})";
+    });
+    CHECK(emu.Start(), "Async: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "Async: Connect");
+    CHECK(drv.StartPurchase("25.00"), "Async: StartPurchase → true (запущено)");
+    CHECK(drv.StartPurchase("25.00") == false, "Async: повторний StartPurchase під час виконання → false");
+
+    ResultEnvelope out;
+    for (int i = 0; i < 200 && drv.OperationState() == JobState::Running; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    CHECK(drv.OperationState() == JobState::Done, "Async: операція завершилась (Done)");
+    CHECK(drv.TryGetOperationResult(out) && out.ok && out.payload["invoiceNumber"] == "9",
+          "Async: результат доступний (ok, invoiceNumber=9)");
+    drv.Disconnect();
+    emu.Stop();
+}
+
 int main() {
     TestResultEnvelope();
     TestEcrJsonCodec();
@@ -306,6 +336,7 @@ int main() {
     TestDriverPurchaseHappy();
     TestDriverStatusPoll();
     TestDriverInterrupt();
+    TestDriverAsync();
     std::printf(g_failed ? "\nFAILED: %d\n" : "\nOK\n", g_failed);
     return g_failed ? 1 : 0;
 }

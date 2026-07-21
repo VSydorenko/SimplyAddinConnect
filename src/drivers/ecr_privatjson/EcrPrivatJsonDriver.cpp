@@ -131,7 +131,27 @@ bool EcrPrivatJsonDriver::Connect(const std::string& connString) {
     return true;
 }
 
+bool EcrPrivatJsonDriver::StartOperation(const std::string& method, const nlohmann::json& params, int timeoutMs) {
+    if (!IsConnected()) return false;
+    return job_.Start([this, method, params, timeoutMs]() { return Execute(method, params, timeoutMs); });
+}
+
+bool EcrPrivatJsonDriver::StartPurchase(const std::string& amount, const nlohmann::json& extra) {
+    nlohmann::json p = extra.is_object() ? extra : nlohmann::json::object(); p["amount"] = amount;
+    return StartOperation("Purchase", p, kOperationTimeoutMs);
+}
+
+bool EcrPrivatJsonDriver::StartRefund(const std::string& amount, const std::string& rrn, const nlohmann::json& extra) {
+    nlohmann::json p = extra.is_object() ? extra : nlohmann::json::object(); p["amount"] = amount; p["rrn"] = rrn;
+    return StartOperation("Refund", p, kOperationTimeoutMs);
+}
+
+JobState EcrPrivatJsonDriver::OperationState() const { return job_.State(); }
+bool EcrPrivatJsonDriver::TryGetOperationResult(ResultEnvelope& out) const { return job_.TryGetResult(out); }
+void EcrPrivatJsonDriver::CancelOperation() { RequestInterrupt(); job_.SetState(JobState::Interrupting); }
+
 void EcrPrivatJsonDriver::Disconnect() {
+    job_.Join();   // дочекатись worker, щоб не рвати сесію під активним запитом
     if (session_) { session_->Stop(); session_.reset(); }
 }
 
