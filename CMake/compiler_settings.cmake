@@ -97,6 +97,7 @@ if (NOT UNIX)
     target_compile_options(transport_component PRIVATE /utf-8)
     target_compile_options(platform_component PRIVATE /utf-8)
     target_compile_options(driver_ecr_privatjson_component PRIVATE /utf-8)
+    target_compile_options(ecr_facade_component PRIVATE /utf-8)
     # target_compile_options(ecrcommx_component PRIVATE /utf-8)
     # target_compile_options(posapi_component PRIVATE /utf-8)
 

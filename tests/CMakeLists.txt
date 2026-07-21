@@ -83,6 +83,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_executable(ecr_privatjson_selftest ecr_privatjson_selftest.cpp
     support/TerminalEmulator.cpp
+    $<TARGET_OBJECTS:ecr_facade_component>       # 1С-фасад AddinECRPrivatJSON (смоук через CreateObject)
     $<TARGET_OBJECTS:driver_ecr_privatjson_component>
     $<TARGET_OBJECTS:platform_component>
     $<TARGET_OBJECTS:transport_component>   # реальний TransportTCP/COM для e2e

@@ -10,6 +10,7 @@
 #include "../src/transport/NullTerminatedFramer.h"
 #include "../src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h"
 #include "../src/platform/JobEngine.h"
+#include "../src/core/AddInNative.h"   // 1С-фасад: інстанціювання компоненти через CreateObject
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -325,6 +326,40 @@ static void TestDriverAsync() {
     emu.Stop();
 }
 
+// --- 1С-фасад: смоук через AddInNative::CreateObject ------------------------
+// Мінімальний мок платформи 1С (IMemoryManager/IAddInDefBase) для інстанціювання
+// компоненти в процесі — достатньо для реєстрації методів і смоук-виклику.
+class MockMem : public IMemoryManager {
+public:
+    bool ADDIN_API AllocMemory(void** p, unsigned long n) override { *p = malloc(n); return *p != nullptr; }
+    void ADDIN_API FreeMemory(void** p) override { if (p && *p) { free(*p); *p = nullptr; } }
+};
+class MockConn : public IAddInDefBase {
+public:
+    bool ADDIN_API AddError(unsigned short, const WCHAR_T*, const WCHAR_T*, long) override { return true; }
+    bool ADDIN_API Read(WCHAR_T*, tVariant*, long*, WCHAR_T**) override { return false; }
+    bool ADDIN_API Write(WCHAR_T*, tVariant*) override { return true; }
+    bool ADDIN_API RegisterProfileAs(WCHAR_T*) override { return true; }
+    bool ADDIN_API SetEventBufferDepth(long) override { return true; }
+    long ADDIN_API GetEventBufferDepth() override { return 0; }
+    bool ADDIN_API ExternalEvent(WCHAR_T*, WCHAR_T*, WCHAR_T*) override { return true; }
+    void ADDIN_API CleanEventBuffer() override {}
+    bool ADDIN_API SetStatusLine(WCHAR_T*) override { return true; }
+    void ADDIN_API ResetStatusLine() override {}
+};
+
+static void TestFacadeSmoke() {
+    AddInNative* comp = AddInNative::CreateObject(u"ECRPrivatJSON");
+    CHECK(comp != nullptr, "Facade: CreateObject(ECRPrivatJSON) → не null");
+    if (!comp) return;
+    MockMem mem; MockConn conn;
+    comp->Init(&conn);
+    comp->setMemManager(&mem);
+    long n = comp->GetNMethods();
+    CHECK(n >= 10, "Facade: зареєстровано >=10 методів");
+    delete comp;
+}
+
 int main() {
     TestResultEnvelope();
     TestEcrJsonCodec();
@@ -337,6 +372,7 @@ int main() {
     TestDriverStatusPoll();
     TestDriverInterrupt();
     TestDriverAsync();
+    TestFacadeSmoke();
     std::printf(g_failed ? "\nFAILED: %d\n" : "\nOK\n", g_failed);
     return g_failed ? 1 : 0;
 }

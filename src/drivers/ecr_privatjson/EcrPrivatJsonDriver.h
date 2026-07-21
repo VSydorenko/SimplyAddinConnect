@@ -25,7 +25,10 @@ struct EcrConnParams {
 /// цикл за еталонною схемою (спека §6). Операції — Частина 2.
 class EcrPrivatJsonDriver {
 public:
-    EcrPrivatJsonDriver() = default;
+    // Конструктор/деструктор — поза класом (у .cpp): unique_ptr<DeviceSession> над
+    // forward-оголошеним типом вимагає повного типу при інстанціюванні спецчленів;
+    // out-of-line визначення тримає цю вимогу в TU драйвера (не протікає у фасад).
+    EcrPrivatJsonDriver();
     ~EcrPrivatJsonDriver();
 
     /// Розбір рядка підключення → out. false, якщо не розібрано:

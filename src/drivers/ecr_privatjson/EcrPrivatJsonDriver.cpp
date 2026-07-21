@@ -15,6 +15,7 @@ constexpr int kHandshakeTimeoutMs = 5000;   // Ping/Identify — з запасо
 constexpr int kPostPingPauseMs    = 1000;   // пауза 1с після Ping (спека §3.4)
 }
 
+EcrPrivatJsonDriver::EcrPrivatJsonDriver() = default;
 EcrPrivatJsonDriver::~EcrPrivatJsonDriver() { Disconnect(); }
 
 bool EcrPrivatJsonDriver::ParseConnString(const std::string& s, EcrConnParams& out) {
