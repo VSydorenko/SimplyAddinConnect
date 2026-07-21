@@ -2,6 +2,7 @@
 #include <atomic>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -36,4 +37,11 @@ private:
     std::atomic<bool> running_{ false };
     bool started_ = false;
     int port_ = 0;
+
+    // Асинхронна обробка кадрів: на КОЖЕН повний кадр — окремий worker-потік, що обчислює
+    // відповідь (responder може блокувати) і шле її ПІД sendMutex_ (щоб байти різних
+    // відповідей не перемішувались на сокеті). Так повільний primary-responder не блокує
+    // читання наступних кадрів (poller getLastStatMsgCode / interrupt під час операції).
+    std::mutex sendMutex_;
+    std::vector<std::thread> workers_;
 };

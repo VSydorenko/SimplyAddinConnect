@@ -240,6 +240,31 @@ static void TestDriverPurchaseHappy() {
     emu.Stop();
 }
 
+static void TestDriverStatusPoll() {
+    TerminalEmulator emu;
+    emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","params":{"responseCode":"0000"},"error":false})"; });
+    emu.OnRequest("ServiceMessage", [](const nlohmann::json& q)->std::string{
+        auto mt = q.contains("params") ? q["params"].value("msgType","") : std::string{};
+        if (mt == "identify") return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"PAX","model":"s800"},"error":false})";
+        if (mt == "getLastStatMsgCode") return R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":"3"},"error":false})";
+        return "";
+    });
+    // Purchase відповідає не одразу — даємо poller-у шанс завершити хоча б один цикл (>kPollIntervalMs).
+    emu.OnRequest("Purchase", [](const nlohmann::json&)->std::string{
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+        return R"({"method":"Purchase","params":{"responseCode":"0000","invoiceNumber":"7"},"error":false})";
+    });
+    CHECK(emu.Start(), "StatusPoll: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "StatusPoll: Connect");
+    auto pr = drv.Purchase("10.00");
+    CHECK(pr.ok && pr.code == "0000", "StatusPoll: Purchase завершився ok");
+    CHECK(drv.LastStatus() == 3, "StatusPoll: poller зафіксував LastStatMsgCode=3 під час операції");
+    drv.Disconnect();
+    emu.Stop();
+}
+
 int main() {
     TestResultEnvelope();
     TestEcrJsonCodec();
@@ -249,6 +274,7 @@ int main() {
     TestConnectReferenceScheme();
     TestJobEngine();
     TestDriverPurchaseHappy();
+    TestDriverStatusPoll();
     std::printf(g_failed ? "\nFAILED: %d\n" : "\nOK\n", g_failed);
     return g_failed ? 1 : 0;
 }

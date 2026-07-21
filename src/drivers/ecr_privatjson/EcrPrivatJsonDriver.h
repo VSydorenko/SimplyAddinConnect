@@ -3,6 +3,7 @@
 #include <mutex>
 #include <string>
 #include <chrono>
+#include <atomic>
 #include <nlohmann/json.hpp>
 #include "../../platform/ResultEnvelope.h"
 
@@ -47,6 +48,9 @@ public:
     ResultEnvelope CheckConnection();
     ResultEnvelope GetReceiptInfo(const std::string& invoiceNumber);
 
+    /// Останній прочитаний getLastStatMsgCode (-1, якщо ще не було).
+    int LastStatus() const;
+
     // Send-арбітр (спека §7): мін. інтервал 0.1с між ФАКТИЧНИМИ відправленнями.
     // Використовуватиметься в Частині 2; тут — інфраструктура.
     void GateSend();   // блокує до дозволеного моменту, оновлює мітку
@@ -62,6 +66,13 @@ private:
 
     static ResultEnvelope MapResult(const RequestResult& r);
     static constexpr int kOperationTimeoutMs = 120000;   ///< до 120с на фінансову операцію
+
+    /// Poller-цикл: під час активної primary-операції полить getLastStatMsgCode на
+    /// service-доріжці й оновлює lastStatus_. Єдиний власник service-доріжки.
+    void PollerLoop(std::atomic<bool>& stop);
+    std::atomic<int> lastStatus_{ -1 };
+    static constexpr int kPollIntervalMs = 500;    ///< 0.5с полінг статусу
+    static constexpr int kServiceTimeoutMs = 3000;
 
     mutable std::mutex sendGateMutex_;
     std::chrono::steady_clock::time_point lastSend_{};

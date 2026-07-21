@@ -164,12 +164,39 @@ ResultEnvelope EcrPrivatJsonDriver::MapResult(const RequestResult& r) {
     return env;
 }
 
+int EcrPrivatJsonDriver::LastStatus() const { return lastStatus_.load(); }
+
+void EcrPrivatJsonDriver::PollerLoop(std::atomic<bool>& stop) {
+    while (!stop.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
+        if (stop.load() || !session_) break;
+        auto stat = EcrJsonCodec::BuildRequest("ServiceMessage", 0, {{"msgType", "getLastStatMsgCode"}});
+        GateSend();
+        RequestResult s = session_->RequestService(stat, kServiceTimeoutMs);
+        if (s.status == RequestStatus::Response) {
+            ParsedResponse pr = EcrJsonCodec::Parse(s.frame);
+            if (pr.valid && pr.params.is_object()) {
+                std::string code = pr.params.value("LastStatMsgCode", std::string{});
+                if (!code.empty()) { try { lastStatus_.store(std::stoi(code)); } catch (...) {} }
+            }
+        }
+    }
+}
+
 ResultEnvelope EcrPrivatJsonDriver::Execute(const std::string& method,
                                             const nlohmann::json& params, int timeoutMs) {
     if (!IsConnected()) return ResultEnvelope::Fail("NOT_CONNECTED", "Термінал не підключено");
+    lastStatus_.store(-1);
     auto req = EcrJsonCodec::BuildRequest(method, 0, params.is_null() ? nlohmann::json(nullptr) : params);
+
+    std::atomic<bool> pollerStop{ false };
+    std::thread poller([this, &pollerStop] { PollerLoop(pollerStop); });
+
     GateSend();
     RequestResult r = session_->RequestPrimary(req, timeoutMs);
+
+    pollerStop.store(true);
+    poller.join();
     return MapResult(r);
 }
 

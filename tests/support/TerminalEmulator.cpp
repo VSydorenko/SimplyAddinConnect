@@ -32,6 +32,9 @@ void TerminalEmulator::Stop() {
     SOCKET c = client_.exchange(INVALID_SOCKET);
     if (c != INVALID_SOCKET) { shutdown(c, SD_BOTH); closesocket(c); }
     if (thread_.joinable()) thread_.join();
+    // Дочекатися всіх frame-worker-ів (можуть висіти у responder-і/send) ПЕРЕД WSACleanup.
+    for (auto& w : workers_) if (w.joinable()) w.join();
+    workers_.clear();
     if (started_) { WSACleanup(); started_ = false; }
 }
 
@@ -49,7 +52,12 @@ void TerminalEmulator::Run() {
             int n = recv(c, tmp, static_cast<int>(sizeof(tmp)), 0);
             if (n <= 0) break;                        // клієнт закрив (dc еталонної схеми)
             for (int i = 0; i < n; ++i) {
-                if (tmp[i] == 0) { if (!buf.empty()) HandleFrame(c, buf); buf.clear(); }
+                if (tmp[i] == 0) {
+                    // Кожен повний кадр — окремий worker (responder може блокувати; read-loop
+                    // лишається вільним для наступних кадрів poller-а/interrupt).
+                    if (!buf.empty()) workers_.emplace_back([this, c, frame = buf] { HandleFrame(c, frame); });
+                    buf.clear();
+                }
                 else buf.push_back(static_cast<uint8_t>(tmp[i]));
             }
         }
@@ -66,8 +74,11 @@ void TerminalEmulator::HandleFrame(SOCKET c, const std::vector<uint8_t>& frame) 
     if (it == handlers_.end()) return;   // нема сценарію — мовчимо
 
     std::string resp = it->second(j);
+    if (resp.empty()) return;   // responder без відповіді — не шлемо лоне-термінатор
     std::vector<uint8_t> out(resp.begin(), resp.end());
     out.push_back(0);   // термінатор кадру
+    // Send під m'ютексом: байти відповідей різних worker-ів не перемішуються на сокеті.
+    std::lock_guard<std::mutex> lk(sendMutex_);
     int off = 0, total = static_cast<int>(out.size());
     while (off < total) {
         int s = ::send(c, reinterpret_cast<const char*>(out.data()) + off, total - off, 0);
