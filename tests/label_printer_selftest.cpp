@@ -13,6 +13,7 @@
 #include "../src/drivers/label_printer/LabelXml.h"
 #include "../src/transport/Transport.h"
 #include "../src/transport/Transport_SpoolerRaw.h"
+#include "../src/core/AddInNative.h"
 using namespace labelprinter;
 
 static int g_failures = 0;
@@ -226,6 +227,38 @@ static void TestXml() {
     CHECK(!LabelXml::ParseLabelsTable("<Data><Labels>", bbad, errbad) && !errbad.empty(), "malformed XML -> fail with err");
 }
 
+// Мінімальний мок платформи 1С (IMemoryManager/IAddInDefBase) — достатньо, щоб
+// інстанціювати компоненту в процесі й перевірити реєстрацію БПО-методів.
+class MockMem : public IMemoryManager {
+public:
+    bool ADDIN_API AllocMemory(void** p, unsigned long n) override { *p = malloc(n); return *p != nullptr; }
+    void ADDIN_API FreeMemory(void** p) override { if (p && *p) { free(*p); *p = nullptr; } }
+};
+class MockConn : public IAddInDefBase {
+public:
+    bool ADDIN_API AddError(unsigned short, const WCHAR_T*, const WCHAR_T*, long) override { return true; }
+    bool ADDIN_API Read(WCHAR_T*, tVariant*, long*, WCHAR_T**) override { return false; }
+    bool ADDIN_API Write(WCHAR_T*, tVariant*) override { return true; }
+    bool ADDIN_API RegisterProfileAs(WCHAR_T*) override { return true; }
+    bool ADDIN_API SetEventBufferDepth(long) override { return true; }
+    long ADDIN_API GetEventBufferDepth() override { return 0; }
+    bool ADDIN_API ExternalEvent(WCHAR_T*, WCHAR_T*, WCHAR_T*) override { return true; }
+    void ADDIN_API CleanEventBuffer() override {}
+    bool ADDIN_API SetStatusLine(WCHAR_T*) override { return true; }
+    void ADDIN_API ResetStatusLine() override {}
+};
+
+static void TestFacadeSmoke() {
+    AddInNative* comp = AddInNative::CreateObject(u"LabelPrinter");
+    CHECK(comp != nullptr, "Facade: CreateObject(LabelPrinter) -> не null");
+    if (!comp) return;
+    MockMem mem; MockConn conn;
+    comp->Init(&conn);
+    comp->setMemManager(&mem);
+    CHECK(comp->GetNMethods() >= 8, "Facade: зареєстровано >=8 БПО-методів");
+    delete comp;
+}
+
 int main() {
     TestUnits();
     TestGfEncoder();
@@ -237,6 +270,7 @@ int main() {
     TestSpooler();
     TestDriverBatch();
     TestXml();
+    TestFacadeSmoke();
     std::printf(g_failures ? "\nFAILED: %d\n" : "\nALL PASS\n", g_failures);
     return g_failures ? 1 : 0;
 }

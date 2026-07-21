@@ -117,6 +117,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_executable(label_printer_selftest ${CMAKE_SOURCE_DIR}/tests/label_printer_selftest.cpp)
 target_sources(label_printer_selftest PRIVATE
+    $<TARGET_OBJECTS:label_facade_component>           # БПО-фасад AddinLabelPrinter (смоук через CreateObject)
     $<TARGET_OBJECTS:driver_label_printer_component>   # LabelRaster/GfEncoder/BarcodeZpl/LabelPrinterDriver
     $<TARGET_OBJECTS:platform_component>               # ResultEnvelope (результат операції драйвера)
     $<TARGET_OBJECTS:transport_component>              # TransportSpoolerRaw (Winspool RAW) + TCP/COM/WS
@@ -124,8 +125,12 @@ target_sources(label_printer_selftest PRIVATE
     $<TARGET_OBJECTS:base_component>                   # AddInNative::MB2WCHAR/WCHAR2MB (за ServiceTools)
 )
 target_include_directories(label_printer_selftest PRIVATE
+    ${CMAKE_SOURCE_DIR}/include            # SDK 1С: ComponentBase.h/IMemoryManager.h (смоук фасаду)
     ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src ${SPDLOG_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR}
     ${IXWEBSOCKET_INCLUDE_DIR})            # transport_component тягне ixwebsocket-заголовки (WSClient)
+# _WINDOWS — критично: types.h саме за ним вмикає WCHAR_T=wchar_t і ADDIN_API=__stdcall;
+# об'єкти base_component/фасаду зібрані з _WINDOWS — ABI (vtable) мусить збігатися.
+target_compile_definitions(label_printer_selftest PRIVATE _WINDOWS UNICODE _UNICODE)
 set_target_properties(label_printer_selftest PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON

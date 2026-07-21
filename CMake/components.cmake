@@ -33,6 +33,7 @@ set(HEADER_FILES
     # src/components/AddinPOSAPI.h
     src/components/AddinUAPKIConnect.h
     src/components/AddinECRPrivatJSON.h
+    src/components/AddinLabelPrinter.h
 )
 
 ## @var SOURCE_FILES
@@ -56,6 +57,7 @@ set(SOURCE_FILES
     # src/components/AddinPOSAPI.cpp
     src/components/AddinUAPKIConnect.cpp
     src/components/AddinECRPrivatJSON.cpp
+    src/components/AddinLabelPrinter.cpp
 )
 
 ## @var RESOURCE_FILES
@@ -258,6 +260,28 @@ target_include_directories(ecr_facade_component PRIVATE
 target_compile_definitions(ecr_facade_component PRIVATE _WINDOWS UNICODE _UNICODE)
 add_dependencies(ecr_facade_component base_component spdlog nlohmann_json helpers_component driver_ecr_privatjson_component platform_component)
 
+## @var label_facade_component
+## @brief 1С-фасад AddinLabelPrinter: БПО-методи (системні+функціональні), XML I/O, GetLastError.
+## @note Компонента-фасад над драйвером принтера етикеток; входить у фінальну DLL.
+add_library(label_facade_component OBJECT
+    src/components/AddinLabelPrinter.h
+    src/components/AddinLabelPrinter.cpp
+)
+set_target_properties(label_facade_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+target_include_directories(label_facade_component PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${SPDLOG_INCLUDE_DIR}
+    ${NLOHMANN_JSON_INCLUDE_DIR}
+    ${CMAKE_SOURCE_DIR}/extern/pugixml/src
+)
+target_compile_definitions(label_facade_component PRIVATE _WINDOWS UNICODE _UNICODE)
+add_dependencies(label_facade_component base_component spdlog nlohmann_json helpers_component driver_label_printer_component platform_component)
+
 ## @var uapki_helper_component
 ## @brief Вспомогательный компонент для работы с библиотекой UAPKI
 if(BUILD_WITH_UAPKI)
@@ -355,6 +379,8 @@ add_library(${TARGET} SHARED
     $<TARGET_OBJECTS:platform_component>
     $<TARGET_OBJECTS:driver_ecr_privatjson_component>
     $<TARGET_OBJECTS:ecr_facade_component>
+    $<TARGET_OBJECTS:driver_label_printer_component>
+    $<TARGET_OBJECTS:label_facade_component>
     # $<TARGET_OBJECTS:ecrcommx_component>
     # $<TARGET_OBJECTS:posapi_component>
 
@@ -369,6 +395,10 @@ target_compile_definitions(${TARGET} PRIVATE UNICODE _UNICODE)
 target_link_libraries(${TARGET} PRIVATE nlohmann_json)
 target_link_libraries(${TARGET} PRIVATE spdlog::spdlog)
 target_link_libraries(${TARGET} PRIVATE ixwebsocket)
+# Драйвер принтера етикеток: TransportSpoolerRaw (winspool), растр LabelRaster (gdiplus),
+# CreateStreamOnHGlobal у декоді картинок (ole32). Лінк — на ФІНАЛЬНУ DLL, бо збірка через
+# $<TARGET_OBJECTS> не пропагує лінк-залежності OBJECT-бібліотек.
+target_link_libraries(${TARGET} PRIVATE winspool gdiplus ole32)
 
 # Додаємо лінкування UAPKI до основної DLL
 if(BUILD_WITH_UAPKI)
