@@ -3,6 +3,9 @@
 #include <optional>
 #include <memory>
 #include <vector>
+#include <thread>
+#include <chrono>
+#include "support/LabelEmulator.h"
 #include "../src/drivers/label_printer/LabelModel.h"
 #include "../src/drivers/label_printer/LabelUnits.h"
 #include "../src/drivers/label_printer/GfEncoder.h"
@@ -259,6 +262,40 @@ static void TestFacadeSmoke() {
     delete comp;
 }
 
+// L-p2: наскрізний шлях драйвер -> реальний TransportTCP -> LabelEmulator.
+// Друк іде у справжній сокет; емулятор в окремому потоці накопичує ZPL.
+static void TestTransportE2E() {
+    GdiplusRuntime gdi;
+    LabelEmulator emu;
+    CHECK(emu.Start(0), "emulator started");
+    LabelPrinterDriver drv;
+    DeviceProfile dp;
+    dp.transport = DeviceProfile::Transport::Tcp;
+    dp.host = "127.0.0.1"; dp.port = emu.Port(); dp.dotsPerMm = 8;
+    std::string id = drv.Connect(dp);
+
+    LabelBatch b;
+    LabelFormatting fmt; fmt.width = 60; fmt.height = 40;
+    BarcodeField bc; bc.fieldName = "Bar"; bc.type = "EAN13"; bc.geom = {1, 22, 0, 10, 0};
+    fmt.barcodes.push_back(bc);
+    b.formatting = fmt;
+    b.labels.push_back({1, { {"Bar", std::string("4008110271538")} }});
+    CHECK(drv.PrintLabels(id, b, "first").ok, "print ok over TCP");
+
+    // Дати сокету доставити: чекаємо на повний кадр (^XZ) з коротким ретраєм.
+    std::string z;
+    for (int i = 0; i < 50; ++i) {
+        z = emu.LastZpl();
+        if (z.find("^XZ") != std::string::npos) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    CHECK(z.find("^XA") != std::string::npos, "emulator received ZPL start ^XA");
+    CHECK(z.find("^BE") != std::string::npos, "emulator received native EAN13 ^BE");
+
+    drv.Disconnect(id);
+    emu.Stop();
+}
+
 int main() {
     TestUnits();
     TestGfEncoder();
@@ -271,6 +308,7 @@ int main() {
     TestDriverBatch();
     TestXml();
     TestFacadeSmoke();
+    TestTransportE2E();
     std::printf(g_failures ? "\nFAILED: %d\n" : "\nALL PASS\n", g_failures);
     return g_failures ? 1 : 0;
 }

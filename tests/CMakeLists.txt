@@ -115,7 +115,9 @@ endif()
 # label_printer_selftest — харнес каркасу драйвера принтера етикеток (ZPL).
 # Поки лише LabelModel/LabelUnits; наступні таски додадуть GfEncoder/BarcodeZpl/...
 # ---------------------------------------------------------------------------
-add_executable(label_printer_selftest ${CMAKE_SOURCE_DIR}/tests/label_printer_selftest.cpp)
+add_executable(label_printer_selftest ${CMAKE_SOURCE_DIR}/tests/label_printer_selftest.cpp
+    support/LabelEmulator.cpp                          # TCP-емулятор-захоплювач ZPL (L-p2 e2e)
+)
 target_sources(label_printer_selftest PRIVATE
     $<TARGET_OBJECTS:label_facade_component>           # БПО-фасад AddinLabelPrinter (смоук через CreateObject)
     $<TARGET_OBJECTS:driver_label_printer_component>   # LabelRaster/GfEncoder/BarcodeZpl/LabelPrinterDriver
