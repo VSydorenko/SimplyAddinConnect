@@ -1,6 +1,13 @@
 # Label Printer Driver (LabelPrinter) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **СТАТУС: ВИКОНАНО** (2026-07-22, через `/виконай-задачу` — Workflow-оркестрація).
+> Усі Task 1–13 реалізовано, пройдено адверсарне код-рев'ю (12 CONFIRMED знахідок усунено),
+> синхронізовано документацію. **Гейт зелений на обох архітектурах:** `build_project.ps1 -WithTests`
+> (x86+x64) + `run_tests.ps1 -NoUapki x64/x86` → PASS=8, FAIL/BLOCKED=0; L-p1 86 CHECK, L-p3 11 CHECK,
+> DLL-експортів рівно 3. Коміти `b257d80..aa3c011` на гілці `design-label-printer`.
+> TDD «red-кроки» (запусти-й-переконайся-що-падає) свідомо згорнуто у фінальну зелену верифікацію.
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Реалізувати нативну 1С-компоненту «Принтер этикеток» (тип БПО `LabelPrinter`), що приймає стандартний XML-пакет `LabelsTable` і друкує етикетки на ZPL-принтер через spooler-RAW або TCP:9100, з гібридним рендером (нативні штрихкоди + растр GDI+ у `^GF`).
 
@@ -58,7 +65,7 @@
 **Interfaces:**
 - Produces: структури `TextField/BarcodeField/ImageField/UserDataField/LabelFormatting/LabelRecord/LabelInstance/LabelBatch/DeviceProfile`; `mmToDots(double,int)->long`; `ptToDots(double,int)->long`.
 
-- [ ] **Step 1: Створити `LabelModel.h`** (дзеркало §5 спеки, value-семантика через `std::optional`)
+- [x] **Step 1: Створити `LabelModel.h`** (дзеркало §5 спеки, value-семантика через `std::optional`)
 
 ```cpp
 #pragma once
@@ -114,7 +121,7 @@ struct DeviceProfile {
 } // namespace labelprinter
 ```
 
-- [ ] **Step 2: Створити `LabelUnits.h`**
+- [x] **Step 2: Створити `LabelUnits.h`**
 
 ```cpp
 #pragma once
@@ -125,7 +132,7 @@ inline long ptToDots(double pt, int dotsPerMm) { return std::lround(pt * dotsPer
 } // namespace labelprinter
 ```
 
-- [ ] **Step 3: Створити `tests/label_printer_selftest.cpp` (скелет + CHECK-макрос + перший тест одиниць)**
+- [x] **Step 3: Створити `tests/label_printer_selftest.cpp` (скелет + CHECK-макрос + перший тест одиниць)**
 
 ```cpp
 #include <cstdio>
@@ -151,7 +158,7 @@ int main() {
 }
 ```
 
-- [ ] **Step 4: Додати OBJECT-ціль у `CMake/components.cmake`** (за зразком `driver_ecr_privatjson_component`, рядки ~184-205; поки лише хедери — `.cpp` додаватимуться в наступних тасках)
+- [x] **Step 4: Додати OBJECT-ціль у `CMake/components.cmake`** (за зразком `driver_ecr_privatjson_component`, рядки ~184-205; поки лише хедери — `.cpp` додаватимуться в наступних тасках)
 
 ```cmake
 add_library(driver_label_printer_component OBJECT
@@ -168,7 +175,7 @@ add_dependencies(driver_label_printer_component base_component spdlog nlohmann_j
 
 (Ще НЕ додавати `$<TARGET_OBJECTS:driver_label_printer_component>` у фінальну DLL — зробимо в Task 12, коли зʼявиться фасад.)
 
-- [ ] **Step 5: Додати тестову ціль у `tests/CMakeLists.txt`** (за зразком `ecr_privatjson_selftest`, рядки ~84-112)
+- [x] **Step 5: Додати тестову ціль у `tests/CMakeLists.txt`** (за зразком `ecr_privatjson_selftest`, рядки ~84-112)
 
 ```cmake
 add_executable(label_printer_selftest ${CMAKE_SOURCE_DIR}/tests/label_printer_selftest.cpp)
@@ -177,13 +184,13 @@ target_include_directories(label_printer_selftest PRIVATE
 set_target_properties(label_printer_selftest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 ```
 
-- [ ] **Step 6: Зібрати й запустити**
+- [x] **Step 6: Зібрати й запустити**
 
 Run: `powershell -ExecutionPolicy Bypass -File build_project.ps1 -WithTests`
 Then: `bin/Release/label_printer_selftest_x64.exe`
 Expected: усі `[PASS]`, `ALL PASS`, exit 0.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/drivers/label_printer/LabelModel.h src/drivers/label_printer/LabelUnits.h tests/label_printer_selftest.cpp CMake/components.cmake tests/CMakeLists.txt
@@ -203,7 +210,7 @@ git commit -m "feat(label): каркас драйвера принтера ет�
 - Consumes: —
 - Produces: `struct Bitmap1{ int widthDots, heightDots; std::vector<uint8_t> rows; };` (rows = packed 1bpp, MSB-first, `bytesPerRow=ceil(w/8)`, 1=чорний); `std::string GfEncoder::EncodeGfa(const Bitmap1&, int xDots, int yDots, int maxRowsPerTile);` → рядок ZPL із одного або кількох `^FO..^GFA..^FS` (тайлінг за `maxRowsPerTile`).
 
-- [ ] **Step 1: Написати тест `TestGfEncoder`** (2×1-байтна рядок-матриця → відомий hex)
+- [x] **Step 1: Написати тест `TestGfEncoder`** (2×1-байтна рядок-матриця → відомий hex)
 
 ```cpp
 // у selftest, #include "../src/drivers/label_printer/GfEncoder.h"
@@ -218,12 +225,12 @@ static void TestGfEncoder() {
 }
 ```
 
-- [ ] **Step 2: Запустити — має впасти на компіляції** (немає `GfEncoder.h`)
+- [x] **Step 2: Запустити — має впасти на компіляції** (немає `GfEncoder.h`)
 
 Run: `powershell -File build_project.ps1 -WithTests`
 Expected: помилка компіляції `GfEncoder.h: No such file`.
 
-- [ ] **Step 3: Створити `GfEncoder.h`**
+- [x] **Step 3: Створити `GfEncoder.h`**
 
 ```cpp
 #pragma once
@@ -240,7 +247,7 @@ public:
 } // namespace labelprinter
 ```
 
-- [ ] **Step 4: Створити `GfEncoder.cpp`**
+- [x] **Step 4: Створити `GfEncoder.cpp`**
 
 ```cpp
 #include "../../core/pch.h"
@@ -270,7 +277,7 @@ std::string GfEncoder::EncodeGfa(const Bitmap1& bm, int xDots, int yDots, int ma
 } // namespace labelprinter
 ```
 
-- [ ] **Step 5: Додати `GfEncoder.cpp` у CMake-ціль**
+- [x] **Step 5: Додати `GfEncoder.cpp` у CMake-ціль**
 
 ```cmake
 # у add_library(driver_label_printer_component OBJECT ... ) додати рядок:
@@ -280,12 +287,12 @@ std::string GfEncoder::EncodeGfa(const Bitmap1& bm, int xDots, int yDots, int ma
 # target_sources(label_printer_selftest PRIVATE $<TARGET_OBJECTS:driver_label_printer_component>)
 ```
 
-- [ ] **Step 6: Зібрати й запустити — PASS**
+- [x] **Step 6: Зібрати й запустити — PASS**
 
 Run: `powershell -File build_project.ps1 -WithTests` → `bin/Release/label_printer_selftest_x64.exe`
 Expected: `TestGfEncoder` усі `[PASS]`, exit 0.
 
-- [ ] **Step 7: Додати тест тайлінгу**
+- [x] **Step 7: Додати тест тайлінгу**
 
 ```cpp
 static void TestGfTiling() {
@@ -298,7 +305,7 @@ static void TestGfTiling() {
 }
 ```
 
-- [ ] **Step 8: Запустити — PASS, потім Commit**
+- [x] **Step 8: Запустити — PASS, потім Commit**
 
 Run: rebuild + run selftest → усі PASS.
 ```bash
@@ -320,7 +327,7 @@ git commit -m "feat(label): ^GFA-енкодер 1-bit bitmap із тайлінг
   `BarcodeZpl::Emit(const BarcodeField&, const std::string& value, int dotsPerMm) -> BarcodeEmit`. Успіх → ZPL-фрагмент `^FOx,y^BY..<cmd>^FD<escaped>^FS`; невідомий тип → `ok=false, errCode="UNSUPPORTED_BARCODE"`.
   `std::string BarcodeZpl::EscapeFd(const std::string& raw)` — hex-escaping через `^FH` для `^ ~ >` і control-байтів.
 
-- [ ] **Step 1: Тести** (мапінг + UNSUPPORTED + escaping + нормалізація EAN13)
+- [x] **Step 1: Тести** (мапінг + UNSUPPORTED + escaping + нормалізація EAN13)
 
 ```cpp
 static void TestBarcodeZpl() {
@@ -338,9 +345,9 @@ static void TestBarcodeZpl() {
 }
 ```
 
-- [ ] **Step 2: Запустити — FAIL (компіляція)**. Run build; Expected: `BarcodeZpl.h` not found.
+- [x] **Step 2: Запустити — FAIL (компіляція)**. Run build; Expected: `BarcodeZpl.h` not found.
 
-- [ ] **Step 3: `BarcodeZpl.h`**
+- [x] **Step 3: `BarcodeZpl.h`**
 
 ```cpp
 #pragma once
@@ -356,7 +363,7 @@ public:
 } // namespace labelprinter
 ```
 
-- [ ] **Step 4: `BarcodeZpl.cpp`** (мапінг за виправленою таблицею §6.1; мінімальна нормалізація/escaping)
+- [x] **Step 4: `BarcodeZpl.cpp`** (мапінг за виправленою таблицею §6.1; мінімальна нормалізація/escaping)
 
 ```cpp
 #include "../../core/pch.h"
@@ -415,9 +422,9 @@ BarcodeEmit BarcodeZpl::Emit(const BarcodeField& f, const std::string& value, in
 } // namespace labelprinter
 ```
 
-- [ ] **Step 5: CMake** — додати `BarcodeZpl.cpp/.h` у ціль (як у Task 2 Step 5).
+- [x] **Step 5: CMake** — додати `BarcodeZpl.cpp/.h` у ціль (як у Task 2 Step 5).
 
-- [ ] **Step 6: Зібрати, запустити — PASS. Commit.**
+- [x] **Step 6: Зібрати, запустити — PASS. Commit.**
 
 ```bash
 git add src/drivers/label_printer/BarcodeZpl.h src/drivers/label_printer/BarcodeZpl.cpp tests/label_printer_selftest.cpp CMake/components.cmake
@@ -438,7 +445,7 @@ git commit -m "feat(label): нативний ZPL-мапінг штрихкоді
 - Produces: `class GdiplusRuntime { public: GdiplusRuntime(); ~GdiplusRuntime(); };` (RAII, process-wide ref-counted, НЕ з DllMain);
   `Bitmap1 LabelRaster::Render(const LabelFormatting& fmt, const std::function<std::optional<std::string>(const std::string&)>& valueOf, int dotsPerMm);` — рендерить лише Text/Image/Border у 1-bit розміром `mmToDots(width)×mmToDots(height)`; ділянки штрихкодів лишає порожніми; `valueOf(fieldName)` дає значення поля (default/record).
 
-- [ ] **Step 1: Тест `TestRaster`** (розмір + непорожність; шрифт — bundled `tests/data/DejaVuSans.ttf` за наявності, інакше системний Arial із tolerance)
+- [x] **Step 1: Тест `TestRaster`** (розмір + непорожність; шрифт — bundled `tests/data/DejaVuSans.ttf` за наявності, інакше системний Arial із tolerance)
 
 ```cpp
 static void TestRaster() {
@@ -454,9 +461,9 @@ static void TestRaster() {
 }
 ```
 
-- [ ] **Step 2: Запустити — FAIL (немає `LabelRaster.h`).**
+- [x] **Step 2: Запустити — FAIL (немає `LabelRaster.h`).**
 
-- [ ] **Step 3: `LabelRaster.h`**
+- [x] **Step 3: `LabelRaster.h`**
 
 ```cpp
 #pragma once
@@ -478,7 +485,7 @@ public:
 } // namespace labelprinter
 ```
 
-- [ ] **Step 4: `LabelRaster.cpp`** (GDI+; grayscale→threshold у 1-bit; UnitPixel; порядок біт MSB-first)
+- [x] **Step 4: `LabelRaster.cpp`** (GDI+; grayscale→threshold у 1-bit; UnitPixel; порядок біт MSB-first)
 
 ```cpp
 #include "../../core/pch.h"
@@ -531,20 +538,20 @@ Bitmap1 LabelRaster::Render(const LabelFormatting& fmt, const ValueOf& valueOf, 
 } // namespace labelprinter
 ```
 
-- [ ] **Step 5: CMake** — додати `LabelRaster.cpp/.h`; **selftest лінкує `gdiplus`**:
+- [x] **Step 5: CMake** — додати `LabelRaster.cpp/.h`; **selftest лінкує `gdiplus`**:
 
 ```cmake
 # tests/CMakeLists.txt, ціль label_printer_selftest:
 target_link_libraries(label_printer_selftest PRIVATE gdiplus)
 ```
 
-- [ ] **Step 6: Зібрати, запустити — PASS.**
+- [x] **Step 6: Зібрати, запустити — PASS.**
 
 Run: rebuild; run selftest. Expected: `TestRaster` PASS (розмір 160×80, чорні пікселі є).
 
-- [ ] **Step 7: Додати рендер Image і Border** (два кроки: тест непорожності при Image з валідним Base64 1×1 PNG; імплементація декоду Base64→`IStream`→`Image`, `DrawImage` у прямокутник; `DrawRectangle` для border). Запустити — PASS.
+- [x] **Step 7: Додати рендер Image і Border** (два кроки: тест непорожності при Image з валідним Base64 1×1 PNG; імплементація декоду Base64→`IStream`→`Image`, `DrawImage` у прямокутник; `DrawRectangle` для border). Запустити — PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/drivers/label_printer/LabelRaster.* tests/label_printer_selftest.cpp CMake/components.cmake tests/CMakeLists.txt
@@ -568,7 +575,7 @@ git commit -m "feat(label): растр GDI+ (текст/картинка/рам�
   `std::vector<uint8_t> LabelZplGenerator::BuildInit(const DeviceProfile&);`
   Внутрішній `valueOf(instance, formatting, fieldName)` реалізує value-семантику (record → default).
 
-- [ ] **Step 1: Тест `TestGenerator`** (структура: `^XA`/`^XZ`, `^PQ`, растровий `^GFA`, нативний `^BE`; `UNSUPPORTED` пробрасується)
+- [x] **Step 1: Тест `TestGenerator`** (структура: `^XA`/`^XZ`, `^PQ`, растровий `^GFA`, нативний `^BE`; `UNSUPPORTED` пробрасується)
 
 ```cpp
 static void TestGenerator() {
@@ -594,9 +601,9 @@ static void TestGenerator() {
 }
 ```
 
-- [ ] **Step 2: FAIL** (немає `LabelZplGenerator.h`).
+- [x] **Step 2: FAIL** (немає `LabelZplGenerator.h`).
 
-- [ ] **Step 3–4: `LabelZplGenerator.{h,cpp}`** — реалізація:
+- [x] **Step 3–4: `LabelZplGenerator.{h,cpp}`** — реалізація:
   1) `valueOf`: шукає `record.value` за `fieldName`; якщо відсутній → `defaultOrStaticValue`;
   2) растр усього нетекстового-штрихкодового шару через `LabelRaster::Render` → `GfEncoder::EncodeGfa` (з `maxRowsPerTile` із профілю/ліміту);
   3) кожен `BarcodeField` → `BarcodeZpl::Emit(value)`; при `!ok` → повернути `GenResult{false, {}, errCode, errDesc}`;
@@ -621,9 +628,9 @@ public:
 
 (Імплементація `.cpp` — за пунктами 1–4 вище; `valueOf` як лямбда, що замикає `inst`+`fmt`.)
 
-- [ ] **Step 5: CMake** — додати файли.
-- [ ] **Step 6: Зібрати, запустити — PASS.**
-- [ ] **Step 7: Commit**
+- [x] **Step 5: CMake** — додати файли.
+- [x] **Step 6: Зібрати, запустити — PASS.**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/drivers/label_printer/LabelZplGenerator.* tests/label_printer_selftest.cpp CMake/components.cmake
@@ -643,7 +650,7 @@ git commit -m "feat(label): LabelZplGenerator — повна етикетка (^
 - Produces: `class TransportSpoolerRaw : public ITransport` з ctor `explicit TransportSpoolerRaw(std::string printerName);`
   метод `void SetSendFunctionForTest(std::function<int(const std::vector<uint8_t>&)>);` (перехоплення `WritePrinter`-етапу).
 
-- [ ] **Step 1: Тест `TestSpooler`** (через тест-шов — без реального принтера)
+- [x] **Step 1: Тест `TestSpooler`** (через тест-шов — без реального принтера)
 
 ```cpp
 static void TestSpooler() {
@@ -659,13 +666,13 @@ static void TestSpooler() {
 }
 ```
 
-- [ ] **Step 2: FAIL.**
-- [ ] **Step 3–4: `Transport_SpoolerRaw.{h,cpp}`** — реалізація:
+- [x] **Step 2: FAIL.**
+- [x] **Step 3–4: `Transport_SpoolerRaw.{h,cpp}`** — реалізація:
   - `.h`: успадковує `ITransport`, реалізує `Open/Close/IsOpen/Send` + 3 колбек-сеттери (no-op, лише зберігають), + `SetSendFunctionForTest`.
   - `.cpp`: `Open()` → `OpenPrinterW(name)`; `Send()` → якщо є тест-функція, викликати її; інакше повна послідовність `StartDocPrinterW(DOC_INFO_1{pDatatype=L"RAW", pOutputFile=NULL})` → `StartPagePrinter` → `WritePrinter` (перевірка `pcWritten==size`, all-or-error) → `EndPagePrinter` → `EndDocPrinter`, з teardown залежно від досягнутого стану й збереженням `GetLastError`; повертає к-сть байтів або -1. Логування — `NEUTRAL_REPORT_*`.
 
-- [ ] **Step 5: CMake** — додати у `transport_component` (source list). Лінк `winspool` — у Task 12.
-- [ ] **Step 6: Зібрати, запустити — PASS. Commit.**
+- [x] **Step 5: CMake** — додати у `transport_component` (source list). Лінк `winspool` — у Task 12.
+- [x] **Step 6: Зібрати, запустити — PASS. Commit.**
 
 ```bash
 git add src/transport/Transport_SpoolerRaw.* tests/label_printer_selftest.cpp CMake/components.cmake
@@ -690,7 +697,7 @@ git commit -m "feat(transport): TransportSpoolerRaw (Winspool RAW) з тест-�
   `void Disconnect(const std::string& deviceId);` `bool IsConnected(const std::string& deviceId) const;`
   Тест-хук: `void SetTransportFactoryForTest(std::function<std::unique_ptr<ITransport>(const DeviceProfile&)>);`
 
-- [ ] **Step 1: Тест `TestDriverBatch`** (state machine + мульти-device через фейковий транспорт)
+- [x] **Step 1: Тест `TestDriverBatch`** (state machine + мульти-device через фейковий транспорт)
 
 ```cpp
 static void TestDriverBatch() {
@@ -725,8 +732,8 @@ static void TestDriverBatch() {
 }
 ```
 
-- [ ] **Step 2: FAIL.**
-- [ ] **Step 3–4: `LabelPrinterDriver.{h,cpp}`** — реалізація:
+- [x] **Step 2: FAIL.**
+- [x] **Step 3–4: `LabelPrinterDriver.{h,cpp}`** — реалізація:
   - `DeviceContext{ std::unique_ptr<ITransport> transport; std::optional<LabelFormatting> cachedFormatting; DeviceProfile profile; std::mutex m; }`;
   - `std::map<std::string, std::unique_ptr<DeviceContext>> devices_; std::mutex registryMutex_;`
   - state machine у `PrintLabels`: `first` → set cache (reset old); `regular`/`last` без cache → `Fail("BAD_INPUT",…)`; для кожного instance → `LabelZplGenerator::BuildLabel` (при `!ok` → повернути з накопиченим `failedIndex`); `transport->Send`; `last` → clear cache;
@@ -734,8 +741,8 @@ static void TestDriverBatch() {
   - `MapResult`: успіх → `Ok({acceptedInstances, acceptedCopies})`.
   - фабрика транспорту: за замовчуванням `MakeTransport(profile)` (spooler/tcp), у тестах — підмінна.
 
-- [ ] **Step 5: CMake** — додати файли.
-- [ ] **Step 6: Зібрати, запустити — PASS. Commit.**
+- [x] **Step 5: CMake** — додати файли.
+- [x] **Step 6: Зібрати, запустити — PASS. Commit.**
 
 ```bash
 git add src/drivers/label_printer/LabelPrinterDriver.* tests/label_printer_selftest.cpp CMake/components.cmake
@@ -754,8 +761,8 @@ git commit -m "feat(label): LabelPrinterDriver — мульти-DeviceID, batch 
 - Produces: `bool LabelXml::ParseLabelsTable(const std::string& xml, LabelBatch& out, std::string& err);`
   `bool LabelXml::ParseConnectionParameters(const std::string& xml, DeviceProfile& out, std::string& err);`
 
-- [ ] **Step 1: Додати pugixml** — `git submodule add https://github.com/zeux/pugixml extern/pugixml` (MIT). Додати include-шлях у ціль драйвера.
-- [ ] **Step 2: Тест `TestXml`** — розпарсити приклад із контракту 3.7 (той самий XML) і перевірити value-семантику:
+- [x] **Step 1: Додати pugixml** — `git submodule add https://github.com/zeux/pugixml extern/pugixml` (MIT). Додати include-шлях у ціль драйвера.
+- [x] **Step 2: Тест `TestXml`** — розпарсити приклад із контракту 3.7 (той самий XML) і перевірити value-семантику:
 
 ```cpp
 static void TestXml() {
@@ -776,10 +783,10 @@ static void TestXml() {
 }
 ```
 
-- [ ] **Step 3: FAIL.**
-- [ ] **Step 4: `LabelXml.{h,cpp}`** — pugixml: `Formatting` (атрибути → поля; типи Text/Barcode/Image/UserData); `Static`/`Value`/`ValueBase64` → `optional`; `Labels/Label/Record`; `ConnectionParameters` `<Parameter Name Value>` → `DeviceProfile` (невідомі — ігнорувати).
-- [ ] **Step 5: CMake** — файли + pugixml.
-- [ ] **Step 6: Зібрати, запустити — PASS. Commit.**
+- [x] **Step 3: FAIL.**
+- [x] **Step 4: `LabelXml.{h,cpp}`** — pugixml: `Formatting` (атрибути → поля; типи Text/Barcode/Image/UserData); `Static`/`Value`/`ValueBase64` → `optional`; `Labels/Label/Record`; `ConnectionParameters` `<Parameter Name Value>` → `DeviceProfile` (невідомі — ігнорувати).
+- [x] **Step 5: CMake** — файли + pugixml.
+- [x] **Step 6: Зібрати, запустити — PASS. Commit.**
 
 ```bash
 git add extern/pugixml .gitmodules src/drivers/label_printer/LabelXml.* tests/label_printer_selftest.cpp CMake/components.cmake
@@ -798,7 +805,7 @@ git commit -m "feat(label): XML-адаптер LabelsTable/ConnectionParameters 
 - Consumes: `AddInNative`, `LabelPrinterDriver`, `LabelXml`.
 - Produces: компонента `LabelPrinter` з методами §10 (EN/RU). Патерн — 1:1 як `AddinECRPrivatJSON` (`REGISTER_COMPONENT`, `RegisterMethods`, `runSync`), але БПО-семантика (`BOOL`+OUT+`GetLastError`).
 
-- [ ] **Step 1: Тест `TestFacadeSmoke`** (реєстрація методів через `AddInNative::CreateObject`, як `ecr_privatjson_selftest` рядки ~421-431)
+- [x] **Step 1: Тест `TestFacadeSmoke`** (реєстрація методів через `AddInNative::CreateObject`, як `ecr_privatjson_selftest` рядки ~421-431)
 
 ```cpp
 static void TestFacadeSmoke() {
@@ -809,14 +816,14 @@ static void TestFacadeSmoke() {
 }
 ```
 
-- [ ] **Step 2: FAIL.**
-- [ ] **Step 3–4: `AddinLabelPrinter.{h,cpp}`**:
+- [x] **Step 2: FAIL.**
+- [x] **Step 3–4: `AddinLabelPrinter.{h,cpp}`**:
   - `.h`: `class AddinLabelPrinter : public AddInNative { public: static std::vector<std::u16string> names; AddinLabelPrinter(); ~AddinLabelPrinter(); private: void RegisterMethods(); LabelPrinterDriver driver_; int lastErrorCode_=0; std::string lastErrorDesc_; std::string activeDeviceId_; };`
   - `.cpp`: `REGISTER_COMPONENT(u"LabelPrinter", AddinLabelPrinter)`; `RegisterMethods`: `GetInterfaceRevision`/`ПолучитьРевизиюИнтерфейса` (Ret→int 4007), `GetDescription`/`ПолучитьОписание` (формує `DriverDescription` XML → OUT/result), `GetLastError`/`ПолучитьОшибку` (Ret→int code, опис — через result/OUT), `EquipmentParameters`, `ConnectEquipment`/`ПодключитьОборудование` (parse ConnectionParameters → driver.Connect → result=DeviceID), `DisconnectEquipment`, `EquipmentTest`, `InitializePrinter`/`ИнициализацияПринтера`, `PrintLabels`/`ПечатьЭтикеток` (parse LabelsTable → driver.PrintLabels; `ResultEnvelope`→BOOL, при !ok зберегти lastError). Кожен хендлер — try/catch → зберегти lastError, повернути false.
   - Хелпер `mapEnvToBool(env)`: якщо `!env.ok` → `lastErrorCode_=…; lastErrorDesc_=env.description;` return `env.ok`.
 
-- [ ] **Step 5: CMake** — ціль `label_facade_component` (deps `+driver_label_printer_component`), додати `$<TARGET_OBJECTS:label_facade_component>` і `$<TARGET_OBJECTS:driver_label_printer_component>` у фінальну DLL (рядки ~317-324), файли — у `HEADER_FILES`/`SOURCE_FILES`. Selftest лінкує `label_facade_component`+драйвер+транспорт+base+helpers+pugixml+gdiplus.
-- [ ] **Step 6: Зібрати, запустити — PASS. Commit.**
+- [x] **Step 5: CMake** — ціль `label_facade_component` (deps `+driver_label_printer_component`), додати `$<TARGET_OBJECTS:label_facade_component>` і `$<TARGET_OBJECTS:driver_label_printer_component>` у фінальну DLL (рядки ~317-324), файли — у `HEADER_FILES`/`SOURCE_FILES`. Selftest лінкує `label_facade_component`+драйвер+транспорт+base+helpers+pugixml+gdiplus.
+- [x] **Step 6: Зібрати, запустити — PASS. Commit.**
 
 ```bash
 git add src/components/AddinLabelPrinter.* tests/label_printer_selftest.cpp CMake/components.cmake
@@ -834,7 +841,7 @@ git commit -m "feat(label): БПО-фасад AddinLabelPrinter (системн�
 **Interfaces:**
 - Produces: `class LabelEmulator { public: bool Start(int port); void Stop(); std::string LastZpl() const; int Port() const; };` — Winsock TCP-сервер (localhost), приймає сирий потік, зберігає в буфер; патерн — `tests/support/TerminalEmulator.*`.
 
-- [ ] **Step 1: Тест `TestTransportE2E`** (драйвер → `TransportTCP` → емулятор → отриманий ZPL)
+- [x] **Step 1: Тест `TestTransportE2E`** (драйвер → `TransportTCP` → емулятор → отриманий ZPL)
 
 ```cpp
 static void TestTransportE2E() {
@@ -854,10 +861,10 @@ static void TestTransportE2E() {
 }
 ```
 
-- [ ] **Step 2: FAIL.**
-- [ ] **Step 3–4: `LabelEmulator.{h,cpp}`** — за зразком `TerminalEmulator` (Winsock listen на 127.0.0.1, accept у потоці, recv у буфер до закриття; `Port()==0` → ОС обирає вільний порт, повернути фактичний).
-- [ ] **Step 5: CMake** — `support/LabelEmulator.cpp` у selftest; лінк `ws2_32`.
-- [ ] **Step 6: Зібрати, запустити — PASS. Commit.**
+- [x] **Step 2: FAIL.**
+- [x] **Step 3–4: `LabelEmulator.{h,cpp}`** — за зразком `TerminalEmulator` (Winsock listen на 127.0.0.1, accept у потоці, recv у буфер до закриття; `Port()==0` → ОС обирає вільний порт, повернути фактичний).
+- [x] **Step 5: CMake** — `support/LabelEmulator.cpp` у selftest; лінк `ws2_32`.
+- [x] **Step 6: Зібрати, запустити — PASS. Commit.**
 
 ```bash
 git add tests/support/LabelEmulator.* tests/label_printer_selftest.cpp tests/CMakeLists.txt
@@ -875,8 +882,8 @@ git commit -m "test(label): TCP-емулятор-захоплювач ZPL + tran
 **Interfaces:**
 - Consumes: `LabelEmulator`, головна DLL (`LoadLibraryW`+`GetClassObject`), `IComponentBase`.
 
-- [ ] **Step 1: `label_printer_emulator.cpp`** — standalone EXE: `LabelEmulator` на порту (arg, default 9100), друкує отриманий ZPL у файл/stdout доти, доки не Ctrl-C. (Аналог `ecr_terminal_emulator`.)
-- [ ] **Step 2: `label_native_host.cpp`** — за зразком `tests/ecr_native_host.cpp`:
+- [x] **Step 1: `label_printer_emulator.cpp`** — standalone EXE: `LabelEmulator` на порту (arg, default 9100), друкує отриманий ZPL у файл/stdout доти, доки не Ctrl-C. (Аналог `ecr_terminal_emulator`.)
+- [x] **Step 2: `label_native_host.cpp`** — за зразком `tests/ecr_native_host.cpp`:
   `LoadLibraryW(головна DLL)` → `GetClassObject(L"LabelPrinter", &comp)` → `Init`+`setMemManager` (моки) → `FindMethod(L"ПодключитьОборудование")` + виклик із `ConnectionParameters` XML (`tcp://127.0.0.1:<port>`) → `FindMethod(L"ПечатьЭтикеток")` + `LabelsTable` XML проти in-process `LabelEmulator` → перевірити BOOL і що емулятор отримав ZPL з `^XA`. Exit 0 = OK.
 
 ```cpp
@@ -886,9 +893,9 @@ assert(ok);
 assert(emu.LastZpl().find("^XA") != std::string::npos);
 ```
 
-- [ ] **Step 3: CMake** — цілі `label_printer_emulator`, `label_native_host` (лінк `ws2_32`; `label_native_host` — як `ecr_native_host`, вантажить DLL).
-- [ ] **Step 4: Зібрати; запустити `label_native_host_x64.exe` — exit 0.**
-- [ ] **Step 5: Commit**
+- [x] **Step 3: CMake** — цілі `label_printer_emulator`, `label_native_host` (лінк `ws2_32`; `label_native_host` — як `ecr_native_host`, вантажить DLL).
+- [x] **Step 4: Зібрати; запустити `label_native_host_x64.exe` — exit 0.**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/label_printer_emulator.cpp tests/label_native_host.cpp tests/CMakeLists.txt
@@ -902,22 +909,22 @@ git commit -m "test(label): standalone-емулятор (для 1С) + label_nat
 **Files:**
 - Modify: `CMake/components.cmake` (лінк на `${TARGET}` і тест-цілі), `tests/CMakeLists.txt`, `run_tests.ps1`
 
-- [ ] **Step 1: Лінк системних бібліотек на ФІНАЛЬНУ DLL** (бо збірка через `$<TARGET_OBJECTS>` — звірено `components.cmake:315`)
+- [x] **Step 1: Лінк системних бібліотек на ФІНАЛЬНУ DLL** (бо збірка через `$<TARGET_OBJECTS>` — звірено `components.cmake:315`)
 
 ```cmake
 target_link_libraries(${TARGET} PRIVATE winspool gdiplus)
 ```
 
-- [ ] **Step 2: Лінк на тест-цілі, що лінкують об'єкти напряму** — `label_printer_selftest`, `label_native_host`: `target_link_libraries(<ціль> PRIVATE winspool gdiplus ws2_32)`.
-- [ ] **Step 3: Додати етапи в `run_tests.ps1`** (за зразком L0.7 та L2-ecr, рядки ~334-389): етап `L-p1` (`label_printer_selftest`), `L-p3` (`label_native_host`); критерій — усі `[PASS]`/exit 0; у підсумкову таблицю.
-- [ ] **Step 4: Повний гейт x64**
+- [x] **Step 2: Лінк на тест-цілі, що лінкують об'єкти напряму** — `label_printer_selftest`, `label_native_host`: `target_link_libraries(<ціль> PRIVATE winspool gdiplus ws2_32)`.
+- [x] **Step 3: Додати етапи в `run_tests.ps1`** (за зразком L0.7 та L2-ecr, рядки ~334-389): етап `L-p1` (`label_printer_selftest`), `L-p3` (`label_native_host`); критерій — усі `[PASS]`/exit 0; у підсумкову таблицю.
+- [x] **Step 4: Повний гейт x64**
 
 Run: `powershell -File build_project.ps1 -WithTests`
 Then: `powershell -File run_tests.ps1 -NoUapki x64`
 Expected: L-p1 та L-p3 — PASS; підсумкова таблиця без FAIL; exit 0.
 
-- [ ] **Step 5: Повний гейт x86** — `powershell -File run_tests.ps1 -NoUapki x86` → PASS.
-- [ ] **Step 6: Commit**
+- [x] **Step 5: Повний гейт x86** — `powershell -File run_tests.ps1 -NoUapki x86` → PASS.
+- [x] **Step 6: Commit**
 
 ```bash
 git add CMake/components.cmake tests/CMakeLists.txt run_tests.ps1
@@ -932,10 +939,10 @@ git commit -m "build(label): лінк winspool/gdiplus на фінал+тест�
 - Create: `docs/architecture/label_printer.md`, `docs/integration-1c/label_printer.md`
 - Modify: `docs/architecture/README.md`
 
-- [ ] **Step 1: `docs/architecture/label_printer.md`** — шари, LabelModel, генератор (гібрид), транспорти, batch SM, межі модулів (з §4/§14 спеки). Джерело правди про підсистему (CLAUDE.md).
-- [ ] **Step 2: `docs/integration-1c/label_printer.md`** — як зареєструвати компоненту `LabelPrinter` як «Подключаемое оборудование», параметри підключення, деплой-нота **Generic / Text Only**, приклад `LabelsTable`, поведінка `UNSUPPORTED_BARCODE`.
-- [ ] **Step 3: Додати посилання в `docs/architecture/README.md`.**
-- [ ] **Step 4: Commit**
+- [x] **Step 1: `docs/architecture/label_printer.md`** — шари, LabelModel, генератор (гібрид), транспорти, batch SM, межі модулів (з §4/§14 спеки). Джерело правди про підсистему (CLAUDE.md).
+- [x] **Step 2: `docs/integration-1c/label_printer.md`** — як зареєструвати компоненту `LabelPrinter` як «Подключаемое оборудование», параметри підключення, деплой-нота **Generic / Text Only**, приклад `LabelsTable`, поведінка `UNSUPPORTED_BARCODE`.
+- [x] **Step 3: Додати посилання в `docs/architecture/README.md`.**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/architecture/label_printer.md docs/integration-1c/label_printer.md docs/architecture/README.md
