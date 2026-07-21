@@ -183,6 +183,44 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# label_printer_emulator — standalone-EXE емулятора ZPL-принтера (ручний
+# інструмент для тестування LabelPrinter з реальної 1С без обладнання).
+# Слухає TCP (default 9100), друкує отриманий ZPL у stdout. Не залежить від UAPKI.
+# ---------------------------------------------------------------------------
+add_executable(label_printer_emulator label_printer_emulator.cpp support/LabelEmulator.cpp)
+set_target_properties(label_printer_emulator PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "label_printer_emulator${_TEST_ARCH_SUFFIX}")
+target_include_directories(label_printer_emulator PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR})
+target_compile_definitions(label_printer_emulator PRIVATE _WINDOWS UNICODE _UNICODE)
+target_link_libraries(label_printer_emulator PRIVATE ws2_32)   # LabelEmulator — Winsock
+if(MSVC)
+    target_compile_options(label_printer_emulator PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
+# label_native_host — L-p3-харнес компоненти LabelPrinter поверх ГОЛОВНОЇ DLL.
+# Емулює платформу 1С: вантажить головну DLL через LoadLibraryW у рантаймі й
+# викликає компоненту через IComponentBase (ПодключитьОборудование/ПечатьЭтикеток).
+# ZPL-принтер — in-process LabelEmulator. Драйвер/фасад НЕ лінкуються (усе через DLL).
+# Не залежить від UAPKI — тому ДО гейта нижче.
+# ---------------------------------------------------------------------------
+add_executable(label_native_host label_native_host.cpp support/LabelEmulator.cpp)
+set_target_properties(label_native_host PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "label_native_host${_TEST_ARCH_SUFFIX}")
+target_include_directories(label_native_host PRIVATE
+    ${CMAKE_SOURCE_DIR}/include            # SDK 1С: ComponentBase.h, AddInDefBase.h, IMemoryManager.h
+    ${CMAKE_SOURCE_DIR}/src                # support/LabelEmulator.h тягне заголовки з src-контексту
+    ${CMAKE_SOURCE_DIR})                   # корінь: "support/LabelEmulator.h"
+# _WINDOWS — КРИТИЧНО: types.h саме за ним вмикає WCHAR_T=wchar_t та ADDIN_API=__stdcall;
+# головна DLL зібрана з _WINDOWS, тож ABI (vtable calling convention) мусить збігатися.
+target_compile_definitions(label_native_host PRIVATE _WINDOWS UNICODE _UNICODE
+    HOST_BIN_DIR="${CMAKE_SOURCE_DIR}/bin/Release")
+target_link_libraries(label_native_host PRIVATE ws2_32)   # LabelEmulator — Winsock
+if(MSVC)
+    target_compile_options(label_native_host PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
 # Далі — цілі, що потребують крипто-ядра UAPKI (uapki_bundle існує лише при
 # BUILD_WITH_UAPKI). Без нього тихо пропускаємо решту файлу.
 # ---------------------------------------------------------------------------
