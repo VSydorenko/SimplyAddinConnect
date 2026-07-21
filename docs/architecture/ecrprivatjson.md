@@ -1,404 +1,301 @@
-> **ІСТОРИЧНИЙ ДОКУМЕНТ.** Старий драйвер ECRPrivatJSON (компонента + `protocols/` + `helpers/`) **ВИДАЛЕНО** в гілці `device-core` (2026-07-20). Він замінюється платформою wire (`ITransport`/`IFramer`/`DeviceSession`, див. `docs/tasks/2026-07-20_design_device_transport_session.md`) і новим драйвером у наступній фазі. Цей файл зберігає опис **ПОПЕРЕДНЬОЇ** реалізації для довідки й **НЕ описує чинний код**.
->
-> **ЧИННИЙ СТАН (2026-07-21).** Новий пілотний ECRPrivatJSON поверх device-core реалізовано **повністю — Частини 1 і 2**: драйвер `src/drivers/ecr_privatjson/` (кодек `EcrJsonCodec`, класифікатор `EcrPrivatJsonClassifier`, `Connect`, операції `Purchase`/`Refund`/`CheckConnection`/`GetReceiptInfo` поверх `JobEngine` з poller `getLastStatMsgCode`, `interrupt`, best-effort desync-відновленням, асинхронним API) + **зареєстрована компонента 1С `ECRPrivatJSON`** (фасад `src/components/AddinECRPrivatJSON.*`, `REGISTER_COMPONENT`, делегує драйверу). **Фасад poll-based, без подій:** стан операції — `OperationState`/`СостояниеОперации`, результат — `OperationResult`/`РезультатОперацииJSON`, статус термінала — `LastStatus`/`СтатусТерминала`; `AddInNative::PostExternalEvent` для цього НЕ використовується. `EnableTrace`/`ВключитьТрассировку` вмикає wire-трасування драйвера (`DeviceSession::SetWireTraceHandler`), діє з наступного `Connect`. Дизайн — `docs/tasks/2026-07-21_design_ecr_privatjson_driver.md`; плани — `..._plan_ecr_privatjson_p1_foundation.md` (Ч1), `..._plan_ecr_privatjson_p2_operations_and_1c.md` (Ч2). Тест-контур: L0.7 `ecr_privatjson_selftest`, L2-ecr `ecr_native_host` (через головну DLL), standalone `ecr_terminal_emulator`. Верхньорівневий огляд чинного стану — `docs/architecture/README.md`.
->
-> **Доробки код-рев'ю Ч2 (`7997a28`, 2026-07-21):** гард скасування — `JobEngine::RequestCancel`
-> під м'ютексом переводить `Running → Interrupting` атомарно з виставленням `cancel_`, а
-> `EcrPrivatJsonDriver::StartOperation`/`Execute` скидають прапорці `interruptRequested_`/
-> `interruptSent_` у викликача (не у worker) — cancel одразу після `Start` більше не губиться;
-> RAII-поллер — `ExecuteInternal` зупиняє й `join`-ить poller-потік через деструктор локального
-> guard-об'єкта (діє й при винятку з `RequestPrimary`, без `std::terminate`); не-рекурсивне
-> desync-відновлення — `RecoverAfterDesync` полить `getLastStatMsgCode` **доки код != "0"**
-> (спека §6.5), а не на першій-ліпшій відповіді, і захищене прапорцем `inRecovery_` від
-> повторного входу через власний виклик `ExecuteInternal("GetReceiptInfo", ...)`; JSON-контракт
-> у `catch` — обробники компоненти при винятку повертають валідний `ResultEnvelope::Fail` замість
-> сирого тексту помилки; консистентні `try/catch` на межі 1С в усіх методах фасаду.
+# Архітектура драйвера ECRPrivatJSON (платіжний термінал ПриватБанк)
 
-# Архітектура стеку ECRPrivatJSON (платіжний термінал)
+Пілотний драйвер обладнання поверх [фундаменту device-core](device-core.md). Реалізує
+JSON-протокол платіжних терміналів ПриватБанку (COM/TCP) і виставляє в 1С компоненту
+**`ECRPrivatJSON`**. Цей документ описує **внутрішню будову** драйвера — для подальшого
+розвитку й додавання операцій. Хто пише **прикладний 1С-код** проти готового драйвера — читає
+[docs/integration-1c/ecr-privatjson.md](../integration-1c/ecr-privatjson.md).
 
-Документ описує підсистему взаємодії з платіжним терміналом ПриватБанку — від
-компоненти 1С `AddinECRPrivatJSON` до конкретного каналу зв'язку (COM/TCP/WebSocket).
-Це найзріліша підсистема проєкту SimplyAddinConnect. Наратив звірено з кодом гілки
-`add_UAPKI`; специфікація самого протоколу — у `docs/ECR_Privat_JSON_Protokol.md`.
+Специфікація протоколу — [docs/ECR_Privat_JSON_Protokol.md](../ECR_Privat_JSON_Protokol.md).
+Імена звірені з кодом (`src/drivers/ecr_privatjson/*`, `src/components/AddinECRPrivatJSON.*`,
+`src/platform/*`).
+
+> **Історична примітка.** До 2026-07 у проєкті був інший драйвер `AddinECRPrivatJSON`
+> (`src/protocols/` + `src/helpers/ECRPrivatJSON/`), **видалений як непрацездатний**
+> (два непоєднані буфери прийому). Його заміняє **цей** драйвер поверх device-core. Опис
+> старої реалізації лишився в git-історії; тут не повторюється.
 
 ---
 
-## 1. Трирівнева структура
-
-Підсистема побудована як три рівні плюс змінний транспорт:
+## 1. Шари драйвера
 
 ```
-AddinECRPrivatJSON  (компонента, методи для 1С)
-        │  std::unique_ptr<ECRPrivatJSONProtocol>
-        ▼
-ECRPrivatJSONProtocol  (логіка: підключення, хендшейк, фін./сервісні операції)
-        │  std::unique_ptr
-        ├──────────────► ECRPrivatJSONHelper  (JSON, буфер, синхронізація очікування)
-        └──────────────► ITransport            (канал зв'язку: COM/TCP/WS)
+1С:Підприємство
+   │ tVariant / IComponentBase / ВнешнееСобытие
+┌──▼──────────────────────────────────────────────────────────────┐
+│ ФАСАД  AddinECRPrivatJSON  (компонента 1С «ECRPrivatJSON»)        │
+│   тонка: реєструє методи EN/RU, делегує драйверу, серіалізує      │
+│   ResultEnvelope → JSON-рядок; опційні події через PostExternalEvent│
+├──────────────────────────────────────────────────────────────────┤
+│ ДРАЙВЕР  EcrPrivatJsonDriver                                      │
+│   Connect (еталонна схема) · операції sync/async · worker+poller  │
+│   · send-арбітр 0.1с · desync-відновлення · MapResult             │
+│   ├─ EcrJsonCodec              JSON ⇄ байти (без делімітера)       │
+│   └─ EcrPrivatJsonClassifier : IFrameClassifier  кореляція кадрів  │
+├──────────────────────────────────────────────────────────────────┤
+│ ПЛАТФОРМА  ResultEnvelope · JobEngine        (src/platform/)      │
+├──────────────────────────────────────────────────────────────────┤
+│ DEVICE-CORE  DeviceSession · NullTerminatedFramer · TransportTCP/COM │
+└──────────────────────────────────────────────────────────────────┘
+      ▲ e2e-тест: TerminalEmulator (TCP, localhost)
 ```
 
-- `AddinECRPrivatJSON` (компонента 1С) успадковує `AddInNative`
-  (`src/components/AddinECRPrivatJSON.h`). Вона **тонка**: транслює виклики 1С у
-  протокол і формує відповідь.
-- Компонента володіє `std::unique_ptr<ECRPrivatJSON::ECRPrivatJSONProtocol> protocol_`
-  (`src/components/AddinECRPrivatJSON.h`). Конструктор створює `protocol_` і викликає
-  `RegisterMethods()`; деструктор викликає `protocol_->Disconnect()` та
-  `ServiceTools::DisableComponentLogging(this)`.
-- `ECRPrivatJSONProtocol` володіє `std::unique_ptr<ITransport> transport_` і
-  `std::unique_ptr<ECRPrivatJSONHelper> helper_`
-  (`src/protocols/ECRPrivatJSON/ECRPrivatJSON.h`).
-
-Кожен верхній рівень не знає деталей нижнього: компонента бачить лише протокол,
-протокол — лише інтерфейси `ECRPrivatJSONHelper` та `ITransport`.
-
-### 1.1. Методи компоненти для 1С
-
-Реєстрація відбувається в `AddinECRPrivatJSON::RegisterMethods()`
-(`src/components/AddinECRPrivatJSON.cpp`). Кожен метод має два імені (англ. + укр.):
-
-| Метод (EN / RU) | Призначення |
-|---|---|
-| `EnableLogging` / `ИспользоватьЛогирование` | Увімкнення логування |
-| `ConnectCOM` / `ПодключитьCOM` | Підключення по COM-порту (baudRate за замовч. 115200) |
-| `ConnectTCP` / `ПодключитьTCP` | Підключення по TCP (порт за замовч. 2000) |
-| `ConnectWebSocket` / `ПодключитьWebSocket` | Підключення по WebSocket (авто-префікс `ws://`) |
-| `Connect` / `Подключить` | Автовизначення транспорту за рядком підключення (`DetermineTransportType`) |
-| `Disconnect` / `Отключить` | Відключення |
-| `IsConnected` / `ПроверитьПодключение` | Перевірка стану підключення |
-| `Payment` / `Оплата` | Оплата (amount, discount, merchantId, subMerchant) |
-| `Refund` / `Возврат` | Повернення (amount, rrn, discount, merchantId, subMerchant) |
-| `Settlement` / `СверкаИтогов` | Звірка підсумків (merchantId) |
-| `GetTerminalInfo` / `ИнформацияОТерминале` | Інформація про термінал |
-| `GetLastResponseCode` / `ПолучитьКодОтвета` | Код відповіді останньої операції |
-| `GetLastResponseDescription` / `ПолучитьОписаниеОтвета` | Опис відповіді |
-| `GetLastReceipt` / `ПолучитьТекстЧека` | Текст чека |
-| `GetLastRRN` / `ПолучитьRRN` | RRN операції |
-| `GetLastApprovalCode` / `ПолучитьКодАвторизации` | Код авторизації |
-| `GetLastCardPAN` / `ПолучитьНомерКарты` | Номер картки |
-| `GetLastAmount` / `ПолучитьСуммуОперации` | Сума операції |
-| `IsLastOperationSuccess` / `УспешнаЛиОперация` | Ознака успіху |
-
-Геттери `GetLast*` читають поля збереженого `lastTerminalResponse_` компоненти.
-`DetermineTransportType` (`src/components/AddinECRPrivatJSON.cpp`) розбирає рядок
-підключення і обирає тип каналу. Перевірка успіху коду —
-`IsSuccessCode(responseCode)` порівнює з `SUCCESS` ("0000"), `SUCCESS_SHORT` ("00"),
-`PARTIAL_APPROVAL` ("0010").
-
-> Примітка: методи звітів (`GetDailyReport`, `GetXReport`, `GetZReport`) та `GetReceipt`
-> існують на рівні `ECRPrivatJSONProtocol` (див. §2.4), але **не** виведені як
-> окремі 1С-методи компоненти — у `RegisterMethods()` для них немає `AddFunction`.
+Уся Privat-специфіка ізольована у двох класах — `EcrJsonCodec` і `EcrPrivatJsonClassifier`;
+`DeviceSession` і транспорти лишаються загальними (їх перевикористає наступний драйвер).
 
 ---
 
-## 2. `ECRPrivatJSONProtocol` — логіка протоколу
+## 2. Прикладний протокол (стисло)
 
-`src/protocols/ECRPrivatJSON/` (заголовок `ECRPrivatJSON.h`). Реалізація навмисно
-розбита по файлах відповідно до груп операцій:
+Повна спека — окремо; для розуміння драйвера достатньо:
 
-| Файл | Вміст |
-|---|---|
-| `ECRPrivatJSON_Connection.cpp` | `ConnectCOM` / `ConnectTCP` / `ConnectWebSocket` / `Disconnect` / `IsConnected` |
-| `ECRPrivatJSON_Handshake.cpp` | `PerformHandshake` / `IdentifyTerminal` / `GetTerminalInfo` |
-| `ECRPrivatJSON_FinancialOperations.cpp` | `Payment` / `Refund` / `Settlement` / `GetReceipt` |
-| `ECRPrivatJSON_ServiceOperations.cpp` | `GetDailyReport` / `GetXReport` / `GetZReport` / `GetLastResponse` |
-| `ECRPrivatJSON_Internal.cpp` | `OnDataReceived` / `OnError` / `OnConnectionStateChanged` |
+- **Кадр** = UTF-8 JSON + термінатор `0x00` (C-рядок). Хендшейк-`PingDevice` має ще й **провідний
+  `0x00`** на початку. Кодуванням делімітера опікується `NullTerminatedFramer`, не драйвер.
+- **Структура повідомлення:** `{method, step, params{}, error(bool), errorDescription}`. Кореляція
+  запит/відповідь — **за полем `method`** (окремого id немає; відповідь ехом дублює `method`).
+- **Дві категорії методів:**
+  - **несервісні** (власне `method`: `PingDevice`, `CheckConnection`, `GetTerminalInfo`,
+    `Purchase`, `Refund`, `GetReceiptInfo`, …) — «займають» термінал, ідуть **primary**-доріжкою,
+    їх не можна слати під час активної операції;
+  - **`ServiceMessage`** (з `params.msgType`: `identify`, `getLastStatMsgCode`, `interrupt`,
+    `correctTransaction`, …) — легкі, дозволені **паралельно** з операцією, ідуть **service**-доріжкою.
+- **`deviceBusy`** — відповідь-відмова термінала на конкурентний несервісний запит.
+- **`getLastStatMsgCode`** — опитування стану термінала під час операції (коди 0–11, §6.2).
+- **Скасування:** сервісний `interrupt` → термінал шле `interruptTransmitted` (ack) + фінальну
+  primary-відповідь операції з `responseCode 1001`.
 
-### 2.1. Підключення
-
-Три методи підключення — `ConnectCOM`, `ConnectTCP`, `ConnectWebSocket`
-(`ECRPrivatJSON_Connection.cpp`) — виконують спільну послідовність:
-
-1. створюють `transport_` потрібного типу і `helper_`;
-2. прив'язують колбеки транспорту до методів протоколу (`OnDataReceived` /
-   `OnError` / `OnConnectionStateChanged`) через лямбди виду
-   `[this](...){ this->OnDataReceived(data); }`;
-3. відкривають канал;
-4. виконують хендшейк (`PerformHandshake`) — до 3 спроб;
-5. виконують ідентифікацію (`IdentifyTerminal`);
-6. на будь-якій невдачі — `Disconnect()` і повернення `false`.
-
-> Оголошений приватний метод-фабрика `CreateTransport` (`ECRPrivatJSON.h`) у
-> прочитаних `.cpp`-файлах реалізації не має — транспорт фактично створюється
-> прямо в кожному з трьох `Connect*`-методів. `CreateTransport` виглядає як
-> мертвий/нереалізований код (потребує підтвердження — див. кінець документа).
-
-### 2.2. Хендшейк (`PerformHandshake` + `IdentifyTerminal`)
-
-Хендшейк виконується під час підключення **після** створення `transport_` + `helper_`.
-
-- `PerformHandshake()` (`ECRPrivatJSON_Handshake.cpp`) формує запит методом
-  `"PingDevice"` через `helper_->BuildRequest("PingDevice", params, true)` — третій
-  аргумент `true` означає режим хендшейку і додає **провідний нуль-байт** `0x00`
-  перед JSON. Запит надсилається напряму через `transport_->Send`; перед відправкою
-  виставляються `waitingForResponse_ = true; responseReceived_ = false;`. Відповідь
-  очікується через `helper_->WaitForResponse(5000)` (таймаут 5 с), успіх
-  перевіряється через `helper_->IsSuccess(response)`. Логіка з до 3 спроб і паузою
-  `500 * attempt` мс між ними реалізована у самих `Connect*`-методах
-  (`ECRPrivatJSON_Connection.cpp`).
-- `IdentifyTerminal()` формує запит методом `"ServiceMessage"` з
-  `params["msgType"] = "identify"`, надсилає, чекає `helper_->WaitForResponse(5000)`,
-  і **вручну** парсить JSON відповіді (через `json::parse`, читаючи
-  `params.terminalName` / `params.terminalSerialNum`), а не через
-  `ParseTerminalResponse`. Формує `terminalInfo = terminalName + " " + terminalSerialNum`.
-
-Специфікація протоколу підтверджує: хендшейк — це повідомлення Ping з
-нуль-термінатором `0x00` у кінці JSON (`docs/ECR_Privat_JSON_Protokol.md`).
-
-> Розбіжність із «еталонною схемою» документації: `docs/ECR_Privat_JSON_Protokol.md`
-> описує послідовність конект → хендшейк → дисконект → Identify → дисконект →
-> основний режим. Реалізація в коді **не** робить проміжних дисконектів: хендшейк і
-> `IdentifyTerminal` виконуються послідовно на одному відкритому з'єднанні
-> (`ECRPrivatJSON_Connection.cpp`).
-
-### 2.3. Фінансові операції
-
-`Payment`, `Refund`, `Settlement`, `GetReceipt` (`ECRPrivatJSON_FinancialOperations.cpp`)
-поділяють спільний патерн: валідація → формування `params` (суми через
-`helper_->FormatAmount`) → визначення методу через
-`helper_->OperationTypeToString(...)` → `helper_->BuildRequest` →
-`helper_->SendReceive(request, timeout)` → `helper_->ParseTerminalResponse` у
-`lastResponse_`.
-
-| Операція | Тип операції (рядок) | Таймаут | Особливості |
-|---|---|---|---|
-| `Payment` | `Purchase` (`OperationType::Purchase`) | 120000 мс | валідація `amount > 0` |
-| `Refund` | `Refund` | 120000 мс | додає `rrn` у `params` |
-| `Settlement` | `Verify` | 120000 мс | — |
-| `GetReceipt` | `PrintReceiptNum` | 60000 мс | вимагає непорожній `transactionId` |
-
-### 2.4. Сервісні операції (звіти)
-
-`GetDailyReport`, `GetXReport`, `GetZReport` (`ECRPrivatJSON_ServiceOperations.cpp`)
-спершу перевіряють `IsConnected()` (повертають `false`, якщо не підключено),
-формують запит і викликають `helper_->SendReceive(request)` з дефолтним таймаутом,
-результат кладуть у `lastResponse_.jsonResponse` і парсять через `ParseTerminalResponse`.
-
-| Звіт | Тип операції (рядок) |
-|---|---|
-| `GetDailyReport` | `Verify` |
-| `GetXReport` | `XReport` |
-| `GetZReport` | `ZReport` |
-
-### 2.5. Асинхронний прийом (колбеки + примітиви синхронізації)
-
-Протокол тримає власний набір полів синхронізації (`ECRPrivatJSON.h`):
-`std::mutex bufferMutex_`, `std::condition_variable dataCondition_`,
-`std::atomic<bool> connected_`, `std::atomic<bool> waitingForResponse_`,
-`std::atomic<bool> responseReceived_`, `std::string receivedResponse_`,
-`std::vector<uint8_t> dataBuffer_`.
-
-- `OnDataReceived(data)` (`ECRPrivatJSON_Internal.cpp`) під
-  `std::lock_guard<std::mutex> lock(bufferMutex_)` додає дані у `dataBuffer_`, шукає
-  нуль-байт-термінатор (`std::find(..., 0)`); при знаходженні вирізає JSON-повідомлення
-  до термінатора. Якщо `waitingForResponse_` було `true` — зберігає повідомлення у
-  `receivedResponse_`, ставить `responseReceived_ = true`, `waitingForResponse_ = false`
-  і викликає `dataCondition_.notify_all()`; інакше логує як «неочікуване повідомлення
-  від терміналу» (з TODO про обробку ініціативних повідомлень). Далі видаляє оброблене
-  повідомлення з буфера і повторює цикл, доки в пакеті лишаються нуль-термінатори
-  (підтримка кількох повідомлень в одному пакеті).
-- `OnError(errorMessage, errorCode)` — лише логує помилку транспортного рівня.
-- `OnConnectionStateChanged(connected)` — оновлює `connected_` і логує зміну стану
-  (лише якщо стан справді змінився).
-
-> **Важлива розбіжність (спостереження з коду, не запуску).** Транспортні колбеки
-> прив'язані **лише** до `Protocol::OnDataReceived`, який заповнює *власні*
-> `dataBuffer_` / `dataCondition_` / `responseReceived_` протоколу. Натомість
-> фінансові й звітні операції викликають `helper_->SendReceive(...)`, який усередині
-> чекає `WaitForResponse` на *власних* `bufferMutex_` / `dataCondition_` /
-> `responseReceived_` **хелпера**. Єдиний метод, що сигналить примітиви хелпера, —
-> `ECRPrivatJSONHelper::ProcessReceivedData`, і він **ніде в кодовій базі не
-> викликається** (перевірено грепом — єдине входження, крім оголошення, це саме
-> визначення методу). Тобто в коді існують дві паралельні, не з'єднані між собою
-> буферно-синхронізаційні підсистеми — у `Protocol` і в `Helper`. Це задокументований
-> факт із коду. Функціональний наслідок (наприклад, що `SendReceive` завжди
-> завершується таймаутом) — логічний висновок, який варто перевірити збіркою/тестом.
+Топологія — **монопольний постійний доступ**: один активний конект, термінал слухає (сервер),
+каса конектиться (клієнт), TCP-порт за замовч. `2000`, COM — `115200 8N1`.
 
 ---
 
-## 3. `ECRPrivatJSONHelper` — формат, буфери, синхронізація
+## 3. Кодек — `EcrJsonCodec`
 
-`src/helpers/ECRPrivatJSON/` (заголовок `ECRPrivatJSONHelper.h`). Розбитий на файли
-`_Request`, `_Response`, `_Parsing`, `_Terminal`, `_Utils`, `_Service`. Відповідає за
-низькорівневу роботу з форматом протоколу.
-
-### 3.1. Формування запиту й нуль-термінатори
-
-- `BuildRequest(method, params = {}, isHandshake = false)`
-  (`ECRPrivatJSONHelper_Request.cpp`) створює JSON виду
-  `{"method": ..., "step": 0[, "params": {...}]}` через `nlohmann::json`, серіалізує
-  (`dump()`), потім викликає `AddNullTerminator(jsonString, isHandshake)`.
-- `AddNullTerminator(json, isHandshake)`: якщо `isHandshake == true` — додає провідний
-  байт `0x00` перед JSON; завжди додає завершальний `0x00` у кінці. Це відповідає
-  специфікації (`docs/ECR_Privat_JSON_Protokol.md`): JSON без пробілів, роздільник
-  повідомлень — `0x00`, для хендшейку — додатковий провідний `0x00`.
-
-### 3.2. Відправка й очікування
-
-- `SendReceive(request, timeout = 30000)` (`ECRPrivatJSONHelper_Request.cpp`): перевіряє
-  `transport_` та `IsOpen()`, конвертує рядок у `std::vector<uint8_t>`, під
-  `bufferMutex_` очищає `dataBuffer_` / `responseReceived_`, викликає
-  `transport_->Send(requestData)`, далі `WaitForResponse(timeout)`, `GetResponse()`,
-  `ResetResponseState()`. Дефолтний таймаут — 30000 мс (`ECRPrivatJSONHelper.h`).
-- `WaitForResponse(timeout)` (`ECRPrivatJSONHelper_Response.cpp`): під
-  `std::unique_lock<std::mutex> lock(bufferMutex_)` викликає
-  `dataCondition_.wait_for(lock, std::chrono::milliseconds(timeout), [this]{ return responseReceived_; })`.
-- `GetResponse()` — повертає `response_` під локом; `ResetResponseState()` — скидає
-  `responseReceived_ = false` і очищає `response_`.
-- `ProcessReceivedData(data)` (`ECRPrivatJSONHelper_Response.cpp`) — накопичує дані у
-  `dataBuffer_` під локом, шукає нуль-термінатор через приватний `FindNullTerminator()`,
-  при знаходженні заповнює `response_`, ставить `responseReceived_ = true`, викликає
-  `dataCondition_.notify_one()`. **Цей метод не викликається жодним колбеком транспорту**
-  (див. розбіжність у §2.5).
-
-> Задокументована в `ARCHITECTURE.md` схема `SendReceive → ProcessReceivedData →
-> WaitForResponse → GetResponse` описує архітектурний *намір*: у дослівному коді
-> `SendReceive` не викликає `ProcessReceivedData` (лише очищає буфер, шле дані, чекає,
-> отримує, скидає стан).
-
-### 3.3. Парсери відповіді
-
-- `ParseJSON(jsonString)` (`ECRPrivatJSONHelper_Parsing.cpp`) — нормалізує через
-  `NormalizeResponseJson`, валідує через `IsJsonValid`, парсить через
-  `nlohmann::json::parse`.
-- `NormalizeResponseJson(jsonString)` — прибирає провідні/кінцеві нуль-байти й
-  непечатні символи (< 32), внутрішні `\0` замінює на пробіл.
-- `ParseTerminalResponse(jsonResponse, response)` — нормалізує, валідує, парсить JSON,
-  очищає `response`, зберігає нормалізований JSON у `response.jsonResponse`, виставляє
-  `response.success = IsSuccess(...)`, потім мапить поле `method` і поля з `params`:
-  `responseCode`, `errorMessage` (за наявності `success = false`), `receiptText`,
-  `operationStatus`, `totalAmount`, `currency`, `transactionId → transactionID`,
-  `terminalId → terminalID`, `approvalCode`, `rrn`, `cardPAN`, `cardExpDate`,
-  `cardHolder`, `merchantId → merchantID`, `AID → aid`, `paymentStatus`, `bankName`,
-  `refundNDSPerc`, `refundNDSAmount`.
-- `IsSuccess(jsonResponse)` (`ECRPrivatJSONHelper.cpp`) — успіх визначається кодом
-  `params.responseCode` ∈ { `SUCCESS` "0000", `SUCCESS_SHORT` "00",
-  `PARTIAL_APPROVAL` "0010" }. Спецвипадок коду "10": для методу `"GetReceiptInfo"` —
-  завжди успіх; для інших методів — успіх якщо `error == false`. Якщо `responseCode`
-  відсутній — fallback на поле `error` (успіх = `!error`). Якщо нічого не визначено —
-  неуспіх.
-- Точкові екстрактори (усі читають `params.<key>`, повертають default/""):
-  `ExtractValueByKey`, `ExtractReceiptText` (`params.receiptText`),
-  `ExtractResponseCode` (`params.responseCode`), `ExtractErrorMessage`
-  (`params.errorMessage`), `ExtractTransactionId` (`params.transactionId`),
-  `ExtractTerminalInfo` (лише якщо `method == "GetTerminalInfo"`: `vendor/model/
-  serialNumber/firmware`, дефолт "Unknown"), `CheckHandshakeResult` (успіх якщо
-  `method == "PingDevice"`).
-- `FormatAmount(amount, precision = 2)` (`ECRPrivatJSONHelper_Utils.cpp`) — обмежує
-  суму в `[0, 999999.99]` (від'ємні → 0, надто великі → 999999.99), форматує через
-  `std::ostringstream` з `std::fixed` + `setprecision`; при виявленні наукової нотації
-  форматує вручну.
-
-### 3.4. Типи (`ECRPrivatJSON_Types.h`)
-
-- `namespace ResponseCodes` — рядкові константи кодів: `SUCCESS` "0000",
-  `SUCCESS_SHORT` "00", `PARTIAL_APPROVAL` "0010", `GENERAL_ERROR` "9999",
-  `TIMEOUT` "0908", `CANCELLED` "0999", плюс коди "1000"–"1008".
-- `enum class OperationType` (44 значення) і `OperationTypeToString(...)`
-  (`ECRPrivatJSONHelper_Utils.cpp`). Практично всі значення enum мають відповідний
-  `case`, окрім `OperationType::Payment` (це псевдонім `Purchase` в enum) — для нього
-  спрацьовує `default:` → повертає `"Unknown"` і логує попередження.
-- `enum class ServiceMessageType` (18 значень) і `ServiceMessageTypeToString(...)` —
-  для більшості значень рядок у нижньому camelCase (напр. "identify"), крім перших
-  трьох у PascalCase ("GetTerminalInfo", "PingDevice", "RunCommand").
-- `struct TerminalResponse` — поля відповіді терміналу (переважно `std::string`), плюс
-  дубльовані булеві `success` та `isSuccess`; `Clear()` скидає поля.
-
-> Дослівний факт із коду: `ECRPrivatJSONHelper_Parsing.cpp` містить рядок
-> `response.totalAmount = std::stod(amountStr);`, тоді як `TerminalResponse::totalAmount`
-> оголошено як `std::string` (`ECRPrivatJSON_Types.h`). `std::stod` повертає `double` —
-> тип не збігається з полем. Чи це компілюється — не перевірялося (див. кінець документа).
-
----
-
-## 4. Транспортний шар
-
-`src/transport/`. Єдиний інтерфейс `ITransport` (`Transport.h`) — усі канали
-виглядають однаково для протоколу:
+`src/drivers/ecr_privatjson/EcrJsonCodec.{h,cpp}`. Чистий, без стану; делімітером `0x00` **не
+оперує** (це `NullTerminatedFramer`):
 
 ```cpp
-bool Open();  bool Close();  bool IsOpen() const;
-int  Send(const std::vector<uint8_t>& data);
-void SetDataReceivedCallback(DataReceivedCallback);   // асинхронний прийом
-void SetErrorCallback(ErrorCallback);
-void SetConnectionStateCallback(ConnectionStateCallback);
+static std::vector<uint8_t> BuildRequest(method, step, params);   // {method,step[,params]} → UTF-8 байти; params==nullptr → без поля
+static ParsedResponse       Parse(frameNoDelimiter);              // повний розбір; невалідний JSON → {valid=false}, БЕЗ винятку
+static bool                 PeekMethod(frame, method, msgType);   // легкий парс лише method (+ msgType для ServiceMessage)
 ```
 
-Типи колбеків (`Transport.h`):
-`DataReceivedCallback = std::function<void(const std::vector<uint8_t>&)>`,
-`ErrorCallback = std::function<void(const std::string&, int)>`,
-`ConnectionStateCallback = std::function<void(bool)>`.
+`ParsedResponse` = `{method, step, params, error, errorDescription, msgType, valid}`.
 
-### 4.1. Реалізації
+---
 
-| Клас | Файл | Канал |
+## 4. Класифікатор — `EcrPrivatJsonClassifier`
+
+`src/drivers/ecr_privatjson/EcrPrivatJsonClassifier.{h,cpp}`, реалізує `IFrameClassifier`. Уся
+логіка розрізнення потоків (спека §5). `Classify(pending, frame)`:
+
+1. Розпарсити `method` (і `params.msgType`, якщо `method=="ServiceMessage"`).
+2. `method` == `method` активного **primary** (не-`ServiceMessage`) → `{PrimaryResponse}`.
+3. `method=="ServiceMessage"`:
+   - `msgType` корелює з активним **service**-запитом (у т.ч. `interrupt`→`interruptTransmitted`,
+     `correctTransaction`→`correctionTransmitted` — це **відповіді** на service-запити, НЕ
+     unsolicited; а також `identify`/`getLastStatMsgCode`/`getDiscountName`) → `{ServiceResponse}`;
+   - `msgType=="deviceBusy"`: є активний primary → `{RejectPrimary, Busy}`; немає → `{Unsolicited}`;
+   - `msgType=="methodNotImplemented"`: кадр не називає відхилений метод, тож при обох pending →
+     `{RejectBoth}` (→ desync); при одній доріжці → `{Reject*, Unsupported}`;
+   - інший `msgType` без відповідного pending → `{Unsolicited}`.
+4. `method` == `method` активного **service** → `{ServiceResponse}`.
+5. Інакше → `{Unsolicited}`.
+
+Двохдоріжкова модель прямо підтримує **полінг статусу під час операції**: `Purchase` займає
+primary, а `getLastStatMsgCode` летить service-доріжкою й **не** провокує `deviceBusy`.
+
+---
+
+## 5. Життєвий цикл — `Connect`
+
+`EcrPrivatJsonDriver::Connect(connString)` реалізує **еталонну схему буквально** (спека:
+«гарантує роботу з терміналами будь-яких вендорів»), перевикористовуючи `DeviceSession` короткими
+сесіями для хендшейку/Identify і однією постійною для основного режиму:
+
+1. **Розбір рядка** (`ParseConnString`): `tcp://host:port` (IPv6-літерали не підтримуються) або
+   `COMn[:baud[,8,N,1]]` (з рядка береться лише baud, дефолт `115200`; формат кадру завжди 8N1,
+   хвіст після baud ігнорується). Скидання `vendor_`/`model_`, `job_.ResetToIdle()`.
+2. **Хендшейк** (коротка сесія): `MakeSession` → колбеки (лише до `Start()`) → `Start()` →
+   `RequestPrimary(PingDevice, FrameOptions{leadingDelimiter=true})` → перевірка → **`Stop()`
+   (дисконект)** → пауза 1с.
+3. **Identify** (коротка сесія): нова сесія → `RequestService(ServiceMessage/identify)` → зберегти
+   `vendor`/`model` з `params` (best-effort) → **`Stop()` (дисконект)**.
+4. **Постійний режим:** нова `session_`, лишається відкритою; реконект — супервізор `DeviceSession`
+   (`autoReconnect`, backoff).
+
+`MakeTransport`: TCP → `TransportTCP(host, port)`; COM → `TransportCOM(port, baud, 8, 'N', 1.0f)` —
+драйвер **явно** передає baud (дефолт `TransportCOM` = 9600). `MakeSession` збирає
+`DeviceSession(transport, NullTerminatedFramer, EcrPrivatJsonClassifier)`, ставить колбеки й
+(якщо увімкнено) `SetWireTraceHandler` для wire-трасування.
+
+`Disconnect()`: `job_.Join()` (дочекатись worker, щоб не рвати сесію під активним запитом) →
+`session_->Stop()`.
+
+---
+
+## 6. Модель операцій
+
+### 6.1. Потокова модель (важливо)
+
+`RequestPrimary` **блокує** свій потік до відповіді/таймауту. Тому активна операція тримає **два
+потоки**:
+
+- **worker** (синхронний виклик 1С або worker `JobEngine`) — тримає `RequestPrimary(операція)`;
+- **poller** — окремий потік, піднятий на час операції: раз на `kPollIntervalMs` (500мс)
+  шле `getLastStatMsgCode` через `RequestService`, оновлює `lastStatus_`, і — якщо надійшов запит
+  на скасування — раз надсилає `interrupt` (service). Poller — **єдиний власник service-доріжки**.
+
+Poller піднімається/зупиняється всередині `ExecuteInternal` через **RAII-guard**: `PollerJoin`
+у деструкторі виставляє `stop` і `join`-ить потік — навіть при винятку з `RequestPrimary`
+(service-доріжка звільняється до desync-відновлення, `std::terminate` не станеться).
+
+**Send-арбітр (`GateSend`, 0.1с):** спека забороняє слати дві команди одночасно. `DeviceSession`
+серіалізує лише в межах доріжки, тож драйвер має власний send-gate з мінімальним інтервалом
+`kSendGapMs` (100мс) поверх **обох** доріжок; кожне фактичне відправлення проходить через нього.
+
+### 6.2. `getLastStatMsgCode` → `LastStatus`
+
+Poller зберігає останній код у `lastStatus_` (атомік, `-1` якщо ще не було). Мапа кодів
+(`StatusText`): `0` Готово/очікування, `1` Картку зчитано, `2` Чіп-картку, `3` Авторизація,
+`4` Очікування касира, `5` Друк чека, `6` Введіть PIN, `7` Картку вилучено, `8` Оберіть застосунок,
+`9` Вставте/піднесіть картку, `10` Виконується, `11` Коригування транзакції.
+
+### 6.3. Синхронні операції
+
+`Execute(method, params, timeoutMs)` → `ExecuteInternal`. Реалізовані:
+`Purchase(amount)`, `Refund(amount, rrn)`, `CheckConnection()`, `GetReceiptInfo(invoiceNumber)`,
+плюс `Execute("GetTerminalInfo", …)`. Кожна: скид прапорців скасування (у **викликача**, не в
+worker — інакше cancel одразу після Start губиться) → `job_.ResetToIdle()` → `ExecuteInternal`:
+перевірка `IsConnected` → підняти poller (RAII) → `GateSend` → `RequestPrimary` → мапінг у
+`ResultEnvelope`.
+
+### 6.4. Асинхронний API (поверх `JobEngine`)
+
+`StartOperation(method, params, timeoutMs)` (та обгортки `StartPurchase`/`StartRefund`) —
+неблокуючий старт: `job_.Start([...]{ return ExecuteInternal(...); })`. 1С опитує:
+
+- `OperationState()` → `JobState` (`Idle=0, Running=1, Interrupting=2, Done=3, Error=4`);
+- `TryGetOperationResult(out)` → `true` при `Done/Error`;
+- `CancelOperation()` = `RequestInterrupt()` (виставити прапорець для poller) + `job_.RequestCancel()`
+  (гардовано `Running→Interrupting`).
+
+**Poll-based, без обов'язкових подій:** стан операції 1С **опитує**, а не отримує подіями.
+
+### 6.5. Мапінг результату — `MapResult`
+
+`RequestStatus` → `ResultEnvelope`:
+
+| `RequestStatus` | `ResultEnvelope` |
+|---|---|
+| `Response` | розбір кадру: `payload=params`, `code=responseCode` (або `ERROR`/`0000`), `ok=!error` |
+| `Busy` | `Fail("DEVICE_BUSY", "Термінал зайнятий")` |
+| `Unsupported` | `Fail("UNSUPPORTED", "Метод не підтримується терміналом")` |
+| `Timeout` | `Fail("TIMEOUT", "Немає відповіді термінала")` |
+| `Disconnected` | `Fail("DISCONNECTED", "Обрив зв'язку з терміналом")` |
+| `SendFailed` | `Fail("SEND_FAILED", "Помилка відправки")` |
+| `Stopped` | `Fail("STOPPED", "Операцію перервано")` |
+| `Concurrent` | `Fail("CONCURRENT", "Операція вже виконується")` |
+| `Desynchronized` | `Fail("DESYNC", "Потрібне відновлення зв'язку")` |
+| невалідний кадр | `Fail("BAD_RESPONSE", "Невалідна відповідь термінала")` |
+
+`ok` визначає прапорець `error` термінала (спека: Partial approval `0010` приходить із `error:false`
+— теж `ok:true`).
+
+### 6.6. Відновлення після desync
+
+Якщо `RequestPrimary` завершився `Timeout` **і** `session_->IsDesynchronized()` (і не
+`inRecovery_`) — `RecoverAfterDesync`: полить `getLastStatMsgCode` **доки код != "0"** (bounded,
+`kRecoverPollTries`; `"0"` = термінал у спокої, спека §6.5) → `MarkSynchronized()` →
+best-effort `ExecuteInternal("GetReceiptInfo", …)` (не публічний `GetReceiptInfo`: `inRecovery_`
+вже `true`, тож повторного відновлення не станеться). Захист від рекурсії — прапорець `inRecovery_`.
+
+---
+
+## 7. Фасад 1С — `AddinECRPrivatJSON`
+
+`src/components/AddinECRPrivatJSON.{h,cpp}`. Тонка компонента: успадковує `AddInNative`,
+`REGISTER_COMPONENT(u"ECRPrivatJSON", AddinECRPrivatJSON)`, тримає `EcrPrivatJsonDriver driver_`.
+Реєструє 18 методів (пари EN/RU) у `RegisterMethods()` + успадкований `EnableLogging`; повний довідник методів, типів повернення
+й прикладів — [docs/integration-1c/ecr-privatjson.md](../integration-1c/ecr-privatjson.md).
+
+Конвенції фасаду:
+
+- **Синхронні операції** (`ПроверитьСвязь`/`ВерсияПО`/`Оплата`/`Возврат`/`ПолучитьЧек`)
+  реєструються «голими» void-лямбдами (не через `Ret`): локальний `runSync` серіалізує
+  `ResultEnvelope` у `this->result` (JSON-рядок) і кешує в `lastResultJson_`. Тому в 1С ці
+  функції **повертають JSON-рядок** результату. (Обгортати їх `Ret()` не можна — перезаписав би
+  корисний результат; правило з [AGENTS.md](../../AGENTS.md).)
+- **Решта** (`Подключить`/`Подключен`/`НачатьОплату`/`СостояниеОперации`/`РезультатОперацииJSON`/
+  `СтатусТерминала`/`Вендор`/`Модель`/`ВключитьТрассировку`/`ВключитьСобытия`) — через `Ret()`
+  (bool/int/string).
+- **Межа 1С — `try/catch` в кожному методі:** виняток C++ межу 1С не перетинає; при винятку —
+  `REPORT_ERROR` (лог + `AddError`) і валідний `ResultEnvelope::Fail`, не сирий текст.
+- `EnableLogging`/`ИспользоватьЛогирование` — успадкований (реєструвати не треба); у деструкторі —
+  `driver_.Disconnect()` + `ServiceTools::DisableComponentLogging(this)`.
+
+### 7.1. Опційні події — `ВключитьСобытия`
+
+За замовчуванням драйвер poll-based (подій немає). `ВключитьСобытия(Истина)` ставить драйверу
+`EventHandler`, що кличе `PostExternalEvent(event, dataJson)` ядра (потокобезпечний, з
+poller/worker-потоку). Драйвер емітить три події (`EmitEvent`) — у 1С вони приходять як
+`ВнешнееСобытие(Источник="ECRPrivatJSON", Событие, Данные)`:
+
+| `Событие` | Коли | `Данные` (JSON) |
 |---|---|---|
-| `TransportCOM` | `Transport_COM.*` | Послідовний порт |
-| `TransportTCP` | `Transport_TCP.*` | TCP-сокет (клієнт або сервер) |
-| `TransportWSClient` | `Transport_WSClient.*` | WebSocket-клієнт (через `ixwebsocket`) |
-| `TransportWSServer` | `Transport_WSServer.*` | WebSocket-сервер (через `ixwebsocket`) |
+| `state` | старт операції | `{state:"Running", method}` |
+| `status` | зміна `getLastStatMsgCode` | `{code, text, state:"Running"}` |
+| `result` | завершення операції | `{ok, code, description, state:"Done"\|"Error", payload}` |
 
-- **`TransportCOM`** — конструктор `(portName, baudRate = 9600, dataBits = 8,
-  parity = 'N', stopBits = 1.0f)`; має `ConfigurePort`, `SetTimeouts` (5 параметрів
-  `DWORD`), `GetPortName`. Читання — в окремому потоці (`m_readThread` /
-  `ReadThreadFunction` / `StartReadThread` / `StopReadThread`), стан —
-  `std::atomic<bool> m_isOpen` / `m_threadRunning`.
-- **`TransportTCP`** — два конструктори: клієнтський `(host, port)` і серверний
-  `explicit (int port, int maxConnections = 5)`; `SetTimeout(timeoutMs)`; внутрішньо
-  `ConnectAsClient` / `StartServer`; окремі потоки читання й `accept` (`m_readThread`,
-  `m_acceptThread`); `SOCKET m_socket`, `m_serverSocket`.
-- **`TransportWSClient`** — конструктор `(url, protocols = {})`; використовує
-  `ix::WebSocket`; `SetTimeout(timeoutSecs)`, `SetPingInterval`, `SetExtraHeaders`;
-  приватний `OnMessageCallback(ix::WebSocketMessagePtr)`.
-- **`TransportWSServer`** — конструктор `(port, host = "127.0.0.1",
-  maxConnections = 32)`; використовує `ix::WebSocketServer`; має
-  `SendToClient(clientId, data)`, `SetPingInterval`, `EnableCompression`; тримає мапу
-  клієнтів `std::map<std::shared_ptr<ix::WebSocket>, std::string> m_clients`.
-
-### 4.2. Подієвий прийом і синхронний виклик поверх асинхронного каналу
-
-Прийом даних — **подієвий**: транспорт викликає `DataReceivedCallback`, протокол
-складає байти у свій буфер і сигналить очікувальнику через умовну змінну. Це дозволяє
-для 1С виглядати як синхронний виклик («надіслати й дочекатися відповіді») поверх
-принципово асинхронного каналу.
-
-Механізм sync-over-async:
-
-1. 1С викликає метод компоненти (напр. `Payment`) **синхронно** — метод повертає
-   результат одразу (`src/components/AddinECRPrivatJSON.cpp`).
-2. Усередині `ECRPrivatJSONProtocol::Payment` виклик `helper_->SendReceive(request, 120000)`
-   **блокує** потік 1С-виклику в `WaitForResponse` /
-   `dataCondition_.wait_for(...)` до сигналу або таймауту.
-3. Дані від терміналу надходять **асинхронно** з фонового потоку читання транспорту
-   (`ReadThreadFunction` у `TransportCOM` / `TransportTCP`, колбек `ix::WebSocket` у
-   `TransportWSClient`) і потрапляють через `DataReceivedCallback` у
-   `Protocol::OnDataReceived`, звідки нотифікується умовна змінна.
-
-Формально це шаблон «блокуючий очікувач (`condition_variable::wait_for` з таймаутом) на
-потоці виклику 1С + callback-нотифікатор на фоновому потоці транспорту».
-
-> Застереження: як описано в §2.5, фактичну нотифікацію отримує умовна змінна
-> *протоколу* (`Protocol::OnDataReceived → dataCondition_.notify_all()`), тоді як
-> `helper_->SendReceive` очікує на умовній змінній *хелпера*. Опис вище відображає
-> задуману схему sync-over-async; звірку фактичного проходження сигналу до
-> `SendReceive` слід виконати окремо.
+Якщо у 1С немає обробника `ВнешнееСобытие` — `PostExternalEvent` тихо нічого не робить (не падає).
 
 ---
 
-## Пов'язані документи
+## 8. Каталог операцій: реалізовано vs заплановано
 
-- `docs/ECR_Privat_JSON_Protokol.md` — специфікація JSON-протоколу терміналу
-  (формат повідомлень, нуль-термінатори, коди відповіді, схема підключення).
-- `docs/ARCHITECTURE.md` — загальна архітектура DLL (цей документ деталізує її §4–§5).
-- `CMake/components.cmake` — джерело правди щодо складу й залежностей компонент.
+**Реалізовано (вертикальний зріз):** `Connect`/`Disconnect`/`IsConnected`, `CheckConnection`,
+`GetTerminalInfo`, `Purchase`, `Refund`, `GetReceiptInfo` (sync + `Purchase`/`Refund` також async),
+`interrupt` (скасування), полінг `getLastStatMsgCode`, desync-відновлення. Цей набір вправляє
+**всі** механізми фундаменту (обидві доріжки, класифікатор, JobEngine, poller, send-арбітр).
+
+**Заплановано інкрементально** (переважно описи операцій + парсинг полів, без нових механізмів):
+`Withdrawal[Partly]`, `Cashback`, `Preauthorization`, `SaleCompletion`, `GetBalance`, `Audit`,
+`Verify`/`VerifyCopy`, друк, сервіси розстрочки/`ServiceGeneric`, бонусні картки,
+`GetPhoneNumber`/`GetOTPpassword`, поле `adv`.
+
+**Свідомо НЕ реалізовано (as-built):** пауза на рішення каси (`getLastStatMsgCode==11` →
+`getDiscountName`+`correctTransaction`) — код `11` наразі не перериває продаж (штатно, спека);
+методи `ПодтвердитьОперацию`/`СкорректироватьСумму`/`ОтклонитьОперацию` відсутні. **Partial
+approval** (`0010`) поки трактується як звичайний `ok:true` без окремої гілки вибору каси. Ці
+розширення потребуватимуть додаткових станів `JobEngine` (`AwaitingCashDecision`/
+`AwaitingPartialDecision`).
 
 ---
 
-## Потребує окремої перевірки (для верифікатора)
+## 9. Тестовий контур
 
-- Реалізацію `ECRPrivatJSONProtocol::CreateTransport` не знайдено серед прочитаних
-  `.cpp` — ймовірно мертвий код; не шукалося по всьому дереву `src`.
-- Розбіжність двох буферно-синхронізаційних підсистем (§2.5): `ProcessReceivedData`
-  хелпера не викликається жодним колбеком; функціональний наслідок (таймаут
-  `SendReceive`) — логічний висновок, не підтверджений збіркою/тестом.
-- Рядок `response.totalAmount = std::stod(amountStr);` технічно несумісний із типом
-  поля `std::string` — компільованість не перевірялася.
+Без обладнання, проти емулятора термінала на localhost. Джерело правди складу — див.
+[AGENTS.md](../../AGENTS.md) «Тести»; для 1С-розробника — покроково в
+[docs/integration-1c/ecr-privatjson.md](../integration-1c/ecr-privatjson.md).
+
+- **L0.7 `ecr_privatjson_selftest`** (без UAPKI) — кодек (`BuildRequest`/`Parse`/`PeekMethod`),
+  класифікатор (усі гілки §4), transport-e2e поверх `DeviceSession`+`TransportTCP` проти
+  `tests/support/TerminalEmulator` (Winsock, скриптовані відповіді за `method`): `Connect` за
+  еталонною схемою, `JobEngine`, sync-операції + `MapResult`, poller, `interrupt`, async-API,
+  смоук 1С-фасаду через `AddInNative::CreateObject`.
+- **L2-ecr `ecr_native_host`** — компонента `ECRPrivatJSON` через **головну DLL** (`LoadLibraryW`+
+  `GetClassObject`): `Подключить`+`Оплата` проти in-process `TerminalEmulator`, звірка `tVariant`.
+- **`ecr_terminal_emulator.exe`** (standalone, `[port]`, default 2000) — протокол-обізнаний
+  TCP-емулятор для ручного тесту з **реальної 1С без обладнання**: реалістична `Purchase` ~4с з
+  прогресом статусу `9→1→6→3→10`, переривається `interrupt` (→ `1001`).
+
+---
+
+## 10. Пов'язані документи
+
+- [device-core.md](device-core.md) — фундамент (транспорт/framer/класифікатор/`DeviceSession`/
+  `ResultEnvelope`/`JobEngine`), який цей драйвер перевикористовує.
+- [docs/integration-1c/ecr-privatjson.md](../integration-1c/ecr-privatjson.md) — інструкція для
+  1С-розробника: методи, приклади коду, тестування.
+- [docs/ECR_Privat_JSON_Protokol.md](../ECR_Privat_JSON_Protokol.md) — специфікація протоколу.
+- [core.md](core.md) — ядро `AddInNative`.

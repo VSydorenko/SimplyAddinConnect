@@ -5,8 +5,8 @@
 підсистеми (UAPKI, майбутні драйвери обладнання на device-core тощо): кожна компонента успадковує `AddInNative`,
 а весь прикладний код логує та конвертує рядки через `ServiceTools`.
 
-Усі шляхи наведено відносно `R:/github/SimplyAddinConnect/`. Наведені імена
-файлів, функцій і полів звірені з кодом гілки `device-core`.
+Усі шляхи наведено відносно кореня репозиторію. Наведені імена
+файлів, функцій і полів звірені з кодом.
 
 ---
 
@@ -83,12 +83,11 @@ namespace { [[maybe_unused]] auto& _forceTestComponentNames = TestComponent::nam
 
 Наразі зареєстровані імена: `AddinUAPKIConnect`, `ECRPrivatJSON`,
 `AddInNative` / `SimplyAddinConnect` / `SimplyConnect` (останні три — через
-`TestComponent`). Старий `AddinECRPrivatJSON` видалено на гілці `device-core`
-(непрацездатний драйвер; заміняється фундаментом device-core у `src/transport/`).
-Новий пілотний драйвер **ECRPrivatJSON** (`src/drivers/ecr_privatjson/`) реалізовано повністю
-(Частина 1 wire-спина + Частина 2 операції): фасад `AddinECRPrivatJSON`
-(`src/components/AddinECRPrivatJSON.*`) через `REGISTER_COMPONENT` **зареєстровано** як компоненту
-1С `ECRPrivatJSON`, що делегує драйверу.
+`TestComponent`). Драйвер **ECRPrivatJSON** (`src/drivers/ecr_privatjson/`) — перший драйвер
+обладнання на фундаменті device-core; фасад `AddinECRPrivatJSON`
+(`src/components/AddinECRPrivatJSON.*`) через `REGISTER_COMPONENT` реєструє компоненту
+1С `ECRPrivatJSON`, що делегує драйверу (див. [ecrprivatjson.md](ecrprivatjson.md),
+[device-core.md](device-core.md)).
 
 ---
 
@@ -289,7 +288,7 @@ method ... parameter ... expected ... actual ...», **реєструє його 
 `src/core/AddInNative.h:45`), який успадковує `IInitDoneBase`,
 `ILanguageExtenderBase`, `LocaleBase` (`include/ComponentBase.h:213-220`).
 
-Порядок викликів платформи (`docs/ARCHITECTURE.md:134`, §2.4):
+Порядок викликів платформи (SDK 1С):
 
 ```
 Init → setMemManager → GetInfo → робота → Done
@@ -304,8 +303,7 @@ Init → setMemManager → GetInfo → робота → Done
   помилки (укр./рос. vs англ., див. §3.5).
 
 Ресурси компоненти зазвичай звільняються через RAII; зокрема, компоненти в
-деструкторі вимикають логування (`ServiceTools::DisableComponentLogging`,
-`docs/ARCHITECTURE.md:141`).
+деструкторі вимикають логування (`ServiceTools::DisableComponentLogging`).
 
 ---
 
@@ -317,7 +315,7 @@ Init → setMemManager → GetInfo → робота → Done
 ### 5.1. Логування: `REPORT_*` і `NEUTRAL_REPORT_*`
 
 Логування побудовано поверх `spdlog`; **прямий доступ до `spdlog` у компонентах
-заборонено** (`docs/ARCHITECTURE.md:290`).
+заборонено** (див. [AGENTS.md](../../AGENTS.md) «Конвенції коду»).
 
 Макроси для методів компоненти (використовують `this` і `__func__`,
 `src/helpers/ServiceTools.h:373-377`):
@@ -363,13 +361,13 @@ __func__, ...)`. Є два перевантаження `NeutralReportImpl` — 
   представлення `char16_t` і `wchar_t` на Windows, без конвертера кодових сторінок).
 
 > **Правило:** у прикладному коді використовувати `SafeMB2WCHAR`/`SafeWCHAR2MB`,
-> а не напряму `AddInNative::MB2WCHAR`/`WCHAR2MB` (`docs/ARCHITECTURE.md:295`).
+> а не напряму `AddInNative::MB2WCHAR`/`WCHAR2MB` (див. [AGENTS.md](../../AGENTS.md) «Конвенції коду»).
 
 ### 5.3. Інше
 
 `ServiceTools` також надає керування логуванням з боку 1С
-(`EnableComponentLogging` / `DisableComponentLogging` — рівень + файл,
-`docs/ARCHITECTURE.md:294`) і валідацію (`CalculateCRC32` у
+(`EnableComponentLogging` / `DisableComponentLogging` — рівень + файл)
+і валідацію (`CalculateCRC32` у
 `ServiceTools_Validation.cpp`). Детальна реалізація `_Log.cpp` і `_Validation.cpp`
 у межах цього документа не розкривалася.
 

@@ -1,44 +1,37 @@
-# AddinTemplate - шаблон внешней компоненты 1С
+# SimplyAddinConnect
 
-Для облегчения работы с шаблоном весь программный код, который не должен
-изменяться разработчиком при реализации собственных библиотек внешних
-компонент, собран в файлах **AddInNative.cpp** и **AddInNative.h**.
+Нативна зовнішня компонента для **1С:Підприємство** (Windows, C++17). Збирається в одну DLL
+(окремо x86 і x64), що реєструє **кілька компонент**, кожна доступна в 1С під власним іменем:
 
-Автор предлагает собственную оригинальную реализацию, которая хотя и лишена
-изящества шаблона [Infactum](https://github.com/Infactum/addin-template),
-тоже позволяет регистрировать компоненту под несколькими именами,
-использует лямбда-выражения для регистрации компоненты в библиотеке, при определении
-свойств и методов. При обращении к свойствам и методам регистр игнорируется.
+- **AddinUAPKIConnect** — ЕЦП/криптографія через бібліотеку [UAPKI](https://github.com/specinfo-ua/UAPKI);
+- **ECRPrivatJSON** — драйвер платіжного термінала ПриватБанк (перший драйвер обладнання);
+- **TestComponent** — демо/приклад реєстрації.
 
-Отказ от использования шаблонов для определения процедур и функций в предлагаемой
-реализации компоненты накладывает существенные ограничения на формат лямбда выражений
-в методах **AddProperty**, **AddProcedure** и **AddFunction**, поскольку требует
-обязательного использования агрументов типа **VH** (короткий синоним **VariantHelper**).
-Это позволяет легко решить задачу возврата в 1С измененных значений параметров.
-Для возврата результата функции используется член базового класса **result**.
+Компоненти стоять на спільному ядрі-мості до SDK 1С (`src/core/AddInNative`). Драйвери обладнання
+будуються на спільному фундаменті **device-core** (`src/transport/`) + платформі-каркасі
+(`src/platform/`); кожен драйвер додає лише свою протокол-специфіку.
 
-Пример кода для регистрации компоненты в библиотеке:
+## Швидкий старт
 
-```Cpp
-std::vector<std::u16string> TestComponent::names = {
-   AddComponent(u"AddInNative", []() { return new TestComponent; }),
-   AddComponent(u"SimpleAlias", []() { return new TestComponent; }),
-};
-
-TestComponent::TestComponent()
-{
-   AddProperty(u"Text", u"Текст",
-      [&](VH prop) { prop = this->getTestString(); },
-      [&](VH prop) { this->setTestString(prop); }
-   );
-
-   AddFunction(u"GetText", u"ПолучитьТекст", 
-      [&]() { this->result = this->getTestString(); }
-   );
-
-   AddProcedure(u"SetText", u"УстановитьТекст", 
-      [&](VH param) { this->setTestString(param); }, 
-      { {0, u"Default"} }
-   );
-}
+```powershell
+git submodule update --init --recursive
+powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTests]
 ```
+
+Результат — `bin/Release/SimplyAddinConnectWin.zip` (обидві DLL + `manifest.xml`), готовий до
+підключення в 1С як зовнішня нативна компонента. Вимоги: Visual Studio 2022 (C++ desktop),
+CMake ≥ 3.16.
+
+## Документація
+
+| Кому | Де |
+|---|---|
+| **1С-розробнику** (користуюсь готовою компонентою) | [docs/integration-1c/](docs/integration-1c/README.md) — методи компонент, приклади коду, тестування проти емуляторів |
+| **C++-розробнику** (розвиваю компоненту) | [docs/architecture/](docs/architecture/README.md) — архітектура по підсистемах (ядро, device-core, драйвери, UAPKI, збірка) |
+| **Coding-агенту** | [AGENTS.md](AGENTS.md) — збірка, конвенції коду, як додати компоненту, тести |
+| Специфікації протоколів | [docs/](docs/) — `ECR_Privat_JSON_Protokol.md`, `UAPKI_Protokol.md` та ін. |
+
+## Ліцензія та репозиторій
+
+Репозиторій: `github.com/VSydorenko/SimplyAddinConnect`. Версія — `VERSION.txt` + `version.h`
+(перегенерується `build_project.ps1` при кожній збірці).

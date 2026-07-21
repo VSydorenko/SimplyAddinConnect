@@ -247,6 +247,5 @@ ITS документує лише один спосіб доставити до�
   `CMake/output_settings.cmake`, `CMake/dependencies.cmake` — модульний CMake та опції.
 - `build_project.ps1`, `VERSION.txt`, `version.h`, `manifest.ps1`, `manifest.xml` —
   збірка, версіонування, пакування, маніфест.
-- `docs/ARCHITECTURE.md` §8 — збіркова архітектура й пакування (перенесено сюди).
 - Емпіричні факти про 1С — прямий тест у реальній 1С (2026-07-19),
-  `docs/tasks/2026-07-19_uapki_embedded_providers_and_tests.md`, `docs/ARCHITECTURE.md` §6.
+  `docs/tasks/2026-07-19_uapki_embedded_providers_and_tests.md`.

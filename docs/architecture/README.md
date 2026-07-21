@@ -4,8 +4,9 @@
 на детальні підсистемні доки. Тут навмисно стисло — усі подробиці (сигнатури, file:line,
 особливості поведінки) винесені в окремі розділи.
 
-> Стан коду відповідає гілці `design-ecr-privatjson` (device-core + пілотний драйвер
-> ECRPrivatJSON: Частина 1 wire-спина **і** Частина 2 операції + 1С-фасад — обидві виконані).
+> Джерело правди щодо кожної підсистеми — відповідний документ у цьому каталозі. Прикладна
+> інтеграція з 1С (для розробника, що користується готовою компонентою) — окрема тека
+> [docs/integration-1c/](../integration-1c/README.md).
 
 ---
 
@@ -21,20 +22,11 @@
 - `AddinUAPKIConnect` — доступ до ЕЦП/криптографії через бібліотеку UAPKI;
 - `TestComponent` — демо/приклад реєстрації (імена `AddInNative` / `SimplyAddinConnect` / `SimplyConnect`).
 
-> **Драйвери обладнання (device-core).** Старий драйвер `AddinECRPrivatJSON` (платіжний
-> термінал ПриватБанку) на гілці `device-core` **видалено як непрацездатний** — його
-> заміняє **фундамент device-core** у `src/transport/`: байтовий транспорт `ITransport` →
-> кадрування `IFramer`/`NullTerminatedFramer` → класифікація `IFrameClassifier` → сесія
-> запит/відповідь `DeviceSession`. Перший драйвер на цьому фундаменті — **ECRPrivatJSON**
-> (`src/drivers/ecr_privatjson/`) поверх платформи-каркаса `src/platform/` (`ResultEnvelope`,
-> `JobEngine`). Реалізовано **обидві частини**: Частина 1 (wire-спина) — кодек `EcrJsonCodec`
-> (JSON↔байти), класифікатор `EcrPrivatJsonClassifier` (кореляція за `method`/`msgType`),
-> `EcrPrivatJsonDriver::Connect` за еталонною схемою; Частина 2 (операції + 1С) — синхронні/
-> асинхронні операції (`Purchase`/`Refund`/`CheckConnection`/`GetReceiptInfo`) поверх `JobEngine`,
-> poller `getLastStatMsgCode` + `interrupt` на service-доріжці, best-effort desync-відновлення, і
-> **зареєстрована компонента 1С `ECRPrivatJSON`** (фасад `AddinECRPrivatJSON`, `REGISTER_COMPONENT`,
-> делегує драйверу). Тест-контур: L0.7 unit (`ecr_privatjson_selftest`), L2-ecr через головну DLL
-> (`ecr_native_host`), standalone-емулятор `ecr_terminal_emulator` для ручного тесту з реальної 1С.
+**Драйвери обладнання** будуються на спільному **фундаменті device-core** (`src/transport/`:
+`ITransport` → `IFramer`/`NullTerminatedFramer` → `IFrameClassifier` → `DeviceSession`) поверх
+платформи-каркаса (`src/platform/`: `ResultEnvelope`, `JobEngine`). Фундамент драйвер-незалежний —
+див. [device-core.md](device-core.md). Перший драйвер на ньому — **ECRPrivatJSON**
+([ecrprivatjson.md](ecrprivatjson.md), компонента 1С `ECRPrivatJSON`).
 
 UAPKI — **лише одна з підсистем**, а не суть усього проєкту. Архітектура шарова: верхні шари
 не знають про деталі нижніх, зв'язок — через інтерфейси (`IComponentBase`, `ITransport`) і хелпери.
@@ -46,9 +38,13 @@ UAPKI — **лише одна з підсистем**, а не суть усьо
 | # | Підсистема | Документ | Про що |
 |---|---|---|---|
 | 01 | Ядро (`AddInNative`) | [core.md](core.md) | Міст до SDK 1С, реєстр компонент, `VariantHelper`, модель методів/властивостей |
-| 02 | ECRPrivatJSON (історичне) | [ecrprivatjson.md](ecrprivatjson.md) | Опис ВИДАЛЕНОГО старого драйвера термінала; замінений пілотним ECRPrivatJSON поверх device-core (`src/drivers/ecr_privatjson/` + фасад `src/components/AddinECRPrivatJSON.*`, Частини 1+2 виконані; дизайн — [tasks/2026-07-21_design_ecr_privatjson_driver.md](../tasks/2026-07-21_design_ecr_privatjson_driver.md), план Ч2 — [tasks/2026-07-21_plan_ecr_privatjson_p2_operations_and_1c.md](../tasks/2026-07-21_plan_ecr_privatjson_p2_operations_and_1c.md)) |
-| 03 | UAPKI | [uapki.md](uapki.md) | ЕЦП/крипто: JSON-API `process()`, провайдер `cm-pkcs12`, потрійний пошук каталогу |
-| 04 | Збірка й пакування | [build-and-packaging.md](build-and-packaging.md) | Модульний CMake, `build_project.ps1`, ZIP + `manifest.xml`, доставка в 1С |
+| 02 | Фундамент драйверів (device-core) | [device-core.md](device-core.md) | Транспорт/framer/класифікатор/`DeviceSession` + платформа `ResultEnvelope`/`JobEngine`; контракт для нових драйверів |
+| 03 | Драйвер ECRPrivatJSON | [ecrprivatjson.md](ecrprivatjson.md) | Платіжний термінал ПриватБанк: кодек/класифікатор, `Connect`, операції/poller/interrupt/async, фасад `ECRPrivatJSON` |
+| 04 | UAPKI | [uapki.md](uapki.md) | ЕЦП/крипто: JSON-API `process()`, провайдер `cm-pkcs12`, потрійний пошук каталогу |
+| 05 | Збірка й пакування | [build-and-packaging.md](build-and-packaging.md) | Модульний CMake, `build_project.ps1`, ZIP + `manifest.xml`, доставка в 1С |
+
+> Прикладна інтеграція з 1С (методи, приклади коду, тестування — для 1С-розробника) винесена в
+> окрему теку [docs/integration-1c/](../integration-1c/README.md), по документу на драйвер.
 
 ---
 
@@ -95,8 +91,8 @@ flowchart TD
 | Компоненти | `src/components/*` | Фасади, що реєструють методи для 1С |
 | Device-core | `src/transport/{IFramer,NullTerminatedFramer,IFrameClassifier,DeviceSession}` | Фундамент драйверів: кадрування → класифікація → сесія запит/відповідь |
 | Платформа драйверів | `src/platform/*` | Спільний каркас драйверів (`ResultEnvelope` — уніфікований результат операції) |
-| Драйвери обладнання | `src/drivers/ecr_privatjson/*` | Пілотний ECRPrivatJSON: кодек JSON, класифікатор кадрів, `Connect` (Ч1) + операції/poller/interrupt/async поверх `JobEngine` (Ч2) |
-| Компонента ECR (фасад) | `src/components/AddinECRPrivatJSON.*` | Компонента 1С `ECRPrivatJSON`: реєструє методи, делегує драйверу; poll-based стан операції (`OperationState`/`OperationResult`/`LastStatus`), `EnableTrace` — wire-трасування з наступного `Connect` (Ч2) |
+| Драйвери обладнання | `src/drivers/ecr_privatjson/*` | Пілотний ECRPrivatJSON: кодек JSON, класифікатор кадрів, `Connect`, операції/poller/interrupt/async поверх `JobEngine` |
+| Компонента ECR (фасад) | `src/components/AddinECRPrivatJSON.*` | Компонента 1С `ECRPrivatJSON`: реєструє методи, делегує драйверу; poll-based стан операції (`OperationState`/`OperationResult`/`LastStatus`), `EnableTrace` — wire-трасування з наступного `Connect` |
 | Хелпери | `src/helpers/*` | Допоміжна логіка (JSON, буфери, обгортки бібліотек) |
 | Транспорт | `src/transport/*` | Канали зв'язку (COM/TCP/WebSocket-client) |
 | Сервіси | `src/helpers/ServiceTools*` | Наскрізне логування та конвертації рядків |
@@ -109,6 +105,7 @@ flowchart TD
 
 ## Куди дивитись далі
 
+- **[docs/integration-1c/](../integration-1c/README.md)** — інтеграція з 1С для прикладного розробника (методи компонент, приклади коду, тестування проти емуляторів).
 - **[AGENTS.md](../../AGENTS.md)** — команди збірки, конвенції коду, як додати компоненту, розділ «Тести».
 - **Специфікації протоколів:**
   - [ECR_Privat_JSON_Protokol.md](../ECR_Privat_JSON_Protokol.md) — протокол платіжного термінала ПриватБанку.
