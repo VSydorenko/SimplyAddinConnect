@@ -43,7 +43,17 @@ GenResult LabelZplGenerator::BuildLabel(const LabelFormatting& fmt, const LabelI
         if (hDots > 0) out += "^LL" + std::to_string(hDots);
 
         // Растровий шар (текст/картинка/рамка) одним або кількома ^GF.
-        Bitmap1 bm = LabelRaster::Render(fmt, valueOf, dp.dotsPerMm);
+        // Реальний збій GDI+ (некоректний розмір/неініціалізований рантайм/LockBits) —
+        // це RENDER_ERROR, а не мовчазна втрата растру; легітимно-порожній растр -> ok=true.
+        bool renderOk = false;
+        Bitmap1 bm = LabelRaster::Render(fmt, valueOf, dp.dotsPerMm, renderOk);
+        if (!renderOk) {
+            NEUTRAL_REPORT_ERROR(kTag, "Збій рендеру растрового шару етикетки (GDI+)");
+            r.ok = false;
+            r.errCode = "RENDER_ERROR";
+            r.errDesc = "Збій рендеру растрового шару етикетки";
+            return r;
+        }
         if (bm.widthDots > 0 && bm.heightDots > 0 && !bm.rows.empty()) {
             const int bpr = (bm.widthDots + 7) / 8;
             const int maxRowsPerTile = (bpr > 0) ? (std::max)(1, kMaxTileBytes / bpr) : bm.heightDots;

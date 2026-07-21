@@ -9,6 +9,7 @@
 #include <cstdint>
 #include "../../platform/ResultEnvelope.h"
 #include "LabelModel.h"
+#include "LabelRaster.h"
 
 class ITransport;
 
@@ -72,6 +73,12 @@ private:
 
     // Забезпечує відкритий транспорт і надсилає всі байти (all-or-error).
     static ResultEnvelope SendBytes(DeviceContext& ctx, const std::vector<uint8_t>& bytes);
+
+    // GDI+ живе весь час життя драйвера (= час життя компоненти, конструюється поза DllMain),
+    // тож растровий шар LabelRaster::Render у продакшн-шляху BuildLabel завжди має ініціалізований
+    // GDI+ — без цього члена растр (текст/картинки/рамки) тихо випадав би, лишаючи самі штрихкоди.
+    // Перший член: конструюється до реєстру, руйнується після нього.
+    GdiplusRuntime gdiplus_;
 
     mutable std::mutex registryMutex_;                            // лише навколо devices_/nextId_
     std::map<std::string, std::unique_ptr<DeviceContext>> devices_;

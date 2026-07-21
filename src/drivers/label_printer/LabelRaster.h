@@ -29,8 +29,11 @@ public:
     using ValueOf = std::function<std::optional<std::string>(const std::string&)>;
 
     // fmt      — розмітка (мм); valueOf — джерело значень полів; dotsPerMm — щільність.
+    // ok       — out: true при успіху (у т.ч. легітимно-порожній растр без text/image/border);
+    //            false ЛИШЕ при реальному збої GDI+ (некоректний розмір, Bitmap/Graphics не
+    //            ініціалізовано, LockBits fail, виняток) — тоді викликач має підняти RENDER_ERROR.
     // Результат — растр розміром mmToDots(width) x mmToDots(height), 1bpp MSB-first, 1=чорний.
-    static Bitmap1 Render(const LabelFormatting& fmt, const ValueOf& valueOf, int dotsPerMm);
+    static Bitmap1 Render(const LabelFormatting& fmt, const ValueOf& valueOf, int dotsPerMm, bool& ok);
 };
 
 } // namespace labelprinter

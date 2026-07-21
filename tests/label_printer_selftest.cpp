@@ -77,7 +77,9 @@ static void TestRaster() {
     tx.defaultOrStaticValue = std::string("Тест"); tx.isStatic = true;
     fmt.texts.push_back(tx);
     auto valueOf = [](const std::string&) -> std::optional<std::string> { return std::string("Тест"); };
-    Bitmap1 bm = LabelRaster::Render(fmt, valueOf, 8);
+    bool ok = false;
+    Bitmap1 bm = LabelRaster::Render(fmt, valueOf, 8, ok);
+    CHECK(ok, "render ok flag true on success");
     CHECK(bm.widthDots == 160 && bm.heightDots == 80, "raster size = label mm * dpmm");
     CHECK(CountBlack(bm) > 0, "rendered text produced black pixels");
 }
@@ -94,7 +96,9 @@ static void TestRasterImage() {
     img.isStatic = true; img.staticValueBase64 = kBlackPng1x1;
     fmt.images.push_back(img);
     auto valueOf = [](const std::string&) -> std::optional<std::string> { return std::nullopt; };
-    Bitmap1 bm = LabelRaster::Render(fmt, valueOf, 8);
+    bool ok = false;
+    Bitmap1 bm = LabelRaster::Render(fmt, valueOf, 8, ok);
+    CHECK(ok, "image render ok flag true on success");
     CHECK(bm.widthDots == 160 && bm.heightDots == 80 && !bm.rows.empty(), "image raster non-empty with correct size");
     CHECK(CountBlack(bm) > 0, "decoded PNG image produced black pixels");
 }
@@ -127,6 +131,22 @@ static void TestGenerator() {
     std::string zi(init.begin(), init.end());
     CHECK(zi.rfind("^XA", 0) == 0 && zi.find("^XZ") != std::string::npos, "init wrapped ^XA..^XZ");
     CHECK(zi.find("^PR") != std::string::npos && zi.find("^MD") != std::string::npos, "init has darkness+speed");
+}
+
+// РЕГРЕС FIX E: реальний збій рендеру растру (некоректний розмір) -> BuildLabel = RENDER_ERROR,
+// а не мовчазне ok=true без ^GF. На старому коді Render повертав порожній растр, ^GF просто
+// опускався, а BuildLabel казав ok=true — тобто друкувалась етикетка без растрового шару.
+static void TestRenderErrorPropagates() {
+    GdiplusRuntime gdi;
+    LabelFormatting fmt; fmt.width = 0; fmt.height = 40;   // W=0 dots -> реальний збій рендеру
+    // Додаємо текст, щоб растровий шар був змістовним (не «легітимно-порожній»).
+    TextField tx; tx.fieldName = "Name"; tx.geom = {1, 1, 55, 10, 0}; tx.fontName = "Arial"; tx.fontSize = 8;
+    fmt.texts.push_back(tx);
+    LabelInstance inst; inst.quantity = 1;
+    inst.records.push_back({"Name", std::string("Тест")});
+    DeviceProfile dp; dp.dotsPerMm = 8;
+    auto r = LabelZplGenerator::BuildLabel(fmt, inst, dp);
+    CHECK(!r.ok && r.errCode == "RENDER_ERROR", "render failure -> BuildLabel RENDER_ERROR (not silent ok)");
 }
 
 static void TestSpooler() {
@@ -177,6 +197,40 @@ static void TestDriverBatch() {
     // після "last" кеш очищено -> "regular" знову fail
     CHECK(!drv.PrintLabels(id, b2, "regular").ok, "cache cleared after last");
     drv.Disconnect(id); CHECK(!drv.IsConnected(id), "disconnected");
+}
+
+// РЕГРЕС FIX C: друк ТЕКСТОВОЇ етикетки ЧЕРЕЗ драйвер БЕЗ власного GdiplusRuntime у тесті.
+// Драйвер сам тримає GDI+ живим (член gdiplus_), тож у продакшн-шляху BuildLabel->Render
+// растровий шар присутній (^GFA у захопленому ZPL). На старому коді (без члена драйвера)
+// GDI+ не був ініціалізований у цьому шляху -> растр випадав, ^GFA відсутній.
+static void TestDriverTextRasterNoGdiplus() {
+    LabelPrinterDriver drv;                       // жодного GdiplusRuntime з боку тесту
+    std::vector<uint8_t> captured;
+    drv.SetTransportFactoryForTest([&](const DeviceProfile&) -> std::unique_ptr<ITransport> {
+        struct Fake : ITransport {
+            std::vector<uint8_t>* out; bool open=false;
+            bool Open() override {open=true;return true;}
+            bool Close() override {open=false;return true;}
+            bool IsOpen() const override {return open;}
+            int Send(const std::vector<uint8_t>& d) override {out->insert(out->end(),d.begin(),d.end());return (int)d.size();}
+            void SetDataReceivedCallback(DataReceivedCallback) override{}
+            void SetErrorCallback(ErrorCallback) override{}
+            void SetConnectionStateCallback(ConnectionStateCallback) override{}
+        };
+        auto f=std::make_unique<Fake>(); f->out=&captured; return f;
+    });
+    DeviceProfile dp; dp.dotsPerMm=8;
+    std::string id = drv.Connect(dp);
+    LabelBatch b; LabelFormatting fmt; fmt.width=60; fmt.height=40;
+    TextField tx; tx.fieldName="Name"; tx.geom={1,1,55,10,0}; tx.fontName="Arial"; tx.fontSize=8;
+    fmt.texts.push_back(tx);
+    b.formatting=fmt;
+    b.labels.push_back({1, { {"Name", std::string("Тест")} }});
+    auto r = drv.PrintLabels(id, b, "first");
+    CHECK(r.ok, "driver prints text label without test-side GdiplusRuntime");
+    std::string z(captured.begin(), captured.end());
+    CHECK(z.find("^GFA") != std::string::npos, "raster ^GFA present via driver-owned GDI+ runtime");
+    drv.Disconnect(id);
 }
 
 static void TestXml() {
@@ -304,8 +358,10 @@ int main() {
     TestRaster();
     TestRasterImage();
     TestGenerator();
+    TestRenderErrorPropagates();
     TestSpooler();
     TestDriverBatch();
+    TestDriverTextRasterNoGdiplus();
     TestXml();
     TestFacadeSmoke();
     TestTransportE2E();

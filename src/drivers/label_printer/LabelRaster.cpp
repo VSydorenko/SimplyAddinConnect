@@ -138,18 +138,27 @@ Image* LoadImageFromBase64(const std::string& b64) {
 // ---------------------------------------------------------------------------
 // LabelRaster::Render
 // ---------------------------------------------------------------------------
-Bitmap1 LabelRaster::Render(const LabelFormatting& fmt, const ValueOf& valueOf, int dotsPerMm) {
+Bitmap1 LabelRaster::Render(const LabelFormatting& fmt, const ValueOf& valueOf, int dotsPerMm, bool& ok) {
+    ok = false;                                                      // успіх підтверджуємо лише в кінці
     Bitmap1 out;
     const int W = (int)mmToDots(fmt.width, dotsPerMm);
     const int H = (int)mmToDots(fmt.height, dotsPerMm);
     if (W <= 0 || H <= 0) {
         NEUTRAL_REPORT_ERROR("LabelRaster", "Некоректний розмір етикетки в дотах: " + std::to_string(W) + "x" + std::to_string(H));
-        return out;
+        return out;                                                  // ok лишається false — реальний збій
     }
 
     try {
         Bitmap bmp(W, H, PixelFormat32bppARGB);
+        if (bmp.GetLastStatus() != Ok) {                             // GDI+ не ініціалізовано / збій алокації
+            NEUTRAL_REPORT_ERROR("LabelRaster", "GDI+ Bitmap не створено, код: " + std::to_string((int)bmp.GetLastStatus()));
+            return Bitmap1{};
+        }
         Graphics g(&bmp);
+        if (g.GetLastStatus() != Ok) {
+            NEUTRAL_REPORT_ERROR("LabelRaster", "GDI+ Graphics не створено, код: " + std::to_string((int)g.GetLastStatus()));
+            return Bitmap1{};
+        }
         g.Clear(Color(255, 255, 255, 255));                          // білий фон
         g.SetTextRenderingHint(TextRenderingHintSingleBitPerPixelGridFit); // без антиаліасу — чисте 1-біт
         SolidBrush black(Color(255, 0, 0, 0));
@@ -212,12 +221,13 @@ Bitmap1 LabelRaster::Render(const LabelFormatting& fmt, const ValueOf& valueOf, 
         bmp.UnlockBits(&bd);
     } catch (const std::exception& e) {
         NEUTRAL_REPORT_ERROR("LabelRaster", std::string("Виняток під час рендеру растру: ") + e.what());
-        return Bitmap1{};
+        return Bitmap1{};                                            // ok=false — реальний збій
     } catch (...) {
         NEUTRAL_REPORT_ERROR("LabelRaster", "Невідомий виняток під час рендеру растру");
-        return Bitmap1{};
+        return Bitmap1{};                                            // ok=false — реальний збій
     }
 
+    ok = true;                                                       // растр сформовано штатно
     return out;
 }
 
