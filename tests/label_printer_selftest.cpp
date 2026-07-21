@@ -2,6 +2,7 @@
 #include <string>
 #include "../src/drivers/label_printer/LabelUnits.h"
 #include "../src/drivers/label_printer/GfEncoder.h"
+#include "../src/drivers/label_printer/BarcodeZpl.h"
 using namespace labelprinter;
 
 static int g_failures = 0;
@@ -34,10 +35,25 @@ static void TestGfTiling() {
     CHECK(z.find("^FO10,20")!=std::string::npos && z.find("^FO10,22")!=std::string::npos && z.find("^FO10,24")!=std::string::npos, "tile origins offset by rows");
 }
 
+static void TestBarcodeZpl() {
+    auto mk = [](const char* type){ BarcodeField b; b.fieldName="B"; b.type=type; b.geom={1,1,0,10,0}; return b; };
+    CHECK(BarcodeZpl::Emit(mk("EAN13"), "4008110271538", 8).zpl.find("^BE")!=std::string::npos, "EAN13->^BE");
+    CHECK(BarcodeZpl::Emit(mk("EAN13"), "4008110271538", 8).zpl.find("^FD400811027153^FS")!=std::string::npos, "EAN13 normalizes 13->12 digits");
+    CHECK(BarcodeZpl::Emit(mk("ITF14"), "10012345678902", 8).zpl.find("^B2")!=std::string::npos, "ITF14->^B2 (not ^BC)");
+    CHECK(BarcodeZpl::Emit(mk("Code128"),"ABC", 8).zpl.find("^BC")!=std::string::npos, "Code128->^BC");
+    CHECK(BarcodeZpl::Emit(mk("QRCode"),"x", 8).zpl.find("^BQ")!=std::string::npos, "QR->^BQ");
+    CHECK(BarcodeZpl::Emit(mk("DataMatrix"),"x", 8).zpl.find("^BX")!=std::string::npos, "DataMatrix->^BX");
+    CHECK(BarcodeZpl::Emit(mk("PDF417"),"x", 8).zpl.find("^B7")!=std::string::npos, "PDF417->^B7");
+    auto u = BarcodeZpl::Emit(mk("Code16k"), "x", 8);
+    CHECK(!u.ok && u.errCode=="UNSUPPORTED_BARCODE", "Code16k -> UNSUPPORTED");
+    CHECK(BarcodeZpl::EscapeFd("A^B~C").find("^FH")!=std::string::npos, "escape adds ^FH for special chars");
+}
+
 int main() {
     TestUnits();
     TestGfEncoder();
     TestGfTiling();
+    TestBarcodeZpl();
     std::printf(g_failures ? "\nFAILED: %d\n" : "\nALL PASS\n", g_failures);
     return g_failures ? 1 : 0;
 }

@@ -213,6 +213,8 @@ add_library(driver_label_printer_component OBJECT
     ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelUnits.h
     ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/GfEncoder.cpp
     ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/GfEncoder.h
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/BarcodeZpl.cpp
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/BarcodeZpl.h
 )
 set_target_properties(driver_label_printer_component PROPERTIES
     POSITION_INDEPENDENT_CODE ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX)
