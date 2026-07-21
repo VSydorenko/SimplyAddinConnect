@@ -4,8 +4,8 @@
 на детальні підсистемні доки. Тут навмисно стисло — усі подробиці (сигнатури, file:line,
 особливості поведінки) винесені в окремі розділи.
 
-> Стан коду відповідає гілці `design-ecr-privatjson` (device-core + wire-спина пілотного
-> драйвера ECRPrivatJSON, Частина 1).
+> Стан коду відповідає гілці `design-ecr-privatjson` (device-core + пілотний драйвер
+> ECRPrivatJSON: Частина 1 wire-спина **і** Частина 2 операції + 1С-фасад — обидві виконані).
 
 ---
 
@@ -26,11 +26,15 @@
 > заміняє **фундамент device-core** у `src/transport/`: байтовий транспорт `ITransport` →
 > кадрування `IFramer`/`NullTerminatedFramer` → класифікація `IFrameClassifier` → сесія
 > запит/відповідь `DeviceSession`. Перший драйвер на цьому фундаменті — **ECRPrivatJSON**
-> (`src/drivers/ecr_privatjson/`) поверх платформи-каркаса `src/platform/` (`ResultEnvelope`):
-> реалізовано **wire-спину (Частина 1)** — кодек `EcrJsonCodec` (JSON↔байти), класифікатор
-> `EcrPrivatJsonClassifier` (кореляція за `method`/`msgType`), `EcrPrivatJsonDriver::Connect`
-> за еталонною схемою. 1С-фасад `AddinECRPrivatJSON` і платіжні операції — Частина 2
-> (драйвер ще не реєструється як компонента 1С).
+> (`src/drivers/ecr_privatjson/`) поверх платформи-каркаса `src/platform/` (`ResultEnvelope`,
+> `JobEngine`). Реалізовано **обидві частини**: Частина 1 (wire-спина) — кодек `EcrJsonCodec`
+> (JSON↔байти), класифікатор `EcrPrivatJsonClassifier` (кореляція за `method`/`msgType`),
+> `EcrPrivatJsonDriver::Connect` за еталонною схемою; Частина 2 (операції + 1С) — синхронні/
+> асинхронні операції (`Purchase`/`Refund`/`CheckConnection`/`GetReceiptInfo`) поверх `JobEngine`,
+> poller `getLastStatMsgCode` + `interrupt` на service-доріжці, best-effort desync-відновлення, і
+> **зареєстрована компонента 1С `ECRPrivatJSON`** (фасад `AddinECRPrivatJSON`, `REGISTER_COMPONENT`,
+> делегує драйверу). Тест-контур: L0.7 unit (`ecr_privatjson_selftest`), L2-ecr через головну DLL
+> (`ecr_native_host`), standalone-емулятор `ecr_terminal_emulator` для ручного тесту з реальної 1С.
 
 UAPKI — **лише одна з підсистем**, а не суть усього проєкту. Архітектура шарова: верхні шари
 не знають про деталі нижніх, зв'язок — через інтерфейси (`IComponentBase`, `ITransport`) і хелпери.
@@ -42,7 +46,7 @@ UAPKI — **лише одна з підсистем**, а не суть усьо
 | # | Підсистема | Документ | Про що |
 |---|---|---|---|
 | 01 | Ядро (`AddInNative`) | [core.md](core.md) | Міст до SDK 1С, реєстр компонент, `VariantHelper`, модель методів/властивостей |
-| 02 | ECRPrivatJSON (історичне) | [ecrprivatjson.md](ecrprivatjson.md) | Опис ВИДАЛЕНОГО старого драйвера термінала; замінений пілотним ECRPrivatJSON поверх device-core (`src/drivers/ecr_privatjson/`, дизайн — [tasks/2026-07-21_design_ecr_privatjson_driver.md](../tasks/2026-07-21_design_ecr_privatjson_driver.md)) |
+| 02 | ECRPrivatJSON (історичне) | [ecrprivatjson.md](ecrprivatjson.md) | Опис ВИДАЛЕНОГО старого драйвера термінала; замінений пілотним ECRPrivatJSON поверх device-core (`src/drivers/ecr_privatjson/` + фасад `src/components/AddinECRPrivatJSON.*`, Частини 1+2 виконані; дизайн — [tasks/2026-07-21_design_ecr_privatjson_driver.md](../tasks/2026-07-21_design_ecr_privatjson_driver.md), план Ч2 — [tasks/2026-07-21_plan_ecr_privatjson_p2_operations_and_1c.md](../tasks/2026-07-21_plan_ecr_privatjson_p2_operations_and_1c.md)) |
 | 03 | UAPKI | [uapki.md](uapki.md) | ЕЦП/крипто: JSON-API `process()`, провайдер `cm-pkcs12`, потрійний пошук каталогу |
 | 04 | Збірка й пакування | [build-and-packaging.md](build-and-packaging.md) | Модульний CMake, `build_project.ps1`, ZIP + `manifest.xml`, доставка в 1С |
 
@@ -58,8 +62,10 @@ flowchart TD
         B["Ядро: AddInNative<br/>міст до SDK 1С + реєстр компонент"]
         B --> C2["AddinUAPKIConnect"]
         B --> C3["TestComponent"]
+        B --> C4["AddinECRPrivatJSON<br/>(компонента ECRPrivatJSON)"]
 
-        W["device-core (фундамент драйверів)<br/>DeviceSession → IFramer → IFrameClassifier → ITransport"]
+        C4 --> DRV["EcrPrivatJsonDriver<br/>операції/poller/interrupt/async (JobEngine)"]
+        DRV --> W["device-core (фундамент драйверів)<br/>DeviceSession → IFramer → IFrameClassifier → ITransport"]
         W --> T["ITransport"]
         T --> T1["COM"] & T2["TCP"] & T3["WS-client"]
 
@@ -89,7 +95,8 @@ flowchart TD
 | Компоненти | `src/components/*` | Фасади, що реєструють методи для 1С |
 | Device-core | `src/transport/{IFramer,NullTerminatedFramer,IFrameClassifier,DeviceSession}` | Фундамент драйверів: кадрування → класифікація → сесія запит/відповідь |
 | Платформа драйверів | `src/platform/*` | Спільний каркас драйверів (`ResultEnvelope` — уніфікований результат операції) |
-| Драйвери обладнання | `src/drivers/ecr_privatjson/*` | Пілотний ECRPrivatJSON: кодек JSON, класифікатор кадрів, `Connect` (wire-спина, Частина 1) |
+| Драйвери обладнання | `src/drivers/ecr_privatjson/*` | Пілотний ECRPrivatJSON: кодек JSON, класифікатор кадрів, `Connect` (Ч1) + операції/poller/interrupt/async поверх `JobEngine` (Ч2) |
+| Компонента ECR (фасад) | `src/components/AddinECRPrivatJSON.*` | Компонента 1С `ECRPrivatJSON`: реєструє методи, делегує драйверу, події через `PostExternalEvent` (Ч2) |
 | Хелпери | `src/helpers/*` | Допоміжна логіка (JSON, буфери, обгортки бібліотек) |
 | Транспорт | `src/transport/*` | Канали зв'язку (COM/TCP/WebSocket-client) |
 | Сервіси | `src/helpers/ServiceTools*` | Наскрізне логування та конвертації рядків |

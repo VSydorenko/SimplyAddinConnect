@@ -1055,6 +1055,11 @@ git commit -m "feat(ecr): EcrPrivatJsonDriver.Connect — еталонна сх�
 `run_tests.ps1 -NoUapki` зелений на обох архітектурах: **L0.5 core + L0.6 wire + L0.7 ecr
 (28 CHECK PASS)**, FAIL=0. Перший зелений transport-e2e досягнуто.
 
+> **Продовження:** Частину 2 (операції/`JobEngine`/poller/interrupt/async + 1С-фасад
+> `AddinECRPrivatJSON` (компонента `ECRPrivatJSON`) + рівень **L2-ecr** `ecr_native_host` у
+> `run_tests`) **виконано** — план/звіт
+> [`2026-07-21_plan_ecr_privatjson_p2_operations_and_1c.md`](2026-07-21_plan_ecr_privatjson_p2_operations_and_1c.md).
+
 **Відхилення/уточнення проти буквального плану (свідомі):**
 - **CMake-прогалина плану закрита.** Кроки Task 1/2 давали для нових OBJECT-ліб лише
   `target_include_directories`+`add_dependencies`. Додатково (як наявний `wire_component`)

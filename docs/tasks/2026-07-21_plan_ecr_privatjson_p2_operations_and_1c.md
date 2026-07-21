@@ -54,7 +54,7 @@ cmake --build build_x64 --config Release --target ecr_native_host           # L3
   - `class JobEngine { public: ~JobEngine(); bool Start(std::function<ResultEnvelope()> op); JobState State() const; bool TryGetResult(ResultEnvelope& out) const; void RequestCancel(); bool CancelRequested() const; void SetState(JobState s); void Join(); };`
   - Семантика: `Start` піднімає worker-потік, що виконує `op()`; при поверненні зберігає результат і ставить `Done` (або `Error`, якщо `op` кинув). `Start` під час `Running` → `false`. `RequestCancel` виставляє прапорець (спостерігає драйвер). Потокобезпечно.
 
-- [ ] **Step 1: Написати падаючий тест (`ecr_privatjson_selftest.cpp`)**
+- [x] **Step 1: Написати падаючий тест (`ecr_privatjson_selftest.cpp`)**
 
 Додати `#include "../src/platform/JobEngine.h"`, `#include <atomic>`, `#include <chrono>`, `#include <thread>` і:
 ```cpp
@@ -88,12 +88,12 @@ static void TestJobEngine() {
 ```
 Додати `TestJobEngine();` у `main()`.
 
-- [ ] **Step 2: Запустити — має впасти**
+- [x] **Step 2: Запустити — має впасти**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest`
 Expected: FAIL — `Cannot open include file: '.../JobEngine.h'`.
 
-- [ ] **Step 3: Створити `src/platform/JobEngine.h`**
+- [x] **Step 3: Створити `src/platform/JobEngine.h`**
 
 ```cpp
 #pragma once
@@ -131,7 +131,7 @@ private:
 };
 ```
 
-- [ ] **Step 4: Створити `src/platform/JobEngine.cpp`**
+- [x] **Step 4: Створити `src/platform/JobEngine.cpp`**
 
 ```cpp
 #include "../core/pch.h"
@@ -178,17 +178,17 @@ void JobEngine::SetState(JobState s) { std::lock_guard<std::mutex> lk(m_); state
 void JobEngine::Join() { if (worker_.joinable()) worker_.join(); }
 ```
 
-- [ ] **Step 5: Додати файли до `platform_component` + `/utf-8`**
+- [x] **Step 5: Додати файли до `platform_component` + `/utf-8`**
 
 `CMake/components.cmake` — у `add_library(platform_component OBJECT ...)` додати `src/platform/JobEngine.h` і `src/platform/JobEngine.cpp`.
 `CMake/compiler_settings.cmake` — переконатися, що `/utf-8` для `platform_component` уже є (Частина 1) — без змін, якщо є.
 
-- [ ] **Step 6: Зібрати й запустити — має пройти**
+- [x] **Step 6: Зібрати й запустити — має пройти**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest && ./bin/Release/ecr_privatjson_selftest_x64.exe`
 Expected: усі `[PASS]` для `TestJobEngine`, exit 0.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/platform/JobEngine.h src/platform/JobEngine.cpp tests/ecr_privatjson_selftest.cpp CMake/components.cmake
@@ -213,7 +213,7 @@ git commit -m "feat(ecr): JobEngine — машина асинхронного з
   - `ResultEnvelope GetReceiptInfo(const std::string& invoiceNumber);`
   - приватний `static ResultEnvelope MapResult(const RequestResult& r);`
 
-- [ ] **Step 1: Написати падаючі тести**
+- [x] **Step 1: Написати падаючі тести**
 
 ```cpp
 static void TestDriverPurchaseHappy() {
@@ -250,12 +250,12 @@ static void TestDriverPurchaseHappy() {
 ```
 Додати `TestDriverPurchaseHappy();` у `main()`.
 
-- [ ] **Step 2: Запустити — має впасти (немає `Purchase`)**
+- [x] **Step 2: Запустити — має впасти (немає `Purchase`)**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest`
 Expected: FAIL компіляції — `Purchase`/`Refund` не члени.
 
-- [ ] **Step 3: Додати оголошення у `EcrPrivatJsonDriver.h`**
+- [x] **Step 3: Додати оголошення у `EcrPrivatJsonDriver.h`**
 
 У `public:` (після `Model()`):
 ```cpp
@@ -273,7 +273,7 @@ Expected: FAIL компіляції — `Purchase`/`Refund` не члени.
 ```
 Додати інклуд у `.h`: `#include <nlohmann/json.hpp>` і `#include "../../platform/ResultEnvelope.h"`; forward-типи лишити.
 
-- [ ] **Step 4: Реалізувати у `EcrPrivatJsonDriver.cpp`**
+- [x] **Step 4: Реалізувати у `EcrPrivatJsonDriver.cpp`**
 
 Додати інклуди `#include "../../transport/RequestTypes.h"` (для `RequestStatus`) і реалізацію:
 ```cpp
@@ -328,12 +328,12 @@ ResultEnvelope EcrPrivatJsonDriver::GetReceiptInfo(const std::string& invoiceNum
 ```
 (`kHandshakeTimeoutMs` уже в анонімному namespace — зробити його доступним: перенести обидві константи у приватні `static constexpr` класу або лишити в namespace і посилатися; тут використано namespace-константу.)
 
-- [ ] **Step 5: Зібрати й запустити — має пройти**
+- [x] **Step 5: Зібрати й запустити — має пройти**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest && ./bin/Release/ecr_privatjson_selftest_x64.exe`
 Expected: `[PASS]` для Purchase happy (ok/0000/invoiceNumber) і Refund declined (!ok/1002/EMV Decline).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h src/drivers/ecr_privatjson/EcrPrivatJsonDriver.cpp tests/ecr_privatjson_selftest.cpp
@@ -349,7 +349,7 @@ git commit -m "feat(ecr): синхронні операції Purchase/Refund/Ch
 **Interfaces:**
 - Produces: `int LastStatus() const;` (останній `getLastStatMsgCode`, -1 якщо нема). Внутрішньо: poller-потік, що під час активної операції полить статус на service-доріжці й оновлює `lastStatus_`. Метод `Execute` тепер піднімає poller на час primary-запиту.
 
-- [ ] **Step 1: Написати падаючий тест**
+- [x] **Step 1: Написати падаючий тест**
 
 Емулятор віддає послідовність статусів через лічильник викликів, а Purchase — фінальну відповідь:
 ```cpp
@@ -380,12 +380,12 @@ static void TestDriverStatusPoll() {
 ```
 Додати `TestDriverStatusPoll();` у `main()`.
 
-- [ ] **Step 2: Запустити — має впасти (`LastStatus` немає)**
+- [x] **Step 2: Запустити — має впасти (`LastStatus` немає)**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest`
 Expected: FAIL — `LastStatus` не член.
 
-- [ ] **Step 3: Оголосити у `.h`**
+- [x] **Step 3: Оголосити у `.h`**
 
 `public:` → `int LastStatus() const;`
 `private:`:
@@ -397,7 +397,7 @@ Expected: FAIL — `LastStatus` не член.
 ```
 Додати інклуди `.h`: `#include <atomic>`.
 
-- [ ] **Step 4: Реалізувати у `.cpp`**
+- [x] **Step 4: Реалізувати у `.cpp`**
 
 Додати `#include <chrono>` (є), реалізацію poller і обгортання `Execute` у poller:
 ```cpp
@@ -440,12 +440,12 @@ ResultEnvelope EcrPrivatJsonDriver::Execute(const std::string& method,
 }
 ```
 
-- [ ] **Step 5: Зібрати й запустити — має пройти**
+- [x] **Step 5: Зібрати й запустити — має пройти**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest && ./bin/Release/ecr_privatjson_selftest_x64.exe`
 Expected: `[PASS]` StatusPoll (Purchase ok + LastStatus==3).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h src/drivers/ecr_privatjson/EcrPrivatJsonDriver.cpp tests/ecr_privatjson_selftest.cpp
@@ -461,7 +461,7 @@ git commit -m "feat(ecr): poller статусу getLastStatMsgCode на service-
 **Interfaces:**
 - Produces: `void RequestInterrupt();` (виставляє прапорець; poller шле `interrupt` на service-доріжці). Poller при виставленому прапорці шле `interrupt` один раз. Плюс приватний `ResultEnvelope RecoverAfterDesync();` — при `Timeout`+desync: полить `getLastStatMsgCode` доки термінал не в спокої, `MarkSynchronized()`, тягне `GetReceiptInfo` (best-effort).
 
-- [ ] **Step 1: Написати падаючі тести**
+- [x] **Step 1: Написати падаючі тести**
 
 ```cpp
 static void TestDriverInterrupt() {
@@ -496,17 +496,17 @@ static void TestDriverInterrupt() {
 ```
 Додати `TestDriverInterrupt();` у `main()`.
 
-- [ ] **Step 2: Запустити — має впасти (`RequestInterrupt` немає)**
+- [x] **Step 2: Запустити — має впасти (`RequestInterrupt` немає)**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest`
 Expected: FAIL — `RequestInterrupt` не член.
 
-- [ ] **Step 3: Оголосити у `.h`**
+- [x] **Step 3: Оголосити у `.h`**
 
 `public:` → `void RequestInterrupt();`
 `private:` → `std::atomic<bool> interruptRequested_{false};` та `std::atomic<bool> interruptSent_{false};`
 
-- [ ] **Step 4: Реалізувати у `.cpp`**
+- [x] **Step 4: Реалізувати у `.cpp`**
 
 ```cpp
 void EcrPrivatJsonDriver::RequestInterrupt() { interruptRequested_.store(true); }
@@ -522,12 +522,12 @@ void EcrPrivatJsonDriver::RequestInterrupt() { interruptRequested_.store(true); 
 ```
 У `Execute` скинути прапорці перед стартом poller: `interruptRequested_.store(false); interruptSent_.store(false);`.
 
-- [ ] **Step 5: Зібрати й запустити — має пройти**
+- [x] **Step 5: Зібрати й запустити — має пройти**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest && ./bin/Release/ecr_privatjson_selftest_x64.exe`
 Expected: `[PASS]` Interrupt (термінал отримав interrupt; Purchase→1001).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h src/drivers/ecr_privatjson/EcrPrivatJsonDriver.cpp tests/ecr_privatjson_selftest.cpp
@@ -549,7 +549,7 @@ git commit -m "feat(ecr): interrupt (скасування) через service-д
   - `void CancelOperation();` — `RequestInterrupt()` + `JobEngine::SetState(Interrupting)`.
 - Consumes: `JobEngine` (член `EcrPrivatJsonDriver`).
 
-- [ ] **Step 1: Написати падаючий тест**
+- [x] **Step 1: Написати падаючий тест**
 
 ```cpp
 static void TestDriverAsync() {
@@ -584,12 +584,12 @@ static void TestDriverAsync() {
 ```
 Додати `TestDriverAsync();` у `main()`.
 
-- [ ] **Step 2: Запустити — має впасти**
+- [x] **Step 2: Запустити — має впасти**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest`
 Expected: FAIL — `StartPurchase`/`OperationState` не члени.
 
-- [ ] **Step 3: Оголосити у `.h`**
+- [x] **Step 3: Оголосити у `.h`**
 
 Додати інклуд `#include "../../platform/JobEngine.h"`. У `public:`:
 ```cpp
@@ -602,7 +602,7 @@ Expected: FAIL — `StartPurchase`/`OperationState` не члени.
 ```
 У `private:` → `JobEngine job_;`
 
-- [ ] **Step 4: Реалізувати у `.cpp`**
+- [x] **Step 4: Реалізувати у `.cpp`**
 
 ```cpp
 bool EcrPrivatJsonDriver::StartOperation(const std::string& method, const nlohmann::json& params, int timeoutMs) {
@@ -629,12 +629,12 @@ void EcrPrivatJsonDriver::Disconnect() {
 }
 ```
 
-- [ ] **Step 5: Зібрати й запустити — має пройти**
+- [x] **Step 5: Зібрати й запустити — має пройти**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest && ./bin/Release/ecr_privatjson_selftest_x64.exe`
 Expected: `[PASS]` Async (Start→true, повторний→false, Done, результат).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h src/drivers/ecr_privatjson/EcrPrivatJsonDriver.cpp tests/ecr_privatjson_selftest.cpp
@@ -654,7 +654,7 @@ git commit -m "feat(ecr): асинхронний API драйвера повер
 - Consumes: `AddInNative`, `EcrPrivatJsonDriver`.
 - Produces: компонента 1С `ECRPrivatJSON` з методами (en/ru): `Connect/Подключить`, `Disconnect/Отключить`, `IsConnected/Подключен`, `CheckConnection/ПроверитьСвязь`, `GetTerminalInfo/ВерсияПО`, `Purchase/Оплата`, `Refund/Возврат`, `GetReceiptInfo/ПолучитьЧек`, `StartPurchase/НачатьОплату`, `StartRefund/НачатьВозврат`, `OperationState/СостояниеОперации`, `OperationResult/РезультатОперацииJSON`, `CancelOperation/ПрерватьОперацию`, `LastStatus/СтатусТерминала`, `Vendor/Вендор`, `Model/Модель`, `EnableTrace/ВключитьТрассировку`.
 
-- [ ] **Step 1: Написати падаючий смоук-тест (`ecr_privatjson_selftest.cpp`)**
+- [x] **Step 1: Написати падаючий смоук-тест (`ecr_privatjson_selftest.cpp`)**
 
 Потрібен мінімальний мок платформи 1С. Додати перед `main()`:
 ```cpp
@@ -694,12 +694,12 @@ static void TestFacadeSmoke() {
 ```
 > **Примітка:** точні імена `Init`/`setMemManager`/`GetNMethods`/`FindMethod` звірити з `IComponentBase`/`AddInNative.h` (SDK 1С); за потреби адаптувати виклики під фактичні сигнатури (це стандартні методи `IComponentBase`). Додати `TestFacadeSmoke();` у `main()`.
 
-- [ ] **Step 2: Запустити — має впасти (немає компоненти `ECRPrivatJSON`)**
+- [x] **Step 2: Запустити — має впасти (немає компоненти `ECRPrivatJSON`)**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest`
 Expected: FAIL лінкування/рантайм — компонента не зареєстрована / `AddinECRPrivatJSON.h` відсутній.
 
-- [ ] **Step 3: Створити `src/components/AddinECRPrivatJSON.h`**
+- [x] **Step 3: Створити `src/components/AddinECRPrivatJSON.h`**
 
 ```cpp
 #pragma once
@@ -724,7 +724,7 @@ private:
 };
 ```
 
-- [ ] **Step 4: Створити `src/components/AddinECRPrivatJSON.cpp`**
+- [x] **Step 4: Створити `src/components/AddinECRPrivatJSON.cpp`**
 
 ```cpp
 #include "../core/pch.h"
@@ -816,7 +816,7 @@ void AddinECRPrivatJSON::RegisterMethods() {
 ```
 > **Реалізаційна нотатка для виконавця:** `runSync` тут викликається двічі різними шляхами (у `CheckConnection` через `this->result = runSync(...)` помилково — `runSync` уже ставить `this->result`; прибрати зовнішнє присвоєння, лишити просто `runSync(driver_.CheckConnection());`). Уніфікуй: **не** обгортай `Ret()` хендлери, що самі ставлять `this->result` (правило AGENTS.md). Тобто синхронні операції — «голі» лямбди, що кличуть `runSync(...)` (яка ставить `this->result` рядком JSON). Тільки `Connect`/`IsConnected`/геттери — через `Ret()`.
 
-- [ ] **Step 5: CMake — OBJECT-ліба фасаду + у SHARED DLL + `/utf-8`**
+- [x] **Step 5: CMake — OBJECT-ліба фасаду + у SHARED DLL + `/utf-8`**
 
 `CMake/components.cmake`:
 ```cmake
@@ -834,16 +834,16 @@ add_dependencies(ecr_facade_component base_component spdlog nlohmann_json helper
 Додати `$<TARGET_OBJECTS:ecr_facade_component>` у `add_library(${TARGET} SHARED ...)`.
 `CMake/compiler_settings.cmake` — додати `target_compile_options(ecr_facade_component PRIVATE /utf-8)`.
 
-- [ ] **Step 6: Тестова ціль лінкує фасад**
+- [x] **Step 6: Тестова ціль лінкує фасад**
 
 `tests/CMakeLists.txt` — у `ecr_privatjson_selftest` додати `$<TARGET_OBJECTS:ecr_facade_component>` (щоб `CreateObject(u"ECRPrivatJSON")` знаходив компоненту).
 
-- [ ] **Step 7: Зібрати повністю (DLL реєструє компоненту) і запустити**
+- [x] **Step 7: Зібрати повністю (DLL реєструє компоненту) і запустити**
 
 Run: `powershell -ExecutionPolicy Bypass -File build_project.ps1 -WithTests; ./bin/Release/ecr_privatjson_selftest_x64.exe`
 Expected: `[PASS]` FacadeSmoke (CreateObject не null, >=10 методів). L0.1 (3 експорти DLL) без змін.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/components/AddinECRPrivatJSON.h src/components/AddinECRPrivatJSON.cpp CMake/components.cmake CMake/compiler_settings.cmake tests/CMakeLists.txt tests/ecr_privatjson_selftest.cpp
@@ -862,12 +862,12 @@ git commit -m "feat(ecr): 1С-фасад AddinECRPrivatJSON (реєстраці�
 **Interfaces:**
 - Produces: `bool TerminalEmulator::Start(int port);` (0=ефемерний — наявна поведінка). Standalone EXE `ecr_terminal_emulator[_x64].exe [port]` (default 2000) з повним набором сценаріїв зі спеки; слухає, доки не Ctrl-C.
 
-- [ ] **Step 1: Розширити `TerminalEmulator` фіксованим портом**
+- [x] **Step 1: Розширити `TerminalEmulator` фіксованим портом**
 
 У `TerminalEmulator.h`: `bool Start() { return Start(0); } bool Start(int port);`
 У `.cpp` замінити `addr.sin_port = 0;` на `addr.sin_port = htons(static_cast<u_short>(port));` і сигнатуру `Start()`→`Start(int port)`; при `port==0` лишається ефемерний (htons(0)==0).
 
-- [ ] **Step 2: Створити `tests/ecr_terminal_emulator_main.cpp`**
+- [x] **Step 2: Створити `tests/ecr_terminal_emulator_main.cpp`**
 
 ```cpp
 // Standalone-емулятор термінала ПриватБанк для тестування З 1С без обладнання.
@@ -906,7 +906,7 @@ int main(int argc, char** argv) {
 }
 ```
 
-- [ ] **Step 3: CMake — ціль `ecr_terminal_emulator` (ДО UAPKI-гейта)**
+- [x] **Step 3: CMake — ціль `ecr_terminal_emulator` (ДО UAPKI-гейта)**
 
 `tests/CMakeLists.txt` (після `ecr_privatjson_selftest`, перед UAPKI-гейтом):
 ```cmake
@@ -921,12 +921,12 @@ if(MSVC)
 endif()
 ```
 
-- [ ] **Step 4: Зібрати й перевірити ручний запуск**
+- [x] **Step 4: Зібрати й перевірити ручний запуск**
 
 Run: `cmake --build build_x64 --config Release --target ecr_terminal_emulator; ./bin/Release/ecr_terminal_emulator_x64.exe 2000`
 Expected: друкує `ECR terminal emulator слухає 127.0.0.1:2000 …` (Ctrl-C для виходу). (Юніт-тести не чіпаємо — це ручний інструмент для 1С.)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/support/TerminalEmulator.h tests/support/TerminalEmulator.cpp tests/ecr_terminal_emulator_main.cpp tests/CMakeLists.txt
@@ -945,7 +945,7 @@ git commit -m "feat(ecr): standalone-емулятор термінала (EXE) �
 - Consumes: головна DLL (`SimplyAddinConnect_x64.dll`) через `LoadLibraryW`+`GetClassObject`; `IComponentBase`; `TerminalEmulator` (in-process).
 - Produces: exe `ecr_native_host[_x64].exe` — вантажить DLL, створює компоненту `ECRPrivatJSON`, `Подключить(tcp://127.0.0.1:<emuPort>)`, `Оплата`, звіряє результат. Exit 0 = OK.
 
-- [ ] **Step 1: Створити `tests/ecr_native_host.cpp`**
+- [x] **Step 1: Створити `tests/ecr_native_host.cpp`**
 
 Побудувати за зразком `native_host.cpp` (той самий механізм `LoadLibraryW`/`GetClassObject`/`HostConnect`/`HostMemoryManager`/маршалінг `tVariant`), але викликати `ECRPrivatJSON`. Скелет (виконавець доповнює маршалінг рядків із `native_host.cpp` — ті самі хелпери `u8to16`/`wz2u8` і виклик `CallAsFunc`/`CallAsProc`):
 ```cpp
@@ -1005,7 +1005,7 @@ int main() {
 ```
 > **Виконавцю:** маршалінг `tVariant` (VTYPE_PWSTR у параметрах і в результаті), пошук методу за іменем (`FindMethod`), виклик `CallAsFunc`/`CallAsProc` — **дослівно за `tests/native_host.cpp`** (той самий SDK-контракт). Кроки нижче перевіряють результат.
 
-- [ ] **Step 2: CMake — ціль `ecr_native_host` (ДО UAPKI-гейта)**
+- [x] **Step 2: CMake — ціль `ecr_native_host` (ДО UAPKI-гейта)**
 
 `tests/CMakeLists.txt`:
 ```cmake
@@ -1021,12 +1021,12 @@ if(MSVC)
 endif()
 ```
 
-- [ ] **Step 3: Зібрати повністю й запустити L3**
+- [x] **Step 3: Зібрати повністю й запустити L3**
 
 Run: `powershell -ExecutionPolicy Bypass -File build_project.ps1 -WithTests; ./bin/Release/ecr_native_host_x64.exe`
 Expected: `[PASS]` DLL завантажено / компонента створена / Подключить / Оплата → JSON 0000+invoiceNumber 77; exit 0.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/ecr_native_host.cpp tests/CMakeLists.txt
@@ -1043,11 +1043,11 @@ git commit -m "test(ecr): L3-харнес ecr_native_host — компонент
 
 **Interfaces:** оркестратор `run_tests.ps1` після L0.7 запускає `ecr_native_host` як окремий рівень (без UAPKI), додає рядок у підсумкову таблицю; ненульовий exit при провалі.
 
-- [ ] **Step 1: Додати рівень у `run_tests.ps1`**
+- [x] **Step 1: Додати рівень у `run_tests.ps1`**
 
 Знайти блок L0.7 (`ecr_privatjson_selftest`) і після нього додати запуск `ecr_native_host_x64.exe` за тим самим патерном (шукати exe в `bin/Release`, ловити exit-код, додати рядок у таблицю; проходить і в режимі `-NoUapki`, бо не залежить від UAPKI). Дотриматися наявного стилю рівнів.
 
-- [ ] **Step 2: Зібрати й прогнати повний гейт (обидві архітектури, без UAPKI)**
+- [x] **Step 2: Зібрати й прогнати повний гейт (обидві архітектури, без UAPKI)**
 
 Run:
 ```powershell
@@ -1057,11 +1057,11 @@ powershell -File run_tests.ps1 -NoUapki x86
 ```
 Expected: L0.5/L0.6/L0.7/L2-ecr — усі PASS; підсумкова таблиця без FAIL; exit 0 на обох архітектурах.
 
-- [ ] **Step 3: Оновити доки під фактичний стан**
+- [x] **Step 3: Оновити доки під фактичний стан**
 
 `AGENTS.md` (розділ «Тести») і `docs/architecture/ecrprivatjson.md`: додати `ecr_native_host` (L2/L3 ECR) і `ecr_terminal_emulator` (ручний інструмент для 1С); позначити «Частина 2 виконана: операції/JobEngine/фасад/тест-контур». Відмітити в плані Частини 2 виконані кроки (`- [x]`).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add run_tests.ps1 AGENTS.md docs/architecture/ecrprivatjson.md docs/tasks/2026-07-21_plan_ecr_privatjson_p2_operations_and_1c.md

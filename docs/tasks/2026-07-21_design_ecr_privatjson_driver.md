@@ -2,10 +2,12 @@
 
 *Дата: 2026-07-21. Версія: **v2** (після Codex-аудиту: 5 critical + 14 major верифіковано по коду/спеці й враховано). Статус: затверджено напрям (4 розвилки вирішено з користувачем), специфікація на рев'ю.*
 
-> **Прогрес:** §13 кроки 1-4 (платформа-каркас + wire-спина до першого transport-e2e) —
-> **✅ реалізовано** (Частина 1, гілка `design-ecr-privatjson`); план і звіт —
+> **Прогрес:** §13 кроки 1-7 — **✅ реалізовано повністю** (гілка `design-ecr-privatjson`).
+> Частина 1 (кроки 1-4: платформа-каркас + wire-спина до першого transport-e2e) — план/звіт
 > [`2026-07-21_plan_ecr_privatjson_p1_foundation.md`](2026-07-21_plan_ecr_privatjson_p1_foundation.md).
-> Кроки 5-7 (Purchase з паузою / 1С-фасад `AddinECRPrivatJSON` / інтеграція L0-L3 у `run_tests`) — Частина 2.
+> Частина 2 (кроки 5-7: операції Purchase/Refund/… + `JobEngine`/poller/interrupt/async + 1С-фасад
+> `AddinECRPrivatJSON` (компонента `ECRPrivatJSON`) + інтеграція L0.7/L2-ecr у `run_tests`) —
+> план/звіт [`2026-07-21_plan_ecr_privatjson_p2_operations_and_1c.md`](2026-07-21_plan_ecr_privatjson_p2_operations_and_1c.md).
 
 *Підготовлено за результатами глибокого дослідження: повне прочитання новішої специфікації
 `ECR протокол ПриватБанк (JSON based) 1.0.3.5_integrator (ukr)_14012026` (3261 рядок) зі звіркою
