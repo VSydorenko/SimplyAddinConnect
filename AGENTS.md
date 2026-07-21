@@ -10,6 +10,8 @@
 іменем:
 - **AddinUAPKIConnect** — ЕЦП/крипто через бібліотеку UAPKI;
 - **ECRPrivatJSON** — драйвер платіжного термінала ПриватБанк (перший драйвер обладнання);
+- **LabelPrinter** — драйвер принтера етикеток (ZPL, БПО-фасад, XML) — другий драйвер обладнання,
+  див. `docs/architecture/label_printer.md` / `docs/integration-1c/label_printer.md`;
 - **TestComponent** — демо/приклад реєстрації.
 
 Усі компоненти стоять на спільному ядрі-мості до SDK 1С (`src/core/AddInNative`). **Драйвери
@@ -44,8 +46,9 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTe
   при `INIT` (потрійний пошук каталогу — див. `docs/architecture/uapki.md`); у підсумковий ZIP
   потрапляють обидва варіанти — разом 5 файлів (див. `docs/architecture/uapki.md`, `build-and-packaging.md`);
 - `-WithTests` — збирає тестові консольні exe з `tests/`. **`core_selftest`, `wire_selftest`,
-  `ecr_privatjson_selftest`, `ecr_terminal_emulator` і `ecr_native_host` збираються завжди при
-  `-WithTests`** (ядрові/ECR-харнеси без UAPKI); а `uapki_selftest`/`native_host` — **лише разом з
+  `ecr_privatjson_selftest`, `ecr_terminal_emulator`, `ecr_native_host`, `label_printer_selftest`,
+  `label_printer_emulator` і `label_native_host` збираються завжди при `-WithTests`** (ядрові/ECR/
+  LabelPrinter-харнеси без UAPKI); а `uapki_selftest`/`native_host` — **лише разом з
   `-WithUAPKI`** (залежать від крипто-ядра; без UAPKI ці дві цілі тихо пропущено, тека `tests/` на
   Windows конфігурується завжди).
 
@@ -59,7 +62,10 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTe
 DLL і НЕ підключають `src/core/pch.h`), `tests/core_selftest.cpp` (харнес ядра),
 `tests/wire_selftest.cpp` (харнес device-ядра), `tests/ecr_privatjson_selftest.cpp` +
 `tests/support/TerminalEmulator.{h,cpp}` (харнес пілотного драйвера ECRPrivatJSON + протокол-обізнаний
-TCP-емулятор термінала), `tests/scenarios/*.json`
+TCP-емулятор термінала), `tests/label_printer_selftest.cpp` (харнес драйвера LabelPrinter),
+`tests/label_native_host.cpp` + `tests/label_printer_emulator.cpp` +
+`tests/support/LabelEmulator.{h,cpp}` (компонента LabelPrinter через DLL + TCP-емулятор принтера
+етикеток), `tests/scenarios/*.json`
 (7 сценаріїв L1), `tests/data/` (тестовий контейнер `test-diia.p12`, сертифікати, CRL — read-only вхід).
 
 Тестові цілі (лише Windows; окремі exe). Детальний склад перевірок кожного драйвера — у
@@ -72,6 +78,9 @@ TCP-емулятор термінала), `tests/scenarios/*.json`
 | `ecr_privatjson_selftest.exe` | L0.7 | ні | драйвер ECRPrivatJSON: кодек, класифікатор, e2e проти `TerminalEmulator`, `JobEngine`, операції, poller, interrupt, async, смоук фасаду |
 | `ecr_native_host.exe` | L2-ecr | ні | компонента `ECRPrivatJSON` через головну DLL (`LoadLibraryW`+`GetClassObject`) проти `TerminalEmulator` |
 | `ecr_terminal_emulator.exe` | — (ручний) | ні | standalone TCP-емулятор термінала для тесту з реальної 1С (`[port]`, default 2000) |
+| `label_printer_selftest.exe` | L-p1 | ні | драйвер `LabelPrinter`: генератор ZPL, растр/штрихкоди, `LabelXml`, смоук БПО-фасаду `AddinLabelPrinter` |
+| `label_native_host.exe` | L-p3 | ні | компонента `LabelPrinter` через головну DLL проти `LabelEmulator` (TCP-захоплювач ZPL) |
+| `label_printer_emulator.exe` | — (ручний) | ні | standalone TCP-емулятор принтера етикеток (захоплює ZPL) для тесту з реальної 1С |
 | `uapki_selftest.exe` | L1 | **так** | UAPKI-ядро: JSON-сценарії `tests/scenarios/` через `process()`/`json_free()` |
 | `native_host.exe` | L2/L3 | **так** | компонента `AddinUAPKIConnect` через DLL, e2e + крос-валідація ПРРО (кейс 5 потребує `PRRO_DOCS_DIR`) |
 
@@ -83,15 +92,18 @@ TCP-емулятор термінала), `tests/scenarios/*.json`
 Запуск: `build_project.ps1 -WithUAPKI -WithTests`, потім
 `powershell -File run_tests.ps1 [x64|x86] [-NoUapki]` (оркестратор: L0 dumpbin-інваріанти →
 L0.5 core_selftest ядра → L0.6 wire_selftest device-ядра → L0.7 ecr_privatjson_selftest драйвера →
-L2-ecr ecr_native_host компоненти ECRPrivatJSON через DLL → L1 selftest по сценаріях →
-L2/L3 native_host; підсумкова таблиця PASS/FAIL/SKIP/BLOCKED, ненульовий exit при провалі).
-L0.5, L0.6, L0.7 і L2-ecr проходять і без `-WithUAPKI`.
+L2-ecr ecr_native_host компоненти ECRPrivatJSON через DLL → L-p1 label_printer_selftest драйвера
+LabelPrinter → L-p3 label_native_host компоненти LabelPrinter через DLL → L1 selftest по
+сценаріях → L2/L3 native_host; підсумкова таблиця PASS/FAIL/SKIP/BLOCKED, ненульовий exit при
+провалі). L0.5, L0.6, L0.7, L2-ecr, L-p1 і L-p3 проходять і без `-WithUAPKI`.
 
-**Режим без UAPKI (`-NoUapki`):** ганяє ядрові/ECR-рівні (L0.5 core + L0.6 wire + L0.7 ecr +
-L2-ecr ecr_native_host) — збирає з `-DBUILD_TESTS=ON` **без** `-DBUILD_WITH_UAPKI=ON`; провайдер
-(L0.2), L1 та L2/L3 native_host → SKIP (не FAIL). L0.1 (рівно 3 експорти головної DLL) і L2-ecr
-(потребує головну DLL + `ecr_native_host.exe`) лишаються активними. Швидкий гейт device-ядра+ECR
-без важкої статичної збірки крипто-стеку: `powershell -File run_tests.ps1 -NoUapki [x64|x86]`.
+**Режим без UAPKI (`-NoUapki`):** ганяє ядрові/ECR/LabelPrinter-рівні (L0.5 core + L0.6 wire +
+L0.7 ecr + L2-ecr ecr_native_host + L-p1 label_printer_selftest + L-p3 label_native_host) —
+збирає з `-DBUILD_TESTS=ON` **без** `-DBUILD_WITH_UAPKI=ON`; провайдер (L0.2), L1 та L2/L3
+native_host → SKIP (не FAIL). L0.1 (рівно 3 експорти головної DLL), L2-ecr (потребує головну DLL +
+`ecr_native_host.exe`) і L-p3 (потребує головну DLL + `label_native_host.exe`) лишаються активними.
+Швидкий гейт device-ядра+ECR+LabelPrinter без важкої статичної збірки крипто-стеку:
+`powershell -File run_tests.ps1 -NoUapki [x64|x86]`.
 
 Тестові exe лягають у `bin/Release` (через `EXECUTABLE_OUTPUT_PATH`, `output_settings.cmake`) —
 саме там їх шукає `run_tests.ps1`.
@@ -113,12 +125,17 @@ src/transport/      # канали COM/TCP/WS-client + device-core (IFramer/Null
 src/platform/       # платформа-каркас драйверів (ResultEnvelope — уніфікований результат операції;
                     #   JobEngine — машина асинхронного завдання)
 src/drivers/        # драйвери обладнання поверх device-core; ecr_privatjson/ — пілотний
-                    #   ECRPrivatJSON (EcrJsonCodec/EcrPrivatJsonClassifier/EcrPrivatJsonDriver)
+                    #   ECRPrivatJSON (EcrJsonCodec/EcrPrivatJsonClassifier/EcrPrivatJsonDriver);
+                    #   label_printer/ — другий драйвер, LabelPrinter (ZPL): LabelZplGenerator/
+                    #   LabelRaster/GfEncoder/BarcodeZpl/LabelXml/LabelPrinterDriver (device-core
+                    #   не задіяний — друк односпрямований, синхронний, поверх ITransport)
 include/            # заголовки SDK 1С
 tests/              # core_selftest (L0.5) + wire_selftest (L0.6) + ecr_privatjson_selftest (L0.7,
                     #   +support/TerminalEmulator) + ecr_native_host (L2-ecr, компонента через DLL) +
-                    #   ecr_terminal_emulator (standalone EXE для 1С) + uapki_selftest (L1) +
-                    #   native_host (L2/L3) + scenarios/ + data/
+                    #   ecr_terminal_emulator (standalone EXE для 1С) + label_printer_selftest (L-p1,
+                    #   драйвер LabelPrinter) + label_native_host (L-p3, компонента через DLL) +
+                    #   label_printer_emulator (standalone EXE для 1С, +support/LabelEmulator) +
+                    #   uapki_selftest (L1) + native_host (L2/L3) + scenarios/ + data/
 docs/architecture/    # архітектура по підсистемах (README + 01..04)
 docs/               # специфікації протоколів (ECR/UAPKI), tasks/
 extern/             # сабмодулі: spdlog, nlohmann_json, ixwebsocket, uapki
