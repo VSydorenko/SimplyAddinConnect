@@ -96,7 +96,7 @@ flowchart TD
 | Device-core | `src/transport/{IFramer,NullTerminatedFramer,IFrameClassifier,DeviceSession}` | Фундамент драйверів: кадрування → класифікація → сесія запит/відповідь |
 | Платформа драйверів | `src/platform/*` | Спільний каркас драйверів (`ResultEnvelope` — уніфікований результат операції) |
 | Драйвери обладнання | `src/drivers/ecr_privatjson/*` | Пілотний ECRPrivatJSON: кодек JSON, класифікатор кадрів, `Connect` (Ч1) + операції/poller/interrupt/async поверх `JobEngine` (Ч2) |
-| Компонента ECR (фасад) | `src/components/AddinECRPrivatJSON.*` | Компонента 1С `ECRPrivatJSON`: реєструє методи, делегує драйверу, події через `PostExternalEvent` (Ч2) |
+| Компонента ECR (фасад) | `src/components/AddinECRPrivatJSON.*` | Компонента 1С `ECRPrivatJSON`: реєструє методи, делегує драйверу; poll-based стан операції (`OperationState`/`OperationResult`/`LastStatus`), `EnableTrace` — wire-трасування з наступного `Connect` (Ч2) |
 | Хелпери | `src/helpers/*` | Допоміжна логіка (JSON, буфери, обгортки бібліотек) |
 | Транспорт | `src/transport/*` | Канали зв'язку (COM/TCP/WebSocket-client) |
 | Сервіси | `src/helpers/ServiceTools*` | Наскрізне логування та конвертації рядків |

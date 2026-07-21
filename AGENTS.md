@@ -23,8 +23,11 @@
 `CheckConnection`/`GetReceiptInfo`) поверх `JobEngine` (`src/platform/` — машина асинхронного
 завдання), poller статусу `getLastStatMsgCode` + `interrupt` на service-доріжці, best-effort
 відновлення після desync, і **зареєстрована компонента 1С `ECRPrivatJSON`** (фасад
-`AddinECRPrivatJSON` у `src/components/`, `REGISTER_COMPONENT`, делегує драйверу, події через
-`PostExternalEvent`). Уся Privat-специфіка ізольована в кодеку+класифікаторі;
+`AddinECRPrivatJSON` у `src/components/`, `REGISTER_COMPONENT`, делегує драйверу; **poll-based**,
+без подій — стан операції читається методами `OperationState`/`СостояниеОперации`, результат —
+`OperationResult`/`РезультатОперацииJSON`, статус термінала — `LastStatus`/`СтатусТерминала`;
+`EnableTrace`/`ВключитьТрассировку` вмикає wire-трасування драйвера, діє з наступного `Connect`).
+Уся Privat-специфіка ізольована в кодеку+класифікаторі;
 `DeviceSession`/транспорти лишаються загальними. Ручний тест із реальної 1С без обладнання —
 standalone-емулятор термінала `ecr_terminal_emulator`.
 

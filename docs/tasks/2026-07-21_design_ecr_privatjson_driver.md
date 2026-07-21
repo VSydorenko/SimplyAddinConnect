@@ -252,9 +252,12 @@ baud `115200` (дефолт `TransportCOM` — 9600). Рядок: `"tcp://host:2
   Визначені також: таймаут рішення каси, обрив у стані очікування, повторний sync/async-виклик під
   час активного job (відхиляється як `Concurrent`).
   - синхронно: `Оплата(...)` = start + wait;
-  - асинхронно: `НачатьОплату(...)` → `ПолучитьСостояние()`/`ПолучитьСтатусОперации()`
-    (полінг з `ОбработчикОжидания`) → `ПолучитьРезультат()`; опційно подія через `PostExternalEvent`;
-  - пауза: `ПодтвердитьОперацию()`/`СкорректироватьСумму()`/`ОтклонитьОперацию()`.
+  - асинхронно: `НачатьОплату(...)` → `СостояниеОперации()` (полінг з `ОбработчикОжидания`) →
+    `РезультатОперацииJSON()`; **as-built (Ч2): суто poll-based, без подій** — `PostExternalEvent`
+    для стану операції не використовується (див. §10);
+  - пауза: `ПодтвердитьОперацию()`/`СкорректироватьСумму()`/`ОтклонитьОперацию()` — **не реалізовано
+    в Ч2** (див. `docs/tasks/2026-07-21_plan_ecr_privatjson_p2_operations_and_1c.md`, «Рішення для
+    Частини 2», п.1-2).
 - **Потокова модель (важливо):** `RequestPrimary` **блокує** свій потік до відповіді/таймауту
   (`DoRequest`→`cv_.wait_for`). Тому драйвер має **ДВА потоки**: (1) worker JobEngine, що тримає
   активний `RequestPrimary` операції; (2) окремий **poller/timer-потік**, який під час `Running`
@@ -265,14 +268,18 @@ baud `115200` (дефолт `TransportCOM` — 9600). Рядок: `"tcp://host:2
 - **`ResultEnvelope`** — `{ok:bool, code:string, description:string, payload:json}`. У 1С: функція
   повертає `ok`, деталі — `ПолучитьРезультатJSON()`/геттери.
 
-**Флоу Purchase з паузою:** worker шле `RequestPrimary(Purchase)` і блокується; poller полить
-`getLastStatMsgCode` (service) 0.5-1с. Код `11` → `AwaitingCashDecision`, драйвер тягне
-`getDiscountName` → 1С викликає `СкорректироватьСумму`/`Подтвердить` → драйвер шле сервісний
-`correctTransaction` → приходить `correctionTransmitted` (ServiceResponse, ack) → **операція
-завершується, коли повертається ФІНАЛЬНА primary-відповідь Purchase** (не ack корекції). `interrupt`
-(service) → `interruptTransmitted` (ack) + primary-відповідь `responseCode 1001` → `Done`.
-`deviceBusy` на primary → повтор/помилка за політикою. 1С-події зі зміни стану — з worker/poller-потоку
-лише через `PostExternalEvent`.
+**Флоу Purchase з паузою (історичний дизайн, НЕ реалізовано в Ч2):** worker шле
+`RequestPrimary(Purchase)` і блокується; poller полить `getLastStatMsgCode` (service) 0.5-1с. Код
+`11` → `AwaitingCashDecision`, драйвер тягне `getDiscountName` → 1С викликає
+`СкорректироватьСумму`/`Подтвердить` → драйвер шле сервісний `correctTransaction` → приходить
+`correctionTransmitted` (ServiceResponse, ack) → **операція завершується, коли повертається
+ФІНАЛЬНА primary-відповідь Purchase** (не ack корекції). `interrupt` (service) →
+`interruptTransmitted` (ack) + primary-відповідь `responseCode 1001` → `Done`. `deviceBusy` на
+primary → повтор/помилка за політикою.
+**As-built (Ч2):** пауза на рішення каси не реалізована (код `11` без корекції — продаж
+продовжується штатно, спека); 1С не отримує подій зі зміни стану — вона **опитує стан**
+(`СостояниеОперации`/`РезультатОперацииJSON`/`СтатусТерминала`), `PostExternalEvent` для цього
+не використовується (§10).
 
 ## 8. Операції зрізу vs повний каталог
 
@@ -307,9 +314,14 @@ baud `115200` (дефолт `TransportCOM` — 9600). Рядок: `"tcp://host:2
 Успадкувати `AddInNative`; реєстрація через `REGISTER_COMPONENT(u"ECRPrivatJSON",
 AddinECRPrivatJSON)`. Методи — з `OperationRegistry` (пари en/ru, синхронна+асинхронна форма).
 Результат — через `Ret()` для value-хендлерів або явний `this->result` + геттери
-`ResultEnvelope`. Події зі зміни стану операції — з worker/poller-потоку **лише** через успадкований
-`AddInNative::PostExternalEvent` (окремого класу `EventBridge` у коді немає — це саме цей механізм);
-результати методів і `AddError` — лише на потоці виклику 1С.
+`ResultEnvelope`.
+**As-built (Ч2): фасад poll-based, без подій.** 1С сама опитує стан операції методами
+`OperationState`/`СостояниеОперации` (int — `JobState`), `OperationResult`/`РезультатОперацииJSON`
+(рядок JSON `ResultEnvelope`) і `LastStatus`/`СтатусТерминала`; `AddInNative::PostExternalEvent`
+для стану операції **не використовується** (у `src/components/AddinECRPrivatJSON.cpp` викликів
+немає — перевірено grep'ом). Результати методів і `AddError` — лише на потоці виклику 1С.
+`EnableTrace`/`ВключитьТрассировку` вмикає wire-трасування драйвера
+(`DeviceSession::SetWireTraceHandler`), діє з наступного `Connect`.
 `EnableLogging`/`ИспользоватьЛогирование` — успадковані, реєструвати не треба.
 
 ## 11. Тестова стратегія (емулятор-only)
@@ -380,8 +392,8 @@ tests/ecr_privatjson_selftest.cpp          # L1/L2/L3 драйвера (або �
 5. **Драйвер — Purchase з паузою:** Purchase/Refund; poller полить `getLastStatMsgCode`; при `==11`
    — `getDiscountName`+`correctTransaction`+`correctionTransmitted`+фінальна відповідь; `interrupt`;
    `deviceBusy`; desync-відновлення через service+`GetReceiptInfo`.
-6. **1С-фасад:** `AddinECRPrivatJSON` (пари en/ru, sync+async, події через `PostExternalEvent`), L3
-   проти емулятора.
+6. **1С-фасад:** `AddinECRPrivatJSON` (пари en/ru, sync+async, poll-based стан операції — без
+   `PostExternalEvent`; `EnableTrace` для wire-трасування), L3 проти емулятора.
 7. **Інтеграція в `run_tests.ps1`** (L0-L3) + інкрементальне доповнення каталогу операцій (§8).
 
 ## 14. Поза обсягом
