@@ -116,6 +116,7 @@ endif()
 # Поки лише LabelModel/LabelUnits; наступні таски додадуть GfEncoder/BarcodeZpl/...
 # ---------------------------------------------------------------------------
 add_executable(label_printer_selftest ${CMAKE_SOURCE_DIR}/tests/label_printer_selftest.cpp)
+target_sources(label_printer_selftest PRIVATE $<TARGET_OBJECTS:driver_label_printer_component>)
 target_include_directories(label_printer_selftest PRIVATE
     ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src ${SPDLOG_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR})
 set_target_properties(label_printer_selftest PROPERTIES
