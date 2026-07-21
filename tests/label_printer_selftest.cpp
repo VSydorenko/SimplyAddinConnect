@@ -6,6 +6,7 @@
 #include "../src/drivers/label_printer/GfEncoder.h"
 #include "../src/drivers/label_printer/BarcodeZpl.h"
 #include "../src/drivers/label_printer/LabelRaster.h"
+#include "../src/drivers/label_printer/LabelZplGenerator.h"
 using namespace labelprinter;
 
 static int g_failures = 0;
@@ -88,6 +89,36 @@ static void TestRasterImage() {
     CHECK(CountBlack(bm) > 0, "decoded PNG image produced black pixels");
 }
 
+static void TestGenerator() {
+    GdiplusRuntime gdi;
+    LabelFormatting fmt; fmt.width = 60; fmt.height = 40;
+    TextField tx; tx.fieldName = "Name"; tx.geom = {1, 1, 55, 10, 0};
+    tx.fontName = "Arial"; tx.fontSize = 8; fmt.texts.push_back(tx);
+    BarcodeField bc; bc.fieldName = "Bar"; bc.type = "EAN13"; bc.geom = {1, 22, 0, 10, 0};
+    fmt.barcodes.push_back(bc);
+    LabelInstance inst; inst.quantity = 2;
+    inst.records.push_back({"Name", std::string("Блокнот")});
+    inst.records.push_back({"Bar",  std::string("4008110271538")});
+    DeviceProfile dp; dp.dotsPerMm = 8;
+    auto r = LabelZplGenerator::BuildLabel(fmt, inst, dp);
+    std::string z(r.zpl.begin(), r.zpl.end());
+    CHECK(r.ok, "generate ok");
+    CHECK(z.rfind("^XA", 0) == 0 && z.find("^XZ") != std::string::npos, "wrapped ^XA..^XZ");
+    CHECK(z.find("^PQ2") != std::string::npos, "quantity ^PQ2");
+    CHECK(z.find("^GFA") != std::string::npos, "raster present");
+    CHECK(z.find("^BE") != std::string::npos, "native EAN13 present");
+
+    BarcodeField u = bc; u.type = "Code16k";
+    LabelFormatting f2 = fmt; f2.barcodes = {u};
+    auto r2 = LabelZplGenerator::BuildLabel(f2, inst, dp);
+    CHECK(!r2.ok && r2.errCode == "UNSUPPORTED_BARCODE", "unsupported barcode propagates");
+
+    auto init = LabelZplGenerator::BuildInit(dp);
+    std::string zi(init.begin(), init.end());
+    CHECK(zi.rfind("^XA", 0) == 0 && zi.find("^XZ") != std::string::npos, "init wrapped ^XA..^XZ");
+    CHECK(zi.find("^PR") != std::string::npos && zi.find("^MD") != std::string::npos, "init has darkness+speed");
+}
+
 int main() {
     TestUnits();
     TestGfEncoder();
@@ -95,6 +126,7 @@ int main() {
     TestBarcodeZpl();
     TestRaster();
     TestRasterImage();
+    TestGenerator();
     std::printf(g_failures ? "\nFAILED: %d\n" : "\nALL PASS\n", g_failures);
     return g_failures ? 1 : 0;
 }
