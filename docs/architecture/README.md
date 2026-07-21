@@ -4,7 +4,8 @@
 на детальні підсистемні доки. Тут навмисно стисло — усі подробиці (сигнатури, file:line,
 особливості поведінки) винесені в окремі розділи.
 
-> Стан коду відповідає гілці `device-core`.
+> Стан коду відповідає гілці `design-ecr-privatjson` (device-core + wire-спина пілотного
+> драйвера ECRPrivatJSON, Частина 1).
 
 ---
 
@@ -24,8 +25,12 @@
 > термінал ПриватБанку) на гілці `device-core` **видалено як непрацездатний** — його
 > заміняє **фундамент device-core** у `src/transport/`: байтовий транспорт `ITransport` →
 > кадрування `IFramer`/`NullTerminatedFramer` → класифікація `IFrameClassifier` → сесія
-> запит/відповідь `DeviceSession`. Це основа для майбутніх драйверів; конкретних компонент-
-> драйверів (Privat тощо) поки нема.
+> запит/відповідь `DeviceSession`. Перший драйвер на цьому фундаменті — **ECRPrivatJSON**
+> (`src/drivers/ecr_privatjson/`) поверх платформи-каркаса `src/platform/` (`ResultEnvelope`):
+> реалізовано **wire-спину (Частина 1)** — кодек `EcrJsonCodec` (JSON↔байти), класифікатор
+> `EcrPrivatJsonClassifier` (кореляція за `method`/`msgType`), `EcrPrivatJsonDriver::Connect`
+> за еталонною схемою. 1С-фасад `AddinECRPrivatJSON` і платіжні операції — Частина 2
+> (драйвер ще не реєструється як компонента 1С).
 
 UAPKI — **лише одна з підсистем**, а не суть усього проєкту. Архітектура шарова: верхні шари
 не знають про деталі нижніх, зв'язок — через інтерфейси (`IComponentBase`, `ITransport`) і хелпери.
@@ -37,7 +42,7 @@ UAPKI — **лише одна з підсистем**, а не суть усьо
 | # | Підсистема | Документ | Про що |
 |---|---|---|---|
 | 01 | Ядро (`AddInNative`) | [core.md](core.md) | Міст до SDK 1С, реєстр компонент, `VariantHelper`, модель методів/властивостей |
-| 02 | ECRPrivatJSON (історичне) | [ecrprivatjson.md](ecrprivatjson.md) | Опис ВИДАЛЕНОГО старого драйвера термінала; заміняється фундаментом device-core (`src/transport/`) |
+| 02 | ECRPrivatJSON (історичне) | [ecrprivatjson.md](ecrprivatjson.md) | Опис ВИДАЛЕНОГО старого драйвера термінала; замінений пілотним ECRPrivatJSON поверх device-core (`src/drivers/ecr_privatjson/`, дизайн — [tasks/2026-07-21_design_ecr_privatjson_driver.md](../tasks/2026-07-21_design_ecr_privatjson_driver.md)) |
 | 03 | UAPKI | [uapki.md](uapki.md) | ЕЦП/крипто: JSON-API `process()`, провайдер `cm-pkcs12`, потрійний пошук каталогу |
 | 04 | Збірка й пакування | [build-and-packaging.md](build-and-packaging.md) | Модульний CMake, `build_project.ps1`, ZIP + `manifest.xml`, доставка в 1С |
 
@@ -83,6 +88,8 @@ flowchart TD
 | Ядро (bridge) | `src/core/AddInNative.*` | Реалізація SDK 1С, реєстр компонент, `VariantHelper` |
 | Компоненти | `src/components/*` | Фасади, що реєструють методи для 1С |
 | Device-core | `src/transport/{IFramer,NullTerminatedFramer,IFrameClassifier,DeviceSession}` | Фундамент драйверів: кадрування → класифікація → сесія запит/відповідь |
+| Платформа драйверів | `src/platform/*` | Спільний каркас драйверів (`ResultEnvelope` — уніфікований результат операції) |
+| Драйвери обладнання | `src/drivers/ecr_privatjson/*` | Пілотний ECRPrivatJSON: кодек JSON, класифікатор кадрів, `Connect` (wire-спина, Частина 1) |
 | Хелпери | `src/helpers/*` | Допоміжна логіка (JSON, буфери, обгортки бібліотек) |
 | Транспорт | `src/transport/*` | Канали зв'язку (COM/TCP/WebSocket-client) |
 | Сервіси | `src/helpers/ServiceTools*` | Наскрізне логування та конвертації рядків |

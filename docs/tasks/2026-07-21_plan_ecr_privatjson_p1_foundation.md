@@ -48,7 +48,7 @@ cmake --build build_x64 --config Release --target ecr_privatjson_selftest
 **Interfaces:**
 - Produces: `struct ResultEnvelope { bool ok; std::string code; std::string description; nlohmann::json payload; };` та `nlohmann::json ResultEnvelope::ToJson() const;` (`{"ok":...,"code":...,"description":...,"payload":...}`).
 
-- [ ] **Step 1: Створити `src/platform/ResultEnvelope.h`**
+- [X] **Step 1: Створити `src/platform/ResultEnvelope.h`**
 
 ```cpp
 #pragma once
@@ -74,7 +74,7 @@ struct ResultEnvelope {
 };
 ```
 
-- [ ] **Step 2: Створити `src/platform/ResultEnvelope.cpp`**
+- [X] **Step 2: Створити `src/platform/ResultEnvelope.cpp`**
 
 ```cpp
 #include "../core/pch.h"
@@ -90,7 +90,7 @@ nlohmann::json ResultEnvelope::ToJson() const {
 }
 ```
 
-- [ ] **Step 3: Створити `tests/ecr_privatjson_selftest.cpp` з CHECK-харнесом і першим тестом**
+- [X] **Step 3: Створити `tests/ecr_privatjson_selftest.cpp` з CHECK-харнесом і першим тестом**
 
 ```cpp
 // ecr_privatjson_selftest — харнес пілотного драйвера ECRPrivatJSON (кодек/класифікатор/
@@ -121,7 +121,7 @@ int main() {
 }
 ```
 
-- [ ] **Step 4: Додати OBJECT-лібу `platform_component` у `CMake/components.cmake`**
+- [X] **Step 4: Додати OBJECT-лібу `platform_component` у `CMake/components.cmake`**
 
 Після блоку `add_library(wire_component OBJECT ...)` (≈ рядок 153) додати:
 ```cmake
@@ -139,7 +139,7 @@ add_dependencies(platform_component base_component spdlog nlohmann_json)
 ```
 І додати `$<TARGET_OBJECTS:platform_component>` у `add_library(${TARGET} SHARED ...)` (≈ рядок 248, поряд із `$<TARGET_OBJECTS:wire_component>`).
 
-- [ ] **Step 5: Додати ціль `ecr_privatjson_selftest` у `tests/CMakeLists.txt` ДО UAPKI-гейта**
+- [X] **Step 5: Додати ціль `ecr_privatjson_selftest` у `tests/CMakeLists.txt` ДО UAPKI-гейта**
 
 Після блоку `wire_selftest` і **перед** `if(NOT BUILD_WITH_UAPKI)` (≈ рядок 83) додати:
 ```cmake
@@ -167,7 +167,7 @@ if(MSVC)
 endif()
 ```
 
-- [ ] **Step 6: Зібрати й запустити — має пройти**
+- [X] **Step 6: Зібрати й запустити — має пройти**
 
 Run:
 ```powershell
@@ -176,7 +176,7 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 -WithTests
 ```
 Expected: `[PASS] ResultEnvelope::Ok ...`, `[PASS] ResultEnvelope::Fail ...`, `OK`, exit 0.
 
-- [ ] **Step 7: Commit**
+- [X] **Step 7: Commit**
 
 ```bash
 git add src/platform/ResultEnvelope.h src/platform/ResultEnvelope.cpp tests/ecr_privatjson_selftest.cpp CMake/components.cmake tests/CMakeLists.txt
@@ -202,7 +202,7 @@ git commit -m "feat(ecr): ResultEnvelope + platform_component + селф-тес�
   - `ParsedResponse EcrJsonCodec::Parse(const std::vector<uint8_t>& frameNoDelimiter);` — при невалідному JSON повертає `{valid=false}`.
   - `bool EcrJsonCodec::PeekMethod(const std::vector<uint8_t>& frameNoDelimiter, std::string& method, std::string& msgType);` — легкий парс лише `method` (+`params.msgType`, якщо ServiceMessage) для класифікатора.
 
-- [ ] **Step 1: Написати падаючі тести (додати у `ecr_privatjson_selftest.cpp`)**
+- [X] **Step 1: Написати падаючі тести (додати у `ecr_privatjson_selftest.cpp`)**
 
 Додати `#include "../src/drivers/ecr_privatjson/EcrJsonCodec.h"` до інклудів і функцію:
 ```cpp
@@ -237,12 +237,12 @@ static void TestEcrJsonCodec() {
 ```
 Додати виклик `TestEcrJsonCodec();` у `main()` перед виводом підсумку.
 
-- [ ] **Step 2: Запустити — має впасти (немає `EcrJsonCodec.h`)**
+- [X] **Step 2: Запустити — має впасти (немає `EcrJsonCodec.h`)**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest`
 Expected: FAIL збірки — `Cannot open include file: '.../EcrJsonCodec.h'`.
 
-- [ ] **Step 3: Створити `src/drivers/ecr_privatjson/EcrJsonCodec.h`**
+- [X] **Step 3: Створити `src/drivers/ecr_privatjson/EcrJsonCodec.h`**
 
 ```cpp
 #pragma once
@@ -277,7 +277,7 @@ public:
 };
 ```
 
-- [ ] **Step 4: Створити `src/drivers/ecr_privatjson/EcrJsonCodec.cpp`**
+- [X] **Step 4: Створити `src/drivers/ecr_privatjson/EcrJsonCodec.cpp`**
 
 ```cpp
 #include "../../core/pch.h"
@@ -322,7 +322,7 @@ bool EcrJsonCodec::PeekMethod(const std::vector<uint8_t>& frame,
 }
 ```
 
-- [ ] **Step 5: Додати OBJECT-лібу драйвера у `CMake/components.cmake`**
+- [X] **Step 5: Додати OBJECT-лібу драйвера у `CMake/components.cmake`**
 
 Після `platform_component` додати:
 ```cmake
@@ -338,19 +338,19 @@ add_dependencies(driver_ecr_privatjson_component base_component spdlog nlohmann_
 ```
 І `$<TARGET_OBJECTS:driver_ecr_privatjson_component>` — у SHARED-ціль (поряд із `platform_component`).
 
-- [ ] **Step 6: Додати обʼєкти драйвера в тестову ціль (`tests/CMakeLists.txt`)**
+- [X] **Step 6: Додати обʼєкти драйвера в тестову ціль (`tests/CMakeLists.txt`)**
 
 У `add_executable(ecr_privatjson_selftest ...)` додати рядок:
 ```cmake
     $<TARGET_OBJECTS:driver_ecr_privatjson_component>
 ```
 
-- [ ] **Step 7: Зібрати й запустити — має пройти**
+- [X] **Step 7: Зібрати й запустити — має пройти**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest && ./bin/Release/ecr_privatjson_selftest_x64.exe`
 Expected: усі `[PASS]` для `TestEcrJsonCodec`, exit 0.
 
-- [ ] **Step 8: Commit**
+- [X] **Step 8: Commit**
 
 ```bash
 git add src/drivers/ecr_privatjson/EcrJsonCodec.h src/drivers/ecr_privatjson/EcrJsonCodec.cpp tests/ecr_privatjson_selftest.cpp CMake/components.cmake tests/CMakeLists.txt
@@ -371,7 +371,7 @@ git commit -m "feat(ecr): EcrJsonCodec (Build/Parse/PeekMethod) + OBJECT-ліб�
 - Consumes: `IFrameClassifier` (`src/transport/IFrameClassifier.h`), `EcrJsonCodec`.
 - Produces: `class EcrPrivatJsonClassifier : public IFrameClassifier { Classification Classify(const PendingView&, const std::vector<uint8_t>&) override; };` — логіка §5 спеки.
 
-- [ ] **Step 1: Написати падаючі тести (додати у `ecr_privatjson_selftest.cpp`)**
+- [X] **Step 1: Написати падаючі тести (додати у `ecr_privatjson_selftest.cpp`)**
 
 Додати `#include "../src/drivers/ecr_privatjson/EcrPrivatJsonClassifier.h"` і `#include "../src/transport/IFrameClassifier.h"`, тоді:
 ```cpp
@@ -425,12 +425,12 @@ static void TestEcrClassifier() {
 ```
 Додати виклик `TestEcrClassifier();` у `main()`.
 
-- [ ] **Step 2: Запустити — має впасти (немає класифікатора)**
+- [X] **Step 2: Запустити — має впасти (немає класифікатора)**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest`
 Expected: FAIL — `Cannot open include file: '.../EcrPrivatJsonClassifier.h'`.
 
-- [ ] **Step 3: Створити `src/drivers/ecr_privatjson/EcrPrivatJsonClassifier.h`**
+- [X] **Step 3: Створити `src/drivers/ecr_privatjson/EcrPrivatJsonClassifier.h`**
 
 ```cpp
 #pragma once
@@ -446,7 +446,7 @@ public:
 };
 ```
 
-- [ ] **Step 4: Створити `src/drivers/ecr_privatjson/EcrPrivatJsonClassifier.cpp`**
+- [X] **Step 4: Створити `src/drivers/ecr_privatjson/EcrPrivatJsonClassifier.cpp`**
 
 ```cpp
 #include "../../core/pch.h"
@@ -501,7 +501,7 @@ Classification EcrPrivatJsonClassifier::Classify(const PendingView& pending,
 }
 ```
 
-- [ ] **Step 5: Додати файли класифікатора до `driver_ecr_privatjson_component` (`CMake/components.cmake`)**
+- [X] **Step 5: Додати файли класифікатора до `driver_ecr_privatjson_component` (`CMake/components.cmake`)**
 
 У `add_library(driver_ecr_privatjson_component OBJECT ...)` додати:
 ```cmake
@@ -510,12 +510,12 @@ Classification EcrPrivatJsonClassifier::Classify(const PendingView& pending,
 ```
 `add_dependencies` доповнити: `add_dependencies(driver_ecr_privatjson_component wire_component)` (класифікатор інклудить `IFrameClassifier.h` з `src/transport/`).
 
-- [ ] **Step 6: Зібрати й запустити — має пройти**
+- [X] **Step 6: Зібрати й запустити — має пройти**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest && ./bin/Release/ecr_privatjson_selftest_x64.exe`
 Expected: усі 7 `[PASS]` для `TestEcrClassifier`, exit 0.
 
-- [ ] **Step 7: Commit**
+- [X] **Step 7: Commit**
 
 ```bash
 git add src/drivers/ecr_privatjson/EcrPrivatJsonClassifier.h src/drivers/ecr_privatjson/EcrPrivatJsonClassifier.cpp tests/ecr_privatjson_selftest.cpp CMake/components.cmake
@@ -535,7 +535,7 @@ git commit -m "feat(ecr): EcrPrivatJsonClassifier — кореляція method/
 **Interfaces:**
 - Produces: `class TerminalEmulator` з `bool Start(); int Port() const; void Stop(); void OnRequest(std::string method, std::function<std::string(const nlohmann::json& request)> responder);` — на кадр із заданим `method` викликає responder і шле його JSON-рядок назад (кадр із `0x00`). Емулятор коректно ковтає порожній провідний кадр (подвійний `0x00` хендшейку). Модель сокетів — за `RawTcpEchoServer` з `wire_selftest.cpp`.
 
-- [ ] **Step 1: Написати падаючий e2e-тест (додати у `ecr_privatjson_selftest.cpp`)**
+- [X] **Step 1: Написати падаючий e2e-тест (додати у `ecr_privatjson_selftest.cpp`)**
 
 Додати інклуди `#include "support/TerminalEmulator.h"`, `#include "../src/transport/DeviceSession.h"`, `#include "../src/transport/Transport_TCP.h"`, `#include "../src/transport/NullTerminatedFramer.h"`, і тест:
 ```cpp
@@ -565,12 +565,12 @@ static void TestEmulatorPing() {
 ```
 Додати виклик `TestEmulatorPing();` у `main()`.
 
-- [ ] **Step 2: Запустити — має впасти (немає емулятора)**
+- [X] **Step 2: Запустити — має впасти (немає емулятора)**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest`
 Expected: FAIL — `Cannot open include file: 'support/TerminalEmulator.h'`.
 
-- [ ] **Step 3: Створити `tests/support/TerminalEmulator.h`**
+- [X] **Step 3: Створити `tests/support/TerminalEmulator.h`**
 
 ```cpp
 #pragma once
@@ -614,7 +614,7 @@ private:
 };
 ```
 
-- [ ] **Step 4: Створити `tests/support/TerminalEmulator.cpp`**
+- [X] **Step 4: Створити `tests/support/TerminalEmulator.cpp`**
 
 ```cpp
 #include "TerminalEmulator.h"
@@ -695,7 +695,7 @@ void TerminalEmulator::HandleFrame(SOCKET c, const std::vector<uint8_t>& frame) 
 }
 ```
 
-- [ ] **Step 5: Додати емулятор до тестової цілі (`tests/CMakeLists.txt`)**
+- [X] **Step 5: Додати емулятор до тестової цілі (`tests/CMakeLists.txt`)**
 
 У `add_executable(ecr_privatjson_selftest ...)` додати початковим файлом:
 ```cmake
@@ -712,12 +712,12 @@ target_link_libraries(ecr_privatjson_selftest PRIVATE spdlog::spdlog ixwebsocket
 target_include_directories(ecr_privatjson_selftest PRIVATE ${IXWEBSOCKET_INCLUDE_DIR})
 ```
 
-- [ ] **Step 6: Зібрати й запустити — має пройти**
+- [X] **Step 6: Зібрати й запустити — має пройти**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest && ./bin/Release/ecr_privatjson_selftest_x64.exe`
 Expected: `[PASS]` для `TestEmulatorPing` (Response + розбір відповіді), exit 0.
 
-- [ ] **Step 7: Commit**
+- [X] **Step 7: Commit**
 
 ```bash
 git add tests/support/TerminalEmulator.h tests/support/TerminalEmulator.cpp tests/ecr_privatjson_selftest.cpp tests/CMakeLists.txt
@@ -742,7 +742,7 @@ git commit -m "feat(ecr): TerminalEmulator — протокол-обізнани
   - `class EcrPrivatJsonDriver { public: bool Connect(const std::string& connString); void Disconnect(); bool IsConnected() const; std::string Vendor() const; std::string Model() const; };`
   - Внутрішня фабрика: `std::unique_ptr<ITransport> MakeTransport(const EcrConnParams&);`
 
-- [ ] **Step 1: Написати падаючі тести (додати у `ecr_privatjson_selftest.cpp`)**
+- [X] **Step 1: Написати падаючі тести (додати у `ecr_privatjson_selftest.cpp`)**
 
 Додати `#include "../src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h"`, тоді:
 ```cpp
@@ -787,7 +787,7 @@ static void TestConnectReferenceScheme() {
 
 > **Примітка про емулятор:** `TerminalEmulator::Run` обробляє одне з'єднання й завершується при закритті сокета. Еталонна схема робить кілька конектів поспіль (Ping, Identify, постійний), тож на Кроці 3 драйвера емулятор має приймати **послідовні** з'єднання. Це вже покрито в реалізації нижче (див. Step 3 драйвера — цикл `accept` в емуляторі оновлюється).
 
-- [ ] **Step 2: Оновити `TerminalEmulator` на послідовні з'єднання**
+- [X] **Step 2: Оновити `TerminalEmulator` на послідовні з'єднання**
 
 У `tests/support/TerminalEmulator.cpp` замінити тіло `Run()` так, щоб після завершення одного клієнта приймати наступного, доки `running_`:
 ```cpp
@@ -813,12 +813,12 @@ void TerminalEmulator::Run() {
 }
 ```
 
-- [ ] **Step 3: Запустити — має впасти (немає драйвера)**
+- [X] **Step 3: Запустити — має впасти (немає драйвера)**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest`
 Expected: FAIL — `Cannot open include file: '.../EcrPrivatJsonDriver.h'`.
 
-- [ ] **Step 4: Створити `src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h`**
+- [X] **Step 4: Створити `src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h`**
 
 ```cpp
 #pragma once
@@ -876,7 +876,7 @@ private:
 };
 ```
 
-- [ ] **Step 5: Створити `src/drivers/ecr_privatjson/EcrPrivatJsonDriver.cpp`**
+- [X] **Step 5: Створити `src/drivers/ecr_privatjson/EcrPrivatJsonDriver.cpp`**
 
 ```cpp
 #include "../../core/pch.h"
@@ -1005,7 +1005,7 @@ std::string EcrPrivatJsonDriver::Vendor() const { return vendor_; }
 std::string EcrPrivatJsonDriver::Model() const { return model_; }
 ```
 
-- [ ] **Step 6: Додати файли драйвера до CMake й залежності на транспорт**
+- [X] **Step 6: Додати файли драйвера до CMake й залежності на транспорт**
 
 У `CMake/components.cmake`, `add_library(driver_ecr_privatjson_component OBJECT ...)` додати:
 ```cmake
@@ -1017,17 +1017,17 @@ std::string EcrPrivatJsonDriver::Model() const { return model_; }
 add_dependencies(driver_ecr_privatjson_component transport_component helpers_component)
 ```
 
-- [ ] **Step 7: Зібрати й запустити — має пройти**
+- [X] **Step 7: Зібрати й запустити — має пройти**
 
 Run: `cmake --build build_x64 --config Release --target ecr_privatjson_selftest && ./bin/Release/ecr_privatjson_selftest_x64.exe`
 Expected: `[PASS]` для `TestConnStringParse` і `TestConnectReferenceScheme` (Connect→true, IsConnected, vendor=PAX/model=s800, Disconnect), exit 0.
 
-- [ ] **Step 8: Повний гейт — переконатися, що нічого не зламано**
+- [X] **Step 8: Повний гейт — переконатися, що нічого не зламано**
 
 Run: `powershell -ExecutionPolicy Bypass -File build_project.ps1 -WithTests; powershell -File run_tests.ps1 -NoUapki x64`
 Expected: L0.5 core + L0.6 wire + новий `ecr_privatjson_selftest` — усі зелені; підсумкова таблиця без FAIL; exit 0.
 
-- [ ] **Step 9: Commit**
+- [X] **Step 9: Commit**
 
 ```bash
 git add src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h src/drivers/ecr_privatjson/EcrPrivatJsonDriver.cpp tests/support/TerminalEmulator.cpp tests/ecr_privatjson_selftest.cpp CMake/components.cmake
@@ -1046,3 +1046,39 @@ git commit -m "feat(ecr): EcrPrivatJsonDriver.Connect — еталонна сх�
 - **Свідомо в Частині 2 (не прогалина):** `JobEngine`/`OperationRegistry`/poller-потік/операції/пауза/desync-відновлення/1С-фасад/`run_tests.ps1`-рівні. Send-арбітр тут — лише інфраструктура (`GateSend`), фактичне застосування під час полінгу — Частина 2.
 - **Плейсхолдери:** відсутні — кожен крок має повний код або точну команду з очікуваним результатом.
 - **Узгодженість типів:** `ParsedResponse`/`EcrConnParams`/`Classification{cls,reason}`/`RequestResult{status,frame}`/`FrameOptions{leadingDelimiter}` — імена й поля збігаються з наявними заголовками (`IFrameClassifier.h`, `RequestTypes.h`, `IFramer.h`, `DeviceSession.h`) і між задачами.
+
+---
+
+## Статус виконання (2026-07-21) — ✅ ВИКОНАНО
+
+Усі Task 1-5 реалізовано; збірка обох архітектур (x86+x64) зелена, ZIP зібрано; повний гейт
+`run_tests.ps1 -NoUapki` зелений на обох архітектурах: **L0.5 core + L0.6 wire + L0.7 ecr
+(28 CHECK PASS)**, FAIL=0. Перший зелений transport-e2e досягнуто.
+
+**Відхилення/уточнення проти буквального плану (свідомі):**
+- **CMake-прогалина плану закрита.** Кроки Task 1/2 давали для нових OBJECT-ліб лише
+  `target_include_directories`+`add_dependencies`. Додатково (як наявний `wire_component`)
+  прописано `set_target_properties`(PIC+CXX17), `target_compile_definitions(_WINDOWS UNICODE
+  _UNICODE)` і — головне — **`/utf-8` у `CMake/compiler_settings.cmake`** для
+  `platform_component` та `driver_ecr_privatjson_component` (план цей файл не згадував; без
+  `/utf-8` кириличні коментарі/літерали зламали б MSVC).
+- **Баг у тест-коді плану виправлено.** Лямбда `F` у `TestEcrClassifier` викликала
+  `std::string(s)` двічі → `begin()`/`end()` від РІЗНИХ тимчасових об'єктів → несумісні
+  ітератори (UB) → відкладена heap-corruption / `0xC0000409`. Замінено на один іменований
+  `std::string t(s)` (як у `Bytes()`).
+- **Код-рев'ю (3 лінзи) — усі зауваження закрито:**
+  - *critical:* `nlohmann::json::value<T>()` кидає `type_error(302)` при типовій невідповідності
+    поля попри `allow_exceptions=false` — `Parse()`/`PeekMethod()` обгорнуто в `try/catch`
+    (виняток не перетинає межу 1С; тихо `valid=false` за контрактом). Додано регресійні CHECK.
+  - `BuildRequest` `dump()` → `error_handler::replace` (не кидає на невалідному UTF-8).
+  - `vendor_`/`model_` скидаються на початку `Connect` (стала ідентичність через реконект).
+  - `TerminalEmulator` TOCTOU подвійного `closesocket` усунено.
+  - `ParseConnString` — строга валідація (хвостове сміття порту/baud → відхилення; порожній
+    baud `COM3:` → дефолт 115200); IPv6/COM-8N1-обмеження задокументовано в коментарях.
+- **`run_tests.ps1`:** додано рівень **L0.7** для `ecr_privatjson_selftest` (Task 5 Step 8
+  очікував ecr у виводі; повна інтеграція L0-L3 лишається Частиною 2).
+- **Доки синхронізовано:** `AGENTS.md` (розділи Проєкт/Тести/Структура), `docs/architecture/README.md`
+  (блок device-core, каталог #02, шари, стан-гілка), `core.md` (реєстрація компонент).
+
+**Готово до Частини 2:** `JobEngine`/`OperationRegistry`, poller-потік, операції Purchase/Refund,
+пауза/interrupt/deviceBusy/desync-відновлення, 1С-фасад `AddinECRPrivatJSON`.

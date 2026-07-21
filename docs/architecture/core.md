@@ -85,6 +85,9 @@ namespace { [[maybe_unused]] auto& _forceTestComponentNames = TestComponent::nam
 `AddInNative` / `SimplyAddinConnect` / `SimplyConnect` (останні три — через
 `TestComponent`). Старий `AddinECRPrivatJSON` видалено на гілці `device-core`
 (непрацездатний драйвер; заміняється фундаментом device-core у `src/transport/`).
+Новий пілотний драйвер **ECRPrivatJSON** (`src/drivers/ecr_privatjson/`) наразі реалізовано
+як wire-спину (Частина 1) — як компонента 1С поки **не реєструється**; фасад
+`AddinECRPrivatJSON` через `REGISTER_COMPONENT` додасть Частина 2.
 
 ---
 
