@@ -12,10 +12,11 @@
 пише **прикладний 1С-код** проти готового драйвера — читає окрему теку
 [docs/integration-1c/](../integration-1c/README.md).
 
-Джерело правди про дизайн — специфікація
-[docs/superpowers/specs/2026-07-20-label-printer-driver-design.md](../superpowers/specs/2026-07-20-label-printer-driver-design.md)
-(ревізія 2). Імена звірені з кодом (`src/drivers/label_printer/*`,
-`src/components/AddinLabelPrinter.*`, `src/transport/Transport_SpoolerRaw.*`, `src/platform/*`).
+**Цей документ — джерело правди** про будову драйвера; імена й поведінка звірені з кодом
+(`src/drivers/label_printer/*`, `src/components/AddinLabelPrinter.*`,
+`src/transport/Transport_SpoolerRaw.*`, `src/platform/*`). Прикладний контракт із боку 1С —
+стандартна «Библиотека подключаемого оборудования» (БПО), тип «Принтер этикеток»
+(розд. 3.7 документації ІТС).
 
 ---
 
@@ -73,7 +74,7 @@
 ## 3. Модель даних — `LabelModel`
 
 `src/drivers/label_printer/LabelModel.h` — типізоване дзеркало БПО-контракту `LabelsTable`
-(розд. 3.7) з **коректною value-семантикою**. Замість одного generic-поля — окремі типи полів:
+(розд. 3.7 ІТС) з **коректною value-семантикою**. Замість одного generic-поля — окремі типи полів:
 `TextField`, `BarcodeField`, `ImageField`, `UserDataField`; геометрія — `FieldGeom`
 (`left/top/width/height` у мм + `orientation` 0/90/180/270).
 
@@ -86,7 +87,7 @@
 - `DeviceProfile` — параметри пристрою (`transport`, `printerName`|`host`/`port`, `dotsPerMm`,
   `darkness`, `speed`, `labelWidthMm`/`labelHeightMm`, `homeXDots`/`homeYDots`).
 
-**Value-семантика полів** (звірено з 3.7, реалізовано в `LabelXml`/`LabelRaster`/`LabelZplGenerator`):
+**Value-семантика полів** (за контрактом ІТС 3.7, реалізовано в `LabelXml`/`LabelRaster`/`LabelZplGenerator`):
 
 | Поле | `Static=true` | `Static=false` (динамічне) |
 |---|---|---|
@@ -104,8 +105,8 @@
 екземпляр. **Гібрид:** штрихкоди — **нативними ZPL-командами** (чіткі, скануються); текст,
 картинки, рамки — **растеризуються GDI+** у 1-bit і вставляються одним `^GF`. Порядок збірки:
 
-1. `^PW`/`^LL` з **геометрії формату** (`Formatting.Width/Height` — авторитет розкладки пакета, §6.4
-   спеки), а не з device-профілю.
+1. `^PW`/`^LL` з **геометрії формату** (`Formatting.Width/Height` — авторитет розкладки пакета),
+   а не з device-профілю.
 2. Растровий шар: `LabelRaster::Render → Bitmap1` → `GfEncoder::EncodeGfa` → один/кілька `^GFA`.
 3. Нативні штрихкоди: для кожного `BarcodeField` — `BarcodeZpl::Emit`.
 4. `^PQ<quantity>` (копії) → `^XZ`.
@@ -173,8 +174,8 @@ ceil(widthDots/8)`. **Тайлінг по рядках:** якщо `heightDots >
 - **`^FD`-escaping — `EscapeFd`:** якщо дані містять `^`/`~`/`>`/control-байти — переходить на `^FH_`
   hex-escaping (символ `_` як escape-префікс). Оскільки **текст растеризується**, `^FD` вживається лише
   для даних штрихкодів, тож ризик кирилиці в `^FD` знято.
-- **Static-штрихкоди:** `staticValueBase64` **декодується з Base64** (§5 контракту) у корисне
-  значення; некоректний Base64 → `BAD_INPUT`.
+- **Static-штрихкоди:** `staticValueBase64` **декодується з Base64** (за контрактом ІТС
+  `Formatting.ValueBase64` — це Base64) у корисне значення; некоректний Base64 → `BAD_INPUT`.
 
 > **v1-межа:** `EAN13Addon2`/`Addon5` та UPC-extensions **відкладені** — тип, що містить `Addon`
 > або `Extension`, дає `UNSUPPORTED_BARCODE` («відкладено до v2»).
@@ -308,11 +309,16 @@ AddinLabelPrinter)`, тримає `LabelPrinterDriver driver_` + `lastErrorCode_
 Конвенції фасаду:
 
 - `GetDescription` віддає `DriverDescription` (`EquipmentType="LabelPrinter"`,
-  `IntegrationComponent=false`, версії з `AddInNative::version()`); `EquipmentParameters` —
-  `TableParameters` (форма налаштувань: транспорт/порт/DPI/темність/швидкість/розмір).
+  `IntegrationComponent=false`, `IsEmulator=false`, `LocalizationSupported=false`, версії з
+  `AddInNative::version()`); `EquipmentParameters` — `TableParameters` (форма налаштувань:
+  транспорт/порт/DPI/темність/швидкість/розмір).
 - **`try/catch` у кожному методі** (виняток C++ межу 1С не перетинає): при винятку — `REPORT_ERROR`
-  + `lastError` (LONG код + STRING опис), не сирий текст. `CodeToInt` перетворює числові коди
-  на LONG, машинні (`BAD_INPUT` тощо) → `-1`.
+  + `lastError` (LONG код + STRING опис), не сирий текст. `CodeToInt` (`AddinLabelPrinter.cpp`)
+  дає LONG-код для `GetLastError`: **числова таксономія** — суто числовий код (напр. код відповіді
+  пристрою) проходить як є; рядкова таксономія драйвера мапиться у **стабільні числа**
+  (`NOT_CONNECTED=1`, `BAD_INPUT=2`, `TRANSPORT_ERROR=3`, `UNSUPPORTED_BARCODE=4`,
+  `BARCODE_TOO_WIDE=5`, `RENDER_ERROR=6`, `EXCEPTION=7`), `OK=0`; невідомий нечисловий код і збої
+  рівня фасаду (розбір XML, виняток у системному методі) → `-1`. Опис завжди в OUT-параметрі.
 - `EnableLogging`/`ИспользоватьЛогирование` — успадкований (реєструвати не треба); у деструкторі —
   `ServiceTools::DisableComponentLogging(this)`. `Version` — property, не метод.
 
@@ -362,8 +368,9 @@ Winsock). Збірка **завжди при `-WithTests`, без UAPKI**. Дж�
 - **`label_printer_emulator.exe`** (standalone, ручний) — TCP-емулятор ZPL-принтера для тесту з
   **реальної 1С без обладнання** (зберігає ZPL; візуалка — Labelary).
 
-Гейт (`run_tests.ps1`): L-p1 → L-p3; проходять і без `-WithUAPKI`. Поточний стан — selftest 86 PASS,
-native_host 11 PASS.
+Гейт (`run_tests.ps1`): L-p1 → L-p3; обидва рівні проходять і без `-WithUAPKI`. Точний склад
+перевірок і поточні лічильники — джерело правди [AGENTS.md](../../AGENTS.md); гейт дивиться лише
+exit-код 0.
 
 ---
 
@@ -387,6 +394,6 @@ native_host 11 PASS.
   односпрямований), але `ResultEnvelope`/`ITransport` перевикористано.
 - [ecrprivatjson.md](ecrprivatjson.md) — перший драйвер обладнання (шаблон драйвера/фасаду/тестів).
 - [core.md](core.md) — ядро `AddInNative` (`REGISTER_COMPONENT`, `Ret`/`ParamSpec`, `VH`).
+- [docs/integration-1c/label_printer.md](../integration-1c/label_printer.md) — інструкція для
+  1С-розробника: методи, XML-контракт `LabelsTable`, символіки, приклади, деплой, тестування.
 - [docs/integration-1c/](../integration-1c/README.md) — прикладна інтеграція з 1С (по документу на драйвер).
-- [спека дизайну](../superpowers/specs/2026-07-20-label-printer-driver-design.md) — рішення, межі
-  модулів (§14), ризики (ревізія 2, після Codex-аудиту).
