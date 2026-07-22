@@ -26,12 +26,14 @@ set(HEADER_FILES
     src/transport/Transport_COM.h
     src/transport/Transport_TCP.h
     src/transport/Transport_WSClient.h
+    src/transport/Transport_SpoolerRaw.h
     # src/helpers/BPOS1Parser.h
     src/helpers/UAPKIConnect/UAPKIConnectHelper.h
     # src/components/AddinECRCommX.h
     # src/components/AddinPOSAPI.h
     src/components/AddinUAPKIConnect.h
     src/components/AddinECRPrivatJSON.h
+    src/components/AddinLabelPrinter.h
 )
 
 ## @var SOURCE_FILES
@@ -48,12 +50,14 @@ set(SOURCE_FILES
     src/transport/Transport_COM.cpp
     src/transport/Transport_TCP.cpp
     src/transport/Transport_WSClient.cpp
+    src/transport/Transport_SpoolerRaw.cpp
     # src/helpers/BPOS1Parser.cpp
     src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp
     # src/components/AddinECRCommX.cpp
     # src/components/AddinPOSAPI.cpp
     src/components/AddinUAPKIConnect.cpp
     src/components/AddinECRPrivatJSON.cpp
+    src/components/AddinLabelPrinter.cpp
 )
 
 ## @var RESOURCE_FILES
@@ -125,6 +129,8 @@ add_library(transport_component OBJECT
     src/transport/Transport_TCP.cpp
     src/transport/Transport_WSClient.h
     src/transport/Transport_WSClient.cpp
+    src/transport/Transport_SpoolerRaw.h
+    src/transport/Transport_SpoolerRaw.cpp
 )
 
 ## @var wire_component
@@ -204,6 +210,36 @@ target_include_directories(driver_ecr_privatjson_component PRIVATE
 target_compile_definitions(driver_ecr_privatjson_component PRIVATE _WINDOWS UNICODE _UNICODE)
 add_dependencies(driver_ecr_privatjson_component base_component spdlog nlohmann_json wire_component transport_component helpers_component)
 
+## @var driver_label_printer_component
+## @brief Драйвер принтера етикеток (ZPL): модель/одиниці, генератор ZPL (LabelZplGenerator),
+##        растр GDI+ (LabelRaster), ^GF-енкодер (GfEncoder), штрихкоди (BarcodeZpl),
+##        XML-адаптер (LabelXml, pugixml вкомпільовано) і оркестратор (LabelPrinterDriver).
+## @note Входить у фінальну DLL разом із label_facade_component (див. add_library(${TARGET} ...)).
+add_library(driver_label_printer_component OBJECT
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelModel.h
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelUnits.h
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/GfEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/GfEncoder.h
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/BarcodeZpl.cpp
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/BarcodeZpl.h
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelRaster.cpp
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelRaster.h
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelZplGenerator.cpp
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelZplGenerator.h
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelPrinterDriver.cpp
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelPrinterDriver.h
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelXml.cpp
+    ${CMAKE_SOURCE_DIR}/src/drivers/label_printer/LabelXml.h
+    ${CMAKE_SOURCE_DIR}/extern/pugixml/src/pugixml.cpp
+)
+set_target_properties(driver_label_printer_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX)
+target_include_directories(driver_label_printer_component PRIVATE
+    include ${CMAKE_SOURCE_DIR} src ${SPDLOG_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR}
+    ${CMAKE_SOURCE_DIR}/extern/pugixml/src)
+target_compile_definitions(driver_label_printer_component PRIVATE _WINDOWS UNICODE _UNICODE)
+add_dependencies(driver_label_printer_component base_component spdlog nlohmann_json)
+
 ## @var ecr_facade_component
 ## @brief 1С-фасад AddinECRPrivatJSON: реєстрація методів компоненти, делегування драйверу.
 ## @note Компонента-фасад над пілотним драйвером; входить у фінальну DLL.
@@ -224,6 +260,28 @@ target_include_directories(ecr_facade_component PRIVATE
 )
 target_compile_definitions(ecr_facade_component PRIVATE _WINDOWS UNICODE _UNICODE)
 add_dependencies(ecr_facade_component base_component spdlog nlohmann_json helpers_component driver_ecr_privatjson_component platform_component)
+
+## @var label_facade_component
+## @brief 1С-фасад AddinLabelPrinter: БПО-методи (системні+функціональні), XML I/O, GetLastError.
+## @note Компонента-фасад над драйвером принтера етикеток; входить у фінальну DLL.
+add_library(label_facade_component OBJECT
+    src/components/AddinLabelPrinter.h
+    src/components/AddinLabelPrinter.cpp
+)
+set_target_properties(label_facade_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+target_include_directories(label_facade_component PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${SPDLOG_INCLUDE_DIR}
+    ${NLOHMANN_JSON_INCLUDE_DIR}
+    ${CMAKE_SOURCE_DIR}/extern/pugixml/src
+)
+target_compile_definitions(label_facade_component PRIVATE _WINDOWS UNICODE _UNICODE)
+add_dependencies(label_facade_component base_component spdlog nlohmann_json helpers_component driver_label_printer_component platform_component)
 
 ## @var uapki_helper_component
 ## @brief Вспомогательный компонент для работы с библиотекой UAPKI
@@ -322,6 +380,8 @@ add_library(${TARGET} SHARED
     $<TARGET_OBJECTS:platform_component>
     $<TARGET_OBJECTS:driver_ecr_privatjson_component>
     $<TARGET_OBJECTS:ecr_facade_component>
+    $<TARGET_OBJECTS:driver_label_printer_component>
+    $<TARGET_OBJECTS:label_facade_component>
     # $<TARGET_OBJECTS:ecrcommx_component>
     # $<TARGET_OBJECTS:posapi_component>
 
@@ -336,6 +396,10 @@ target_compile_definitions(${TARGET} PRIVATE UNICODE _UNICODE)
 target_link_libraries(${TARGET} PRIVATE nlohmann_json)
 target_link_libraries(${TARGET} PRIVATE spdlog::spdlog)
 target_link_libraries(${TARGET} PRIVATE ixwebsocket)
+# Драйвер принтера етикеток: TransportSpoolerRaw (winspool), растр LabelRaster (gdiplus),
+# CreateStreamOnHGlobal у декоді картинок (ole32). Лінк — на ФІНАЛЬНУ DLL, бо збірка через
+# $<TARGET_OBJECTS> не пропагує лінк-залежності OBJECT-бібліотек.
+target_link_libraries(${TARGET} PRIVATE winspool gdiplus ole32)
 
 # Додаємо лінкування UAPKI до основної DLL
 if(BUILD_WITH_UAPKI)
