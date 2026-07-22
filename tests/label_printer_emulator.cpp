@@ -15,8 +15,19 @@ int main(int argc, char** argv) {
     int port = (argc > 1) ? std::atoi(argv[1]) : 9100;
 
     LabelEmulator emu;
-    if (!emu.Start(port)) { std::printf("Не вдалося зайняти порт %d\n", port); return 1; }
+    if (!emu.Start(port)) {
+        std::printf("[ПОМИЛКА] Не вдалося зайняти порт %d.\n", port);
+        std::printf("Найімовірніше порт зайнятий (стара копія емулятора чи інший процес).\n");
+        std::printf("Перевірте:  netstat -ano | findstr :%d\n", port);
+        std::printf("Або запустіть з іншим портом, напр.:  label_printer_emulator_x64.exe 9101\n");
+        std::printf("(і вкажіть той самий Port у ConnectionParameters обробки).\n");
+        std::printf("\nНатисніть Enter для виходу...");
+        std::fflush(stdout);
+        std::getchar();                 // не даємо вікну зникнути мовчки
+        return 1;
+    }
     std::printf("Label printer emulator слухає 127.0.0.1:%d — Ctrl-C для виходу\n", emu.Port());
+    std::printf("Нижче зʼявлятиметься ZPL, який 1С надсилає на принтер (вкидайте його в labelary.com).\n\n");
     std::fflush(stdout);
 
     // Періодично друкуємо нові байти накопиченого ZPL-потоку.

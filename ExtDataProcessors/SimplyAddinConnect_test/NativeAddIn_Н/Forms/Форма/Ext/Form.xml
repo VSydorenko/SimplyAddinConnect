@@ -447,6 +447,92 @@
 				</UsualGroup>
 			</ChildItems>
 		</UsualGroup>
+		<UsualGroup name="ГруппаLabelPrinter" id="300">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Принтер этикеток (LabelPrinter БПО)</v8:content>
+				</v8:item>
+			</Title>
+			<Group>AlwaysHorizontal</Group>
+			<ExtendedTooltip name="ГруппаLabelPrinterРасширеннаяПодсказка" id="301"/>
+			<ChildItems>
+				<UsualGroup name="ГруппаLPПеременные" id="302">
+					<Group>Vertical</Group>
+					<ShowTitle>false</ShowTitle>
+					<ExtendedTooltip name="ГруппаLPПеременныеРасширеннаяПодсказка" id="303"/>
+					<ChildItems>
+						<InputField name="ПараметрыПодключенияLP" id="304">
+							<DataPath>ПараметрыПодключенияLP</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>ConnectionParameters (XML): транспорт/порт/DPI</v8:content>
+								</v8:item>
+							</Title>
+							<MultiLine>true</MultiLine>
+							<ContextMenu name="ПараметрыПодключенияLPContextMenu" id="305"/>
+							<ExtendedTooltip name="ПараметрыПодключенияLPExtendedTooltip" id="306"/>
+						</InputField>
+						<InputField name="LabelsTableXML" id="307">
+							<DataPath>LabelsTableXML</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>LabelsTable (XML з ІТС) — те, що 1С передає на принтер</v8:content>
+								</v8:item>
+							</Title>
+							<MultiLine>true</MultiLine>
+							<ContextMenu name="LabelsTableXMLContextMenu" id="308"/>
+							<ExtendedTooltip name="LabelsTableXMLExtendedTooltip" id="309"/>
+						</InputField>
+					</ChildItems>
+				</UsualGroup>
+				<UsualGroup name="ГруппаLPКнопки" id="310">
+					<Group>Vertical</Group>
+					<Representation>None</Representation>
+					<ShowTitle>false</ShowTitle>
+					<ExtendedTooltip name="ГруппаLPКнопкиРасширеннаяПодсказка" id="311"/>
+					<ChildItems>
+						<Button name="КнопкаСоздатьLP" id="312">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.СоздатьОбъектДрайвераLP</CommandName>
+							<ExtendedTooltip name="КнопкаСоздатьLPTooltip" id="313"/>
+						</Button>
+						<Button name="КнопкаПодключитьLP" id="314">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ПодключитьПринтерLP</CommandName>
+							<ExtendedTooltip name="КнопкаПодключитьLPTooltip" id="315"/>
+						</Button>
+						<Button name="КнопкаИнициализироватьLP" id="316">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ИнициализироватьПринтерLP</CommandName>
+							<ExtendedTooltip name="КнопкаИнициализироватьLPTooltip" id="317"/>
+						</Button>
+						<Button name="КнопкаПечатьLP" id="318">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.НапечататьЭтикеткиLP</CommandName>
+							<ExtendedTooltip name="КнопкаПечатьLPTooltip" id="319"/>
+						</Button>
+						<Button name="КнопкаОписаниеLP" id="320">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ОписаниеДрайвераLP</CommandName>
+							<ExtendedTooltip name="КнопкаОписаниеLPTooltip" id="321"/>
+						</Button>
+						<Button name="КнопкаОшибкаLP" id="322">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ПоследняяОшибкаLP</CommandName>
+							<ExtendedTooltip name="КнопкаОшибкаLPTooltip" id="323"/>
+						</Button>
+						<Button name="КнопкаОтключитьLP" id="324">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ОтключитьПринтерLP</CommandName>
+							<ExtendedTooltip name="КнопкаОтключитьLPTooltip" id="325"/>
+						</Button>
+					</ChildItems>
+				</UsualGroup>
+			</ChildItems>
+		</UsualGroup>
 	</ChildItems>
 	<Attributes>
 		<Attribute name="Объект" id="1">
@@ -666,6 +752,36 @@
 				<v8:item>
 					<v8:lang>ru</v8:lang>
 					<v8:content>Онлайн-статус терминала</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="ПараметрыПодключенияLP" id="15">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>ConnectionParameters (XML)</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="LabelsTableXML" id="16">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>LabelsTable (XML)</v8:content>
 				</v8:item>
 			</Title>
 			<Type>
@@ -1017,6 +1133,76 @@
 				</v8:item>
 			</ToolTip>
 			<Action>КомандаПроверитьПодключениеCOMJSON</Action>
+		</Command>
+		<Command name="СоздатьОбъектДрайвераLP" id="30">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Створити обʼєкт LP</v8:content>
+				</v8:item>
+			</Title>
+			<Action>СоздатьОбъектДрайвераLP</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ПодключитьПринтерLP" id="31">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Подключить принтер</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ПодключитьПринтерLP</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ИнициализироватьПринтерLP" id="32">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Инициализировать принтер</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ИнициализироватьПринтерLP</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="НапечататьЭтикеткиLP" id="33">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Напечатать этикетки</v8:content>
+				</v8:item>
+			</Title>
+			<Action>НапечататьЭтикеткиLP</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ОписаниеДрайвераLP" id="34">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Описание драйвера</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ОписаниеДрайвераLP</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ПоследняяОшибкаLP" id="35">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Последняя ошибка</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ПоследняяОшибкаLP</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ОтключитьПринтерLP" id="36">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Отключить принтер</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ОтключитьПринтерLP</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
 		</Command>
 	</Commands>
 </Form>
