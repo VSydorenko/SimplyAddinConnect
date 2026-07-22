@@ -21,7 +21,7 @@
  * дополнительно сверяется число реально загруженных провайдеров (WarnIfProvidersNotLoaded).
  *
  * Успешность операции определяется по полю errorCode ответа (0 = успех) согласно
- * протоколу UAPKI (docs/UAPKI_Protokol.md).
+ * протоколу UAPKI (extern/uapki/doc/UAPKI-PM-2.0.16.md).
  */
 class UAPKIConnectHelper {
 public:

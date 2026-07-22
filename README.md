@@ -29,7 +29,7 @@ CMake ≥ 3.16.
 | **1С-розробнику** (користуюсь готовою компонентою) | [docs/integration-1c/](docs/integration-1c/README.md) — методи компонент, приклади коду, тестування проти емуляторів |
 | **C++-розробнику** (розвиваю компоненту) | [docs/architecture/](docs/architecture/README.md) — архітектура по підсистемах (ядро, device-core, драйвери, UAPKI, збірка) |
 | **Coding-агенту** | [AGENTS.md](AGENTS.md) — збірка, конвенції коду, як додати компоненту, тести |
-| Специфікації протоколів | [docs/](docs/) — `ECR_Privat_JSON_Protokol.md`, `UAPKI_Protokol.md` та ін. |
+| Специфікації протоколів | `docs/ECR_Privat_JSON_Protokol.md`; протокол UAPKI — `extern/uapki/doc/UAPKI-PM-2.0.16.md` |
 
 ## Ліцензія та репозиторій
 

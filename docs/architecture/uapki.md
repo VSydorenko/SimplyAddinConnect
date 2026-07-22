@@ -4,9 +4,11 @@
 **SimplyAddinConnect** — від виклику з 1С до завантаження провайдера НКІ у рантаймі.
 Матеріал звірено з кодом.
 
-Повний JSON-протокол UAPKI (методи, параметри, коди помилок) описано в
-[`docs/UAPKI_Protokol.md`](../UAPKI_Protokol.md). Переносне ноу-хау з інтеграції —
-у скілі [`.claude/skills/uapki-integration`](../../.claude/skills/uapki-integration/SKILL.md).
+Повний JSON-протокол UAPKI (методи, параметри, коди помилок) — авторитетна настанова бібліотеки
+[`extern/uapki/doc/UAPKI-PM-2.0.16.md`](../../extern/uapki/doc/UAPKI-PM-2.0.16.md) (є й англійська
+версія `UAPKI-PM-2.0.16.en.md`). Прикладна інтеграція з 1С —
+[docs/integration-1c/uapki.md](../integration-1c/uapki.md). Переносне ноу-хау з інтеграції —
+скіл [`.claude/skills/uapki-integration`](../../.claude/skills/uapki-integration/SKILL.md).
 
 ---
 
@@ -50,9 +52,9 @@ extern "C" {
 ```
 
 Далі хелпер викликає `char* response = ::process(requestStr.c_str())`
-(`UAPKIConnectHelper.cpp:676`). Згідно з протоколом (Таблиця 3,
-`docs/UAPKI_Protokol.md:73-96`), `process()` повертає нуль-термінований JSON у UTF-8,
-пам'ять якого **має завжди звільнятися** функцією `json_free()`.
+(`UAPKIConnectHelper.cpp:676`). Згідно з протоколом (Таблиця 3 настанови
+[`UAPKI-PM-2.0.16.md`](../../extern/uapki/doc/UAPKI-PM-2.0.16.md)), `process()` повертає
+нуль-термінований JSON у UTF-8, пам'ять якого **має завжди звільнятися** функцією `json_free()`.
 
 **Звільнення пам'яті — до аналізу.** Хелпер копіює відповідь у `std::string responseJson`
 (`UAPKIConnectHelper.cpp:681`) і **одразу** звільняє буфер: `::json_free(response)`
@@ -63,7 +65,7 @@ extern "C" {
 **Детекція успіху.** Успішність визначається за полем `errorCode` відповіді
 (`IsOperationSuccess`, `UAPKIConnectHelper.cpp:545-607`): поле обов'язкове й має бути
 цілим, успіх — коли `errorCode == 0`, інакше формується діагностика з `error`/`method`.
-Це узгоджено з протоколом (`docs/UAPKI_Protokol.md:109-116`).
+Це узгоджено з форматом відповіді протоколу (обов'язкове ціле `errorCode`; `method`/`result`/`error`).
 
 **Спеціальна обробка `INIT`.** Метод `INIT` (регістронезалежно) — єдиний, що має
 спеціальну обробку: перед відправкою хелпер автоматично інжектить конфігурацію
@@ -320,8 +322,11 @@ return RET_OK;
 
 ## Куди дивитись далі
 
-- [`docs/UAPKI_Protokol.md`](../UAPKI_Protokol.md) — повний JSON-протокол UAPKI (методи,
-  параметри, коди помилок; Таблиці 1-3, формат запиту/відповіді).
+- [`extern/uapki/doc/UAPKI-PM-2.0.16.md`](../../extern/uapki/doc/UAPKI-PM-2.0.16.md) — повний
+  JSON-протокол UAPKI (методи, параметри, коди помилок; Таблиці 1-3, формат запиту/відповіді; є й
+  англійська версія).
+- [docs/integration-1c/uapki.md](../integration-1c/uapki.md) — прикладна інтеграція з 1С
+  (єдина точка входу `ВызватьUAPKI`, приклади коду, тестування).
 - [`.claude/skills/uapki-integration`](../../.claude/skills/uapki-integration/SKILL.md) —
   переносне ноу-хау з інтеграції UAPKI.
 - [`README.md`](README.md) — індексний огляд усієї архітектури компоненти.

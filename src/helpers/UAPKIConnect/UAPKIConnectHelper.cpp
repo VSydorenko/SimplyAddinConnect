@@ -541,7 +541,7 @@ void UAPKIConnectHelper::WarnIfProvidersNotLoaded(const nlohmann::json& injected
 }
 
 // Проверка успешности выполнения операции на основе JSON-ответа UAPKI.
-// Согласно протоколу (docs/UAPKI_Protokol.md) успех определяется полем errorCode (0 = успех).
+// Согласно протоколу (extern/uapki/doc/UAPKI-PM-2.0.16.md) успех определяется полем errorCode (0 = успех).
 bool UAPKIConnectHelper::IsOperationSuccess(const std::string& jsonResponse) {
     try {
         NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper", "Проверка успешности выполнения операции UAPKI");
