@@ -13,12 +13,23 @@ namespace {
 // Версія вимог до інтерфейсу БПО (ревізія контракту «Подключаемое оборудование»).
 constexpr int kInterfaceRevision = 4007;
 
-// Числовий код помилки з машинного коду ResultEnvelope: якщо код — чисто цифровий,
-// повертаємо його як число; інакше -1 (машинні коди типу "BAD_INPUT" не числові).
+// Числовий код помилки з машинного коду ResultEnvelope для GetLastError (LONG):
+// цифровий код (напр. код відповіді пристрою) -> як є; рядкова таксономія драйвера
+// -> стабільні числові коди; невідомий нечисловий -> -1.
 int CodeToInt(const std::string& code) {
     if (code.empty()) return -1;
-    for (char c : code) if (c < '0' || c > '9') return -1;
-    try { return std::stoi(code); } catch (...) { return -1; }
+    bool numeric = true;
+    for (char c : code) if (c < '0' || c > '9') { numeric = false; break; }
+    if (numeric) { try { return std::stoi(code); } catch (...) { return -1; } }
+    if (code == "OK")                  return 0;
+    if (code == "NOT_CONNECTED")       return 1;
+    if (code == "BAD_INPUT")           return 2;
+    if (code == "TRANSPORT_ERROR")     return 3;
+    if (code == "UNSUPPORTED_BARCODE") return 4;
+    if (code == "BARCODE_TOO_WIDE")    return 5;
+    if (code == "RENDER_ERROR")        return 6;
+    if (code == "EXCEPTION")           return 7;
+    return -1;   // невідомий нечисловий код
 }
 
 // DriverDescription — паспорт драйвера для БПО (тип обладнання, версії, прапорці).
@@ -35,7 +46,7 @@ std::string BuildDriverDescriptionXml() {
         "DriverVersion=\"" + ver + "\" "
         "IntegrationComponentVersion=\"" + ver + "\" "
         "IsEmulator=\"false\" "
-        "LocalizationSupported=\"true\" "
+        "LocalizationSupported=\"false\" "
         "AutoSetup=\"false\" "
         "LogIsEnabled=\"false\" "
         "LogPath=\"\"/>";
