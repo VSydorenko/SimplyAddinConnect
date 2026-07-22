@@ -516,6 +516,58 @@ static void TestTransportE2E() {
     emu.Stop();
 }
 
+// Фікс #1: стилі шрифту + вирівнювання застосовуються в растрі тексту.
+static void TestRasterFontStyle() {
+    GdiplusRuntime gdi;
+    auto blackPixels = [&](const std::string& style) -> long {
+        LabelFormatting fmt; fmt.width = 30; fmt.height = 10;
+        TextField tx; tx.fieldName = "T"; tx.geom = {1, 1, 28, 8};
+        tx.fontName = "Arial"; tx.fontSize = 8; tx.fontStyle = style;
+        tx.align = "Center"; tx.isStatic = true; tx.defaultOrStaticValue = "Ціна 100";
+        fmt.texts.push_back(tx);
+        auto valueOf = [&](const std::string&) -> std::optional<std::string> { return std::string("Ціна 100"); };
+        bool ok = false;
+        Bitmap1 bm = LabelRaster::Render(fmt, valueOf, 8, ok);
+        if (!ok) return -1;
+        long n = 0; for (auto b : bm.rows) for (int i = 0; i < 8; ++i) n += (b >> i) & 1;
+        return n;
+    };
+    long reg = blackPixels("");
+    long bold = blackPixels("Bold");
+    CHECK(reg > 0, "styled/aligned text render ok (Center align path)");
+    CHECK(bold > reg, "Bold produces more black pixels than Regular (FontStyle applied)");
+}
+
+// Фікс #4: часткове-друку accounting доходить у description помилки (для GetLastError у 1С).
+static void TestPartialPrintAccounting() {
+    GdiplusRuntime gdi;
+    LabelPrinterDriver drv;
+    int sendCount = 0;
+    drv.SetTransportFactoryForTest([&](const DeviceProfile&) -> std::unique_ptr<ITransport> {
+        struct Fake : ITransport {
+            int* n; bool open = false;
+            bool Open() override { open = true; return true; }
+            bool Close() override { open = false; return true; }
+            bool IsOpen() const override { return open; }
+            int Send(const std::vector<uint8_t>& d) override { ++(*n); return (*n >= 2) ? -1 : (int)d.size(); }
+            void SetDataReceivedCallback(DataReceivedCallback) override {}
+            void SetErrorCallback(ErrorCallback) override {}
+            void SetConnectionStateCallback(ConnectionStateCallback) override {}
+        };
+        auto f = std::make_unique<Fake>(); f->n = &sendCount; return f;
+    });
+    DeviceProfile dp; dp.dotsPerMm = 8;
+    std::string id = drv.Connect(dp);
+    LabelBatch b; LabelFormatting fmt; fmt.width = 60; fmt.height = 40; b.formatting = fmt;
+    b.labels.push_back({1, {}});
+    b.labels.push_back({1, {}});
+    b.labels.push_back({1, {}});
+    ResultEnvelope r = drv.PrintLabels(id, b, "first");
+    CHECK(!r.ok, "partial send failure -> not ok");
+    CHECK(r.description.find("прийнято 1 з 3") != std::string::npos, "error description carries 'accepted N of M'");
+    drv.Disconnect(id);
+}
+
 int main() {
     TestUnits();
     TestGfEncoder();
@@ -538,6 +590,8 @@ int main() {
     TestXml();
     TestFacadeSmoke();
     TestTransportE2E();
+    TestRasterFontStyle();
+    TestPartialPrintAccounting();
     std::printf(g_failures ? "\nFAILED: %d\n" : "\nALL PASS\n", g_failures);
     return g_failures ? 1 : 0;
 }

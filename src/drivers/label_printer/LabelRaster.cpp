@@ -137,6 +137,25 @@ bool LabelRaster::DecodeBase64(const std::string& in, std::vector<uint8_t>& out)
 }
 
 // ---------------------------------------------------------------------------
+// Розбір стилю шрифту з моделі ("Bold Italic Underline StrikeOut") у бітмаску GDI+.
+static INT ParseFontStyle(const std::string& s) {
+    INT st = FontStyleRegular;
+    if (s.find("Bold")      != std::string::npos) st |= FontStyleBold;
+    if (s.find("Italic")    != std::string::npos) st |= FontStyleItalic;
+    if (s.find("Underline") != std::string::npos) st |= FontStyleUnderline;
+    if (s.find("StrikeOut") != std::string::npos) st |= FontStyleStrikeout;
+    return st;
+}
+
+// Горизонтальне/вертикальне вирівнювання + перенос рядків текстового поля у StringFormat.
+static void ApplyTextFormat(StringFormat& sf, const TextField& t) {
+    sf.SetAlignment(t.align == "Center" ? StringAlignmentCenter
+                    : t.align == "Right" ? StringAlignmentFar : StringAlignmentNear);
+    sf.SetLineAlignment(t.vAlign == "Center" ? StringAlignmentCenter
+                        : t.vAlign == "Bottom" ? StringAlignmentFar : StringAlignmentNear);
+    if (!t.multiline) sf.SetFormatFlags(StringFormatFlagsNoWrap);
+}
+
 // LabelRaster::Render
 // ---------------------------------------------------------------------------
 Bitmap1 LabelRaster::Render(const LabelFormatting& fmt, const ValueOf& valueOf, int dotsPerMm, bool& ok) {
@@ -188,10 +207,12 @@ Bitmap1 LabelRaster::Render(const LabelFormatting& fmt, const ValueOf& valueOf, 
                 FontFamily ff(fam.c_str());
                 REAL px = (REAL)ptToDots((double)t.fontSize, dotsPerMm);
                 if (px < (REAL)1) px = (REAL)1;
-                Font font(&ff, px, FontStyleRegular, UnitPixel);
+                Font font(&ff, px, ParseFontStyle(t.fontStyle), UnitPixel);
                 RectF rc((REAL)mmToDots(t.geom.left, dotsPerMm), (REAL)mmToDots(t.geom.top, dotsPerMm),
                          (REAL)mmToDots(t.geom.width, dotsPerMm), (REAL)mmToDots(t.geom.height, dotsPerMm));
-                g.DrawString(text.c_str(), -1, &font, rc, nullptr, &black);
+                StringFormat sf;
+                ApplyTextFormat(sf, t);
+                g.DrawString(text.c_str(), -1, &font, rc, &sf, &black);
             }
             if (HasBorder(t.border)) DrawBorder(g, t.geom, t.borderWidth, dotsPerMm);
         }

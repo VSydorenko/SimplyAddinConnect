@@ -158,6 +158,8 @@ ResultEnvelope LabelPrinterDriver::PrintLabels(const std::string& deviceId,
                 r.payload["failedIndex"] = static_cast<int>(i);
                 r.payload["acceptedInstances"] = acceptedInstances;
                 r.payload["acceptedCopies"] = acceptedCopies;
+                r.description += " (прийнято " + std::to_string(acceptedInstances) + " з " +
+                                 std::to_string(batch.labels.size()) + " екземплярів; збій на #" + std::to_string(i) + ")";
                 NEUTRAL_REPORT_ERROR(kTag, "Помилка генерації етикетки #" + std::to_string(i) +
                                            " на " + deviceId + ": " + gr.errCode + " " + gr.errDesc);
                 return r;
@@ -168,6 +170,8 @@ ResultEnvelope LabelPrinterDriver::PrintLabels(const std::string& deviceId,
                 sres.payload["failedIndex"] = static_cast<int>(i);
                 sres.payload["acceptedInstances"] = acceptedInstances;
                 sres.payload["acceptedCopies"] = acceptedCopies;
+                sres.description += " (прийнято " + std::to_string(acceptedInstances) + " з " +
+                                    std::to_string(batch.labels.size()) + " екземплярів; збій на #" + std::to_string(i) + ")";
                 NEUTRAL_REPORT_ERROR(kTag, "Помилка відправлення етикетки #" + std::to_string(i) +
                                            " на " + deviceId + ": " + sres.description);
                 return sres;
