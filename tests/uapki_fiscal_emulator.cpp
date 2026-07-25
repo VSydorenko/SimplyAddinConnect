@@ -672,6 +672,23 @@ static void usage() {
 }
 
 
+// Чи належить консольне вікно ЛИШЕ нам. Якщо так — при виході воно зникне разом із процесом,
+// і повідомлення про помилку прочитати неможливо (типовий запуск подвійним кліком із Провідника).
+// Тоді перед виходом тримаємо вікно до Enter. Запуск із cmd/PowerShell/CI цього не робить.
+static bool ownsConsoleWindow() {
+    DWORD pids[4] = { 0 };
+    const DWORD n = GetConsoleProcessList(pids, 4);
+    return (n <= 1);
+}
+
+static void pauseIfOwnConsole() {
+    if (!ownsConsoleWindow()) return;
+    std::printf("\nНатисніть Enter, щоб закрити вікно...");
+    std::fflush(stdout);
+    (void)std::getchar();
+}
+
+
 // ============================================================================
 // main
 // ============================================================================
@@ -712,10 +729,11 @@ int main() {
     }
     LocalFree(wargv);
 
-    if (bad) { usage(); return 2; }
+    if (bad) { usage(); pauseIfOwnConsole(); return 2; }
     if (cfg.port <= 0 || cfg.port > 65535) {
         std::printf("Некоректний порт: %d\n", cfg.port);
         usage();
+        pauseIfOwnConsole();
         return 2;
     }
 
@@ -760,6 +778,7 @@ int main() {
     if (!cryptoBootstrap(cfg)) {
         std::printf("Bootstrap не вдався — вихід\n");
         removeWorkDir();
+        pauseIfOwnConsole();
         return 2;
     }
 
@@ -773,11 +792,11 @@ int main() {
     if (!ix::initNetSystem()) {
         std::printf("Не вдалося ініціалізувати Winsock\n");
         removeWorkDir();
+        pauseIfOwnConsole();
         return 1;
     }
 
-    ix::HttpServer server(cfg.port, "127.0.0.1");
-    server.setOnConnectionCallback(
+    auto handler =
         [&cfg](ix::HttpRequestPtr req, std::shared_ptr<ix::ConnectionState>) -> ix::HttpResponsePtr {
             // Трейс: лише метод/шлях/розмір — жодних параметрів крипто й пароля.
             std::printf("← %s %s (%zu B)\n", req->method.c_str(), req->uri.c_str(), req->body.size());
@@ -888,17 +907,51 @@ int main() {
             }
 
             return httpResp(404, "text/plain; charset=utf-8", "unknown endpoint");
-        });
+        };
 
-    const std::pair<bool, std::string> res = server.listen();
-    if (!res.first) {
-        std::printf("Не вдалося зайняти порт %d: %s\n", cfg.port, res.second.c_str());
+    // Порт 8080 дуже часто вже зайнятий (Tomcat, Jenkins, dev-сервери). Якщо порт НЕ заданий
+    // явно — беремо наступний вільний, щоб запуск подвійним кліком просто працював; якщо
+    // заданий явно — поважаємо вибір і не підмінюємо його мовчки.
+    std::unique_ptr<ix::HttpServer> server;
+    int         chosenPort = 0;
+    std::string listenErr;
+    const int   attempts = portSet ? 1 : 11;
+    for (int i = 0; i < attempts; ++i) {
+        const int tryPort = cfg.port + i;
+        if (tryPort > 65535) break;
+        std::unique_ptr<ix::HttpServer> s(new ix::HttpServer(tryPort, "127.0.0.1"));
+        s->setOnConnectionCallback(handler);
+        const std::pair<bool, std::string> res = s->listen();
+        if (res.first) { server = std::move(s); chosenPort = tryPort; break; }
+        listenErr = res.second;
+        if (i == 0) {
+            std::printf("Порт %d зайнятий (%s)\n", tryPort,
+                        listenErr.empty() ? "немає деталей" : listenErr.c_str());
+            if (attempts > 1) std::printf("Шукаю вільний порт…\n");
+        }
+    }
+    if (!server) {
+        std::printf("Не вдалося зайняти порт %d: %s\n", cfg.port,
+                    listenErr.empty() ? "невідома помилка" : listenErr.c_str());
+        std::printf("Підказка: запустіть з іншим портом, напр. «uapki_fiscal_emulator%s.exe 8090»\n",
+#ifdef _WIN64
+                    "_x64"
+#else
+                    "_x86"
+#endif
+        );
         ix::uninitNetSystem();
         removeWorkDir();
+        pauseIfOwnConsole();
         return 1;
     }
-    server.start();
-    std::printf("uapki_fiscal_emulator слухає 127.0.0.1:%d — Ctrl-C для виходу\n", cfg.port);
+    server->start();
+    std::printf("\nuapki_fiscal_emulator слухає 127.0.0.1:%d — Ctrl-C для виходу\n", chosenPort);
+    if (chosenPort != cfg.port) {
+        std::printf("УВАГА: дефолтний порт %d був зайнятий. У полі «Порт консолі» тестової обробки\n"
+                    "       1С вкажіть %d, інакше кнопки HTTP-обміну не достукаються.\n",
+                    cfg.port, chosenPort);
+    }
     std::fflush(stdout);
 
     // ix::SocketServer::wait() чекає на condition_variable БЕЗ предиката, а стандарт
@@ -909,7 +962,7 @@ int main() {
         g_stopCv.wait(lk, [] { return g_stopRequested; });
     }
 
-    server.stop();
+    server->stop();
     ix::uninitNetSystem();
     removeWorkDir();
     return 0;
