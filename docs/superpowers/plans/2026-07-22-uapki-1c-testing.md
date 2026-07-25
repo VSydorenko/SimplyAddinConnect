@@ -1,6 +1,6 @@
 # UAPKI-тестування з 1С через HTTP-оракул — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Дати змогу тестувати ЕЦП-стек UAPKI з реальної 1С — консоль-оракул `uapki_fiscal_emulator`
 (HTTP-сервер, що незалежно перевіряє підпис і повертає підписану квитанцію) + кнопки на 11 методів
@@ -46,7 +46,7 @@ lifecycle підпису і кнопки HTTP-обміну з консоллю. 
 **Interfaces:**
 - Produces: exe `uapki_fiscal_emulator_x64.exe`/`_x86.exe` у `bin/Release`; HTTP-сервер на `port` (деф. 8080), відповідає `200 "uapki_fiscal_emulator alive"` на `GET /ping`.
 
-- [ ] **Step 1: Створити скелет `tests/uapki_fiscal_emulator.cpp`**
+- [x] **Step 1: Створити скелет `tests/uapki_fiscal_emulator.cpp`**
 
 ```cpp
 // uapki_fiscal_emulator — HTTP-оракул ЕЦП для тестування UAPKI з 1С (Роль 2).
@@ -103,7 +103,7 @@ int main(int argc, char** argv) {
 }
 ```
 
-- [ ] **Step 2: Додати CMake-ціль у `tests/CMakeLists.txt`**
+- [x] **Step 2: Додати CMake-ціль у `tests/CMakeLists.txt`**
 
 Вставити ПІСЛЯ блоку `uapki_selftest` (після його `if(MSVC) target_compile_options(...) endif()`, ~рядок 261), у секції `BUILD_WITH_UAPKI`:
 
@@ -133,18 +133,18 @@ if(MSVC)
 endif()
 ```
 
-- [ ] **Step 3: Зібрати**
+- [x] **Step 3: Зібрати**
 
 Run: `powershell -ExecutionPolicy Bypass -File build_project.ps1 -WithUAPKI -WithTests`
 Expected: успіх; зʼявляється `bin/Release/uapki_fiscal_emulator_x64.exe`.
 
-- [ ] **Step 4: Димовий запуск**
+- [x] **Step 4: Димовий запуск**
 
 Run (в окремому вікні): `bin\Release\uapki_fiscal_emulator_x64.exe 8080`
 Потім: `curl -s http://127.0.0.1:8080/ping`
 Expected: `uapki_fiscal_emulator alive`; у консолі — рядок `← GET /ping`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/uapki_fiscal_emulator.cpp tests/CMakeLists.txt
@@ -163,7 +163,7 @@ git commit -m "test(uapki): скелет HTTP-оракула uapki_fiscal_emulat
   - `std::string b64encode(const std::string&)`, `bool b64decode(const std::string&, std::string&)`.
   - `Config` з полями: `int port; std::wstring keyPath, providersDir, dataDir, samplesDir; std::string pass; bool canned;`.
 
-- [ ] **Step 1: Додати конфіг, mutex, base64 і хелпери шляхів** (над `main`)
+- [x] **Step 1: Додати конфіг, mutex, base64 і хелпери шляхів** (над `main`)
 
 ```cpp
 static std::mutex g_uapkiMtx;
@@ -228,7 +228,7 @@ static std::string fwd(const std::wstring& w) {
 }
 ```
 
-- [ ] **Step 2: Додати підготовку writable-каталогу й bootstrap**
+- [x] **Step 2: Додати підготовку writable-каталогу й bootstrap**
 
 ```cpp
 // Копіює <data>\certs, <data>\crls у temp-каталог (CerStore ПИШЕ туди).
@@ -279,7 +279,7 @@ static bool cryptoBootstrap(const Config& cfg) {
 }
 ```
 
-- [ ] **Step 3: Розібрати CLI й викликати bootstrap у `main`** (перед `server.listen()`)
+- [x] **Step 3: Розібрати CLI й викликати bootstrap у `main`** (перед `server.listen()`)
 
 ```cpp
     Config cfg;
@@ -293,12 +293,12 @@ static bool cryptoBootstrap(const Config& cfg) {
 
 > Примітка: `L"" HOST_DATA_DIR` конкатенує вузький макро-літерал у wide тільки якщо `HOST_DATA_DIR` — теж L-літерал. Оскільки макрос вузький, замінити на конвертацію: `cfg.dataDir = toW(HOST_DATA_DIR);` де `toW` — `MultiByteToWideChar(CP_UTF8,...)`. Додати хелпер `toW` поряд з `fwd`.
 
-- [ ] **Step 4: Зібрати й запустити — bootstrap проходить**
+- [x] **Step 4: Зібрати й запустити — bootstrap проходить**
 
 Run: `build_project.ps1 -WithUAPKI -WithTests`, потім `bin\Release\uapki_fiscal_emulator_x64.exe`
 Expected: `Крипто-ядро готове: провайдер OK, ключ 5BC6C06EE1E00C17… вибрано`; далі слухає порт.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/uapki_fiscal_emulator.cpp
@@ -318,7 +318,7 @@ git commit -m "test(uapki): крипто-bootstrap оракула (провай�
   - `std::string signData(const std::string& rawBytes)` — SIGN CAdES-BES, повертає СИРІ DER-байти підпису (або порожньо).
   - `int runSelfTest(const Config&)` — 0 = усі перевірки пройшли.
 
-- [ ] **Step 1: Написати негативний self-test першим (він має провалитись, поки нема реалізації)**
+- [x] **Step 1: Написати негативний self-test першим (він має провалитись, поки нема реалізації)**
 
 Додати нижче `cryptoBootstrap`:
 
@@ -349,13 +349,13 @@ static int runSelfTest(const Config& cfg) {
 }
 ```
 
-- [ ] **Step 2: Запустити self-test — має ПРОВАЛИТИСЬ (функцій ще нема)**
+- [ ] **Step 2: Запустити self-test — має ПРОВАЛИТИСЬ (функцій ще нема)** — НЕ виконувався (див. «Фактичний перебіг»)
 
 Тимчасово в `main` після bootstrap: `if (argc>1 && std::string(argv[argc-1])=="--self-test") return runSelfTest(cfg);`
 Run: `uapki_fiscal_emulator_x64.exe --self-test`
 Expected: помилка компіляції (`signData`/`verifyCms`/`VerifyOutcome` не визначені) — це очікуваний «червоний».
 
-- [ ] **Step 3: Реалізувати `verifyCms` і `signData`** (над `runSelfTest`)
+- [x] **Step 3: Реалізувати `verifyCms` і `signData`** (над `runSelfTest`)
 
 ```cpp
 struct VerifyOutcome {
@@ -405,12 +405,12 @@ static std::string signData(const std::string& rawBytes) {
 }
 ```
 
-- [ ] **Step 4: Запустити self-test — має ПРОЙТИ**
+- [x] **Step 4: Запустити self-test — має ПРОЙТИ**
 
 Run: `uapki_fiscal_emulator_x64.exe --self-test`
 Expected: усі `ok:`, `==== self-test: fails=0 ====`, exit 0. Особливо `зіпсований CMS ВІДХИЛЕНО` — доказ, що критерій ловить пошкодження вмісту.
 
-- [ ] **Step 5: Додати ендпоінт `POST /verify`** (у callback, перед `return httpResp(404,...)`)
+- [x] **Step 5: Додати ендпоінт `POST /verify`** (у callback, перед `return httpResp(404,...)`)
 
 ```cpp
             if (req->method == "POST" && req->uri.rfind("/verify", 0) == 0) {
@@ -423,7 +423,7 @@ Expected: усі `ok:`, `==== self-test: fails=0 ====`, exit 0. Особливо
             }
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add tests/uapki_fiscal_emulator.cpp
@@ -439,7 +439,7 @@ git commit -m "test(uapki): VERIFY-критерій TOTAL-VALID + /verify + self
 - Consumes: `verifyCms`, `signData`.
 - Produces: `std::string buildTicketXml(int errorCode, const std::string& errorText)` — `ticket01`-подібний XML (windows-1251-сумісний ASCII-каркас); `POST /doc` повертає підписану квитанцію (DER) або `422`.
 
-- [ ] **Step 1: Додати генератор квитанції** (над callback)
+- [x] **Step 1: Додати генератор квитанції** (над callback)
 
 ```cpp
 static std::string buildTicketXml(int errorCode, const std::string& errorText) {
@@ -453,7 +453,7 @@ static std::string buildTicketXml(int errorCode, const std::string& errorText) {
 }
 ```
 
-- [ ] **Step 2: Додати `POST /doc`** (у callback, перед `/verify`)
+- [x] **Step 2: Додати `POST /doc`** (у callback, перед `/verify`)
 
 ```cpp
             if (req->method == "POST" && req->uri.rfind("/doc", 0) == 0) {
@@ -472,7 +472,7 @@ static std::string buildTicketXml(int errorCode, const std::string& errorText) {
             }
 ```
 
-- [ ] **Step 3: Розширити self-test — round-trip квитанції** (у `runSelfTest`, перед підсумком)
+- [x] **Step 3: Розширити self-test — round-trip квитанції** (у `runSelfTest`, перед підсумком)
 
 ```cpp
     // Round-trip: підписати квитанцію і перевірити її назад.
@@ -483,13 +483,35 @@ static std::string buildTicketXml(int errorCode, const std::string& errorText) {
     check(tc.find("<TICKET>") != std::string::npos, "content квитанції містить <TICKET>");
 ```
 
-- [ ] **Step 4: Self-test проходить + ручний `/doc`**
+- [x] **Step 4: Self-test проходить + ручний `/doc`**
 
 Run: `uapki_fiscal_emulator_x64.exe --self-test` → `fails=0`.
-Ручний: запустити сервер; `curl -s -X POST --data-binary @"R:\github\prro_docs\Єдине вікно подання електронної звітності\Приклади\Приклади з КЕП\чек.xml.signed" http://127.0.0.1:8080/doc -o ticket.der`
-Expected: у консолі `/doc: ACCEPTED status=TOTAL-VALID …`; `ticket.der` — бінарний CMS (~1-3 КБ).
 
-- [ ] **Step 5: Commit**
+ПОЗИТИВ (підпис нашим тест-ключем): підняти сервер **без** `--canned` і повернути йому ж свіжий CMS —
+```
+curl -s "http://127.0.0.1:8080/reference?type=check" -o ref.der
+curl -s -X POST --data-binary @ref.der http://127.0.0.1:8080/doc -o ticket.der
+```
+Expected: HTTP `200`; у консолі `/doc: ACCEPTED status=TOTAL-VALID certEmbedded=так signer=…`;
+`ticket.der` — бінарний CMS (~1-3 КБ).
+(`/reference` тут обовʼязково БЕЗ `--canned`, інакше він віддасть еталон ДПС і позитив провалиться.)
+
+НЕГАТИВ (еталон ДПС — очікувано НЕ приймається):
+```
+curl -s -o tk.der -w "%{http_code}\n" -X POST --data-binary \
+  @"R:\github\prro_docs\Єдине вікно подання електронної звітності\Приклади\Приклади з КЕП\чек.xml.signed" \
+  http://127.0.0.1:8080/doc
+```
+Expected: `422`; у консолі `/doc: REJECTED status=(немає)` і рядок
+`причина: VERIFY errorCode=4161` (`CERT_NOT_FOUND`). Це НЕ дефект оракула: еталони ДПС підписані
+з позначкою часу (CAdES-T), а UAPKI бракує сертифіката **TSP-сервера АЦСК** (у детальній
+відповіді — `"expectedCerts":[{"entity":"TSP","keyId":"66ECEB8E…"}]`); сертифікат підписувача при
+цьому знайдено (`statusSignature:"VALID"`, `validDigests:true`), але `status:"INDETERMINATE"` і
+`validSignatures:false`. Той самий `4161` дає `native_host` (кейс 5) через головну DLL без
+тестового `certCache`. Кейс лишається корисним: доводить, що оракул не приймає документ, який не
+проходить холістичний критерій.
+
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/uapki_fiscal_emulator.cpp
@@ -505,7 +527,7 @@ git commit -m "test(uapki): /doc — VERIFY чека + підписана кви
 - Consumes: `signData`, `--samples`.
 - Produces: `GET /reference?type=check|zrep|ticket` → DER CMS (свіжо-підписаний або канонічний `.signed` при `--canned`).
 
-- [ ] **Step 1: Додати читання файлу й `/reference`**
+- [x] **Step 1: Додати читання файлу й `/reference`**
 
 ```cpp
 static bool readFileBin(const std::wstring& path, std::string& out) {
@@ -540,17 +562,17 @@ static bool readFileBin(const std::wstring& path, std::string& out) {
 ```
 > `cfg` треба захопити в лямбді: змінити `setOnConnectionCallback([](…))` на `setOnConnectionCallback([&cfg](…))`.
 
-- [ ] **Step 2: Додати прибирання workDir при виході** (наприкінці `main`, після `server.wait()` недосяжно через Ctrl-C — реєструємо на SIGINT або лишаємо temp; достатньо задокументувати)
+- [x] **Step 2: Додати прибирання workDir при виході** (наприкінці `main`, після `server.wait()` недосяжно через Ctrl-C — реєструємо на SIGINT або лишаємо temp; достатньо задокументувати)
 
 ```cpp
     // g_workDir лишається в %TEMP% після Ctrl-C — прийнятно (temp прибирає ОС).
 ```
 
-- [ ] **Step 3: Self-test лишається зеленим + ручний `/reference`**
+- [x] **Step 3: Self-test лишається зеленим + ручний `/reference`**
 
 Run: `--self-test` → `fails=0`. Ручний: `curl -s http://127.0.0.1:8080/reference?type=check -o ref.der` → бінарний CMS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/uapki_fiscal_emulator.cpp
@@ -572,13 +594,13 @@ git commit -m "test(uapki): /reference (свіжий/канонічний .signe
 **Interfaces:**
 - Produces: персистентний `ОбъектДрайвераUAPKI`; процедури-обробники команд (імена = `<Action>` у Form.xml, Task B2): `СоздатьОбъектUAPKI`, `КомандаVERSIONUAPKI` (виправлена), `КомандаINITUAPKI`, `КомандаDEINITUAPKI`, `КомандаPROVIDERSUAPKI`, `КомандаOPENUAPKI`, `КомандаCLOSEUAPKI`, `КомандаKEYSUAPKI`, `КомандаSELECTKEYUAPKI`, `КомандаSIGNUAPKI`, `КомандаVERIFYUAPKI`, `КомандаDIGESTUAPKI`, `ПодписатьИОтправитьUAPKI`, `ЗапроситьЭталонUAPKI`.
 
-- [ ] **Step 1: Оголосити персистентний об'єкт** — у шапці модуля (після рядка 4)
+- [x] **Step 1: Оголосити персистентний об'єкт** — у шапці модуля (після рядка 4)
 
 ```bsl
 &НаКлиенте Перем ОбъектДрайвераUAPKI;
 ```
 
-- [ ] **Step 2: Додати дефолти реквізитів** — у `ПриСозданииНаСервере` (перед `КонецПроцедуры`, рядок 67)
+- [x] **Step 2: Додати дефолти реквізитів** — у `ПриСозданииНаСервере` (перед `КонецПроцедуры`, рядок 67)
 
 ```bsl
 	// UAPKI — тест-ключ і дані за замовчуванням (правте під себе).
@@ -592,7 +614,7 @@ git commit -m "test(uapki): /reference (свіжий/канонічний .signe
 	ПортКонсолі = "8080";
 ```
 
-- [ ] **Step 3: Замінити ВЕСЬ регіон `# Область UAPKI`** (рядки 345-359) на новий
+- [x] **Step 3: Замінити ВЕСЬ регіон `# Область UAPKI`** (рядки 345-359) на новий
 
 ```bsl
 # Область UAPKI
@@ -720,11 +742,11 @@ git commit -m "test(uapki): /reference (свіжий/канонічний .signe
 #КонецОбласти
 ```
 
-- [ ] **Step 4: Синтаксична перевірка** — відкрити `Module.bsl`, переконатись, що регіон `#КонецОбласти` збалансований і немає дублю `Область UAPKI`.
+- [x] **Step 4: Синтаксична перевірка** — відкрити `Module.bsl`, переконатись, що регіон `#КонецОбласти` збалансований і немає дублю `Область UAPKI`.
 
 Run: `grep -c "Область UAPKI" ".../Module.bsl"` → Expected: `2` (відкриття `# Область UAPKI` + `#КонецОбласти` рахуються окремо; фактично один блок).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add "ExtDataProcessors/SimplyAddinConnect_test/NativeAddIn_Н/Forms/Форма/Ext/Form/Module.bsl"
@@ -740,7 +762,7 @@ git commit -m "test(uapki): обробка — виправлено Команд
 - Consumes: `ВыполнитьUAPKI`, `ПараметриSIGN`, `ПараметриVERIFY`, `РаскодироватьJSON`.
 - Produces: `ПодписатьИОтправитьUAPKI`, `ЗапроситьЭталонUAPKI`.
 
-- [ ] **Step 1: Додати регіон HTTP-обміну**
+- [x] **Step 1: Додати регіон HTTP-обміну**
 
 ```bsl
 #Область UAPKI_HTTP
@@ -804,7 +826,7 @@ git commit -m "test(uapki): обробка — виправлено Команд
 #КонецОбласти
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add "ExtDataProcessors/SimplyAddinConnect_test/NativeAddIn_Н/Forms/Форма/Ext/Form/Module.bsl"
@@ -819,11 +841,11 @@ git commit -m "test(uapki): обробка — HTTP-раунд-тріп прот
 **Правило id:** глобальний max наявний = **331**. Нові — від **332**, послідовно, БЕЗ повторів
 (item/attribute/command в одному просторі). Точні присвоєння — у таблицях нижче.
 
-- [ ] **Step 1: Виправити назву команди КомандаВерсияUAPKI** (щоб відповідала дії VERSION)
+- [x] **Step 1: Виправити назву команди КомандаВерсияUAPKI** (щоб відповідала дії VERSION)
 
 У блоці `<Command name="КомандаВерсияUAPKI" id="3">` (рядки 1074-1092) `<Action>КомандаВерсияUAPKI</Action>` лишається (процедуру виправлено в Task B1 на VERSION). Змінити `<v8:content>Версия UAPKI</v8:content>` (обидва, ru+uk) на `<v8:content>VERSION</v8:content>` — тепер напис = дія.
 
-- [ ] **Step 2: Додати 8 реквізитів** — у секцію `<Attributes>` (перед `</Attributes>`, рядок 846)
+- [x] **Step 2: Додати 8 реквізитів** — у секцію `<Attributes>` (перед `</Attributes>`, рядок 846)
 
 Кожен — за шаблоном (String, Variable). Приклад для першого:
 
@@ -847,7 +869,7 @@ git commit -m "test(uapki): обробка — HTTP-раунд-тріп прот
 | ХостКонсолі | 338 | Хост консолі |
 | ПортКонсолі | 339 | Порт консолі |
 
-- [ ] **Step 3: Додати 13 команд** — у секцію `<Commands>` (перед `</Commands>`, рядок 1258)
+- [x] **Step 3: Додати 13 команд** — у секцію `<Commands>` (перед `</Commands>`, рядок 1258)
 
 Шаблон (приклад):
 
@@ -877,7 +899,7 @@ git commit -m "test(uapki): обробка — HTTP-раунд-тріп прот
 | ПодписатьИОтправитьUAPKI | 351 | Підписати й відправити на валідацію |
 | ЗапроситьЭталонUAPKI | 352 | Запитати еталон і перевірити |
 
-- [ ] **Step 4: Додати елементи у групу `ГруппаUAPKI`** (ChildItems, рядки 226-232)
+- [x] **Step 4: Додати елементи у групу `ГруппаUAPKI`** (ChildItems, рядки 226-232)
 
 Перед наявним `<Button name="КомандаВерсияUAPKI" …>` (рядок 227) вставити **8 InputField** (шаблон нижче), а ПІСЛЯ нього — **13 Button** (шаблон нижче). Кожен InputField споживає 3 id (field+ContextMenu+ExtendedTooltip), кожен Button — 2 id (button+ExtendedTooltip). Item-id — від **353** послідовно.
 
@@ -933,12 +955,12 @@ Buttons (CommandName = `Form.Command.<name>`; існуючий VERSION-button Н
 | ПодписатьИОтправитьUAPKI | 399 | 400 |
 | ЗапроситьЭталонUAPKI | 401 | 402 |
 
-- [ ] **Step 5: Перевірити коректність XML і завантажити в 1С**
+- [x] **Step 5: Перевірити коректність XML і завантажити в 1С**
 
 Run: `powershell -Command "[xml](Get-Content -Raw -Path '.../Form.xml') | Out-Null; 'XML OK'"` → Expected: `XML OK` (без винятку — well-formed).
 Потім: завантажити обробку в 1С:Підприємстві (Конфігуратор → відкрити зовнішню обробку з джерела / зібрати `.epf`), відкрити форму — усі кнопки/поля групи UAPKI видимі, форма відкривається без помилок.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add "ExtDataProcessors/SimplyAddinConnect_test/NativeAddIn_Н/Forms/Форма/Ext/Form.xml"
@@ -954,13 +976,13 @@ git commit -m "test(uapki): обробка Form.xml — реквізити/ко�
 **Files:**
 - Modify: `AGENTS.md` (таблиця тестів), `docs/integration-1c/uapki.md` (§9)
 
-- [ ] **Step 1: Додати рядок у таблицю тестів `AGENTS.md`** (після рядка `native_host.exe`)
+- [x] **Step 1: Додати рядок у таблицю тестів `AGENTS.md`** (після рядка `native_host.exe`)
 
 ```markdown
 | `uapki_fiscal_emulator.exe` | — (ручний) | **так** | HTTP-оракул ДПС: VERIFY підпису 1С (критерій TOTAL-VALID) + підписана квитанція + віддача еталонів; `--self-test` (позитив+негатив) |
 ```
 
-- [ ] **Step 2: Дописати в `docs/integration-1c/uapki.md` §9** (після опису `native_host.exe`)
+- [x] **Step 2: Дописати в `docs/integration-1c/uapki.md` §9** (після опису `native_host.exe`)
 
 ```markdown
 - **`uapki_fiscal_emulator.exe`** (ручний) — HTTP-оракул: грає «приймаючу сторону» (сервер ДПС).
@@ -970,9 +992,9 @@ git commit -m "test(uapki): обробка Form.xml — реквізити/ко�
   `uapki_fiscal_emulator_x64.exe [port] [--canned] [--self-test]`.
 ```
 
-- [ ] **Step 3: Оновити пам'ять** — `memory/uapki-testing-plan.md` дописати рядок про HTTP-оракул і Варіант A; оновити пойнтер у `MEMORY.md`.
+- [x] **Step 3: Оновити пам'ять** — `memory/uapki-testing-plan.md` дописати рядок про HTTP-оракул і Варіант A; оновити пойнтер у `MEMORY.md`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add AGENTS.md docs/integration-1c/uapki.md
@@ -1002,3 +1024,54 @@ git commit -m "docs(uapki): HTTP-оракул uapki_fiscal_emulator у табл�
 
 **Ризик №1 — Form.xml:** ручне редагування; звіряти завантаженням у 1С (B3 Step 5). Якщо форма не
 відкривається — перевірити унікальність усіх id ≥ 332 і збалансованість тегів.
+
+---
+
+## Фактичний перебіг виконання (2026-07-25)
+
+**Статус: виконано, гейт зелений.** Нижче — чесні розбіжності між планом і тим, що сталося.
+
+**Коміти згруповано.** План передбачав 9 окремих `Step: Commit`; фактично зроблено 4 коміти за
+логічними одиницями (консоль+CMake / `Module.bsl` / `Form.xml` / доки+план), бо консоль писалась
+цілісним файлом, і штучне дроблення дало б несправжню історію.
+
+**A3 Step 2 (TDD-«червоний») НЕ виконувався** — єдиний невідмічений крок. Файл консолі писався
+одним проходом, тож проміжного стану «self-test не компілюється» не існувало. Негативні перевірки
+з A3/A4 при цьому реалізовані й реально проходять.
+
+**Виконано понад план:**
+- **Повний CLI** (§3.6 спеки) замість «свідомого спрощення» з A2 Step 3 — без нього `--canned`,
+  `--samples` і `--self-test` були б мертвим кодом. Хибну пораду плану `L"" HOST_DATA_DIR`
+  (не працює: макрос — вузький літерал) замінено на `u8to16()`, як у `native_host`.
+- **Реальне прибирання temp** через `SetConsoleCtrlHandler` замість A5 Step 2 («достатньо
+  задокументувати»), під `g_uapkiMtx`+`g_workDirMtx` — інакше Ctrl-C зносив би `certCache` під
+  активною крипто-операцією.
+- **Крос-чек `certIds`** (§3.4 спеки, план позначив як «опційне посилення») — реалізовано як
+  окреме діагностичне поле `certEmbedded`, поза критерієм прийняття.
+- **`errorCode`/`errorText`** у трейсі та JSON `/verify` — мовчазний `REJECTED` без причини
+  знецінював оракула як інструмент діагностики.
+- **Ліміт тіла 1 МіБ** (§3.2) з кодом `413` і `404` на невідомий `type`.
+- **Власне очікування з предикатом** замість `server.wait()`: `ix::SocketServer::wait()` чекає на
+  `condition_variable` БЕЗ предиката, тож спурйозне пробудження тихо завершило б оракула.
+
+**Верифікація (фактична):**
+- `build_project.ps1 -WithUAPKI -WithTests` — обидві архітектури, ZIP зібрано;
+- `run_tests.ps1 x64` → `PASS=23 FAIL=0`, `x86` → `PASS=22 FAIL=0 SKIP=1`;
+- `--self-test` x64 і x86 → `fails=0` (10 перевірок);
+- ендпоінти перевірені `curl`: 200/400/404/413/422 за специфікацією, пароль у трейс не потрапляє;
+- **обробка 1С зібрана в `.epf` реальним DESIGNER 8.3.27.1644** і
+  `/CheckModules -ExtendedModulesCheck` → «Синтаксических ошибок не обнаружено!».
+
+**Знахідки поза обсягом задачі (НЕ виправлялись, код не чіпався):**
+1. **L3.1 крос-валідація ПРРО ніколи не виконувалась.** `run_tests.ps1` передає `native_host case 5`
+   корінь `R:/github/prro_docs`, а `.signed` лежать трьома рівнями глибше; пошук у
+   `case5_crossValidatePrro` нерекурсивний → завжди «SKIP … без *.signed» і **PASS**. Мовчазний
+   SKIP читається в гейті як покриття.
+2. **З правильним каталогом case 5 дає FAIL** — з тієї ж причини, що й `--canned` тут: еталони
+   ДПС мають позначку часу (CAdES-T), і UAPKI бракує сертифіката **TSP-сервера АЦСК**
+   (`"expectedCerts":[{"entity":"TSP",…}]`). Сертифікат ПІДПИСУВАЧА при цьому вкладено
+   (`statusSignature:"VALID"`, `validDigests:true`), але `status:"INDETERMINATE"` →
+   `errorCode=4161 CERT_NOT_FOUND`. Зразок `запит_стану_РРО.json.signed` (без TSP) проходить.
+3. **`native_host case 1/2` падають від залишкового кешу** провайдера в
+   `%LOCALAPPDATA%\SimplyAddinConnect` (`rmrf` харнесу не змогла прибрати зайнятий файл).
+   Лікування: видалити каталог перед прогоном.
