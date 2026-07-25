@@ -83,12 +83,14 @@ TCP-емулятор термінала), `tests/label_printer_selftest.cpp` (х
 | `label_native_host.exe` | L-p3 | ні | компонента `LabelPrinter` через головну DLL проти `LabelEmulator` (TCP-захоплювач ZPL) |
 | `label_printer_emulator.exe` | — (ручний) | ні | standalone TCP-емулятор принтера етикеток (захоплює ZPL) для тесту з реальної 1С |
 | `uapki_selftest.exe` | L1 | **так** | UAPKI-ядро: JSON-сценарії `tests/scenarios/` через `process()`/`json_free()` |
-| `native_host.exe` | L2/L3 | **так** | компонента `AddinUAPKIConnect` через DLL, e2e + крос-валідація ПРРО (кейс 5 потребує `PRRO_DOCS_DIR`) |
+| `native_host.exe` | L2/L3 | **так** | компонента `AddinUAPKIConnect` через DLL, e2e + крос-валідація ПРРО (кейс 5 потребує `PRRO_DOCS_DIR`; шукає `*.signed` РЕКУРСИВНО, при їх відсутності віддає **exit 3 = SKIP**, а не PASS) |
 | `uapki_fiscal_emulator.exe` | — (ручний) | **так** | HTTP-оракул ЕЦП (грає сервер ДПС/ЄВПЕЗ) для тесту UAPKI з реальної 1С: VERIFY вхідного CMS + підписана квитанція + еталони (`--self-test` — вбудовані перевірки без 1С) |
 
 Цілі без UAPKI (`core`/`wire`/`ecr_*`) збираються завжди при `BUILD_TESTS=ON`; `uapki_selftest`/
 `uapki_fiscal_emulator`/`native_host` — лише разом з `-WithUAPKI` (без UAPKI тихо пропущені).
 `[SKIP]`-рядки (напр. `ComRoundtrip` без пари com0com) — НЕ FAIL: гейт дивиться лише exit-код 0.
+Виняток — `native_host` **кейс 5**: щоб відсутність вхідних еталонів не зараховувалась як покриття,
+він віддає окремий **exit 3 (SKIPPED)**, і оркестратор показує його як `SKIP`, а не `PASS`.
 Тест-контур із боку 1С (для прикладного розробника) — `docs/integration-1c/<driver>.md`.
 
 Запуск: `build_project.ps1 -WithUAPKI -WithTests`, потім

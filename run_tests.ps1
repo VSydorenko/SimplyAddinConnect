@@ -550,8 +550,11 @@ else {
                 -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
         $txt = if (Test-Path $outF) { Get-Content -Raw $outF } else { '' }
         $lastLine = ($txt -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 1)
-        if ($p.ExitCode -eq 0) { Add-Result 'L2/L3' 'native_host case 5' 'PASS' $lastLine }
-        else                   { Add-Result 'L2/L3' 'native_host case 5' 'FAIL' "exit=$($p.ExitCode) $lastLine" }
+        # exit 3 = кейс НЕ виконувався (немає *.signed). Раніше харнес віддавав 0 і гейт малював
+        # PASS — порожня перевірка читалась як покриття. Тепер це явний SKIP.
+        if     ($p.ExitCode -eq 0) { Add-Result 'L2/L3' 'native_host case 5' 'PASS' $lastLine }
+        elseif ($p.ExitCode -eq 3) { Add-Result 'L2/L3' 'native_host case 5' 'SKIP' "еталонів не знайдено у $prro" }
+        else                       { Add-Result 'L2/L3' 'native_host case 5' 'FAIL' "exit=$($p.ExitCode) $lastLine" }
         Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
     }
 }
