@@ -363,7 +363,17 @@ static bool case1_resourceDeploy(const std::wstring& mainDllSrc) {
 
     // Чистимо стан
     rmrf(appDir);
-    CHECK(!pathExists(appDir), "%LOCALAPPDATA%\\SimplyAddinConnect прибрано");
+    // Найчастіша причина невдачі — каталог тримає ЗАПУЩЕНА 1С із раніше підключеною компонентою:
+    // вона завантажила cm-pkcs12_*.dll із providers/<версія>/, і Windows не дає видалити файл.
+    // Без цієї підказки кейс падав глухим FAIL, і причину доводилось шукати щоразу наново.
+    if (pathExists(appDir)) {
+        printf("  FAIL: не вдалося прибрати %s\n"
+               "        Найімовірніше каталог тримає запущена 1С (провайдер cm-pkcs12 завантажений\n"
+               "        у процес 1cv8 після підключення компоненти). Закрийте 1С і повторіть прогін.\n",
+               w2u8(appDir).c_str());
+        return false;
+    }
+    printf("  ok: %%LOCALAPPDATA%%\\SimplyAddinConnect прибрано\n");
 
     // Тимч. каталог ТІЛЬКИ з головною DLL (без провайдера поруч)
     std::wstring tmp = makeTempDir(L"case1");
@@ -406,6 +416,15 @@ static bool case2_providerBeside(const std::wstring& mainDllSrc, const std::wstr
     std::wstring appDir = localAppDataApp();
     CHECK(!appDir.empty(), "LOCALAPPDATA визначено");
     rmrf(appDir);
+    // Та сама пастка, що й у кейсі 1: кейс доводить ВІДСУТНІСТЬ розгортання, тож починати
+    // мусить з чистого каталогу — інакше залишок від запущеної 1С дасть хибний FAIL наприкінці.
+    if (pathExists(appDir)) {
+        printf("  FAIL: не вдалося прибрати %s\n"
+               "        Найімовірніше каталог тримає запущена 1С (провайдер cm-pkcs12 завантажений\n"
+               "        у процес 1cv8 після підключення компоненти). Закрийте 1С і повторіть прогін.\n",
+               w2u8(appDir).c_str());
+        return false;
+    }
 
     std::wstring tmp = makeTempDir(L"case2");
     std::wstring dllName  = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
