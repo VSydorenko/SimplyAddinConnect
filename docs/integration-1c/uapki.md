@@ -26,7 +26,7 @@
 &НаКлиенте
 Перем ОбъектUAPKI;   // одна instance на форму — стан бібліотеки (ініціалізація, відкритий НКІ) живе в C++
 
-// 1) Підключити компоненту (README §2) → маємо СимвольноеИмя, напр. "ECRTest"
+// 1) Підключити компоненту (README §2) → маємо СимвольноеИмя, напр. "SimplyAddinConnect"
 // 2) Створити об'єкт ОДИН раз:
 ОбъектUAPKI = Новый("AddIn." + СимвольноеИмя + ".AddinUAPKIConnect");
 ОбъектUAPKI.ИспользоватьЛогирование("Trace", "C:\log\SimplyAddinConnect.log");
@@ -398,7 +398,7 @@ UAPKI (не вдалось підписати квитанцію/еталон).
 > ДПС». Псування самого вмісту чи підпису оракул ловить надійно (див. `--self-test`).
 
 **Тестова обробка 1С** — `ExtDataProcessors/SimplyAddinConnect_test`, модуль форми
-[`NativeAddIn_Н/Forms/Форма/Ext/Form/Module.bsl`](../../ExtDataProcessors/SimplyAddinConnect_test/NativeAddIn_Н/Forms/Форма/Ext/Form/Module.bsl).
+[`SimplyAddinConnect/Forms/Форма/Ext/Form/Module.bsl`](../../ExtDataProcessors/SimplyAddinConnect_test/SimplyAddinConnect/Forms/Форма/Ext/Form/Module.bsl).
 
 Регіон `UAPKI` — прямі кнопки компоненти: «Створити обʼєкт UAPKI» + 11 методів життєвого циклу
 (`VERSION`, `INIT`, `PROVIDERS`, `OPEN`, `KEYS`, `SELECT_KEY`, `SIGN`, `VERIFY`, `DIGEST`, `CLOSE`,

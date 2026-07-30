@@ -20,6 +20,21 @@
 		<Event name="OnCreateAtServer">ПриСозданииНаСервере</Event>
 	</Events>
 	<ChildItems>
+		<InputField name="ШляхДоКомпоненты" id="243">
+			<DataPath>ШляхДоКомпоненты</DataPath>
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Путь к компоненте (zip сборки; пусто — встроенный макет)</v8:content>
+				</v8:item>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>Шлях до компоненти (zip збірки; порожньо — вбудований макет)</v8:content>
+				</v8:item>
+			</Title>
+			<ContextMenu name="ШляхДоКомпонентыContextMenu" id="244"/>
+			<ExtendedTooltip name="ШляхДоКомпонентыExtendedTooltip" id="245"/>
+		</InputField>
 		<UsualGroup name="ГруппаКонстанты" id="59">
 			<Title>
 				<v8:item>
@@ -420,21 +435,6 @@
 					<ShowTitle>false</ShowTitle>
 					<ExtendedTooltip name="ГруппаПеременныеРасширеннаяПодсказка" id="253"/>
 					<ChildItems>
-						<InputField name="ШляхДоКомпоненты" id="243">
-							<DataPath>ШляхДоКомпоненты</DataPath>
-							<Title>
-								<v8:item>
-									<v8:lang>ru</v8:lang>
-									<v8:content>Путь к компоненте (zip сборки; пусто — встроенный макет)</v8:content>
-								</v8:item>
-								<v8:item>
-									<v8:lang>uk</v8:lang>
-									<v8:content>Путь к компоненте (zip сборки; пусто — встроенный макет)</v8:content>
-								</v8:item>
-							</Title>
-							<ContextMenu name="ШляхДоКомпонентыContextMenu" id="244"/>
-							<ExtendedTooltip name="ШляхДоКомпонентыExtendedTooltip" id="245"/>
-						</InputField>
 						<InputField name="СтрокаПодключения" id="202">
 							<DataPath>СтрокаПодключения</DataPath>
 							<Title>
@@ -714,7 +714,7 @@
 	<Attributes>
 		<Attribute name="Объект" id="1">
 			<Type>
-				<v8:Type>cfg:ExternalDataProcessorObject.Example</v8:Type>
+				<v8:Type>cfg:ExternalDataProcessorObject.SimplyAddinConnect</v8:Type>
 			</Type>
 			<MainAttribute>true</MainAttribute>
 		</Attribute>

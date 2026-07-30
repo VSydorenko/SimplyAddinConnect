@@ -99,7 +99,7 @@ uapki_connect_component        ┘  + uapki_bundle (статичне ядро UA
 `cm-pkcs12-provider`) і потрапляють у `bin/Release` самі — окремого configure для них немає.
 
 **7. Тестова обробка 1С (`.epf`) — необов'язковий крок.** Збирає
-`ExtDataProcessors/SimplyAddinConnect_test` у `bin/Release/NativeAddIn_Н.epf` — туди ж, куди
+`ExtDataProcessors/SimplyAddinConnect_test` у `bin/Release/SimplyAddinConnect.epf` — туди ж, куди
 й решту артефактів, — вбудувавши в макет `NativeAddIn` (`TemplateType = BinaryData`) **свіжий**
 `SimplyAddinConnectWin.zip`. Раніше макет доводилося міняти руками в Конфігураторі після
 кожної збірки — тепер це робить скрипт.
@@ -135,7 +135,7 @@ uapki_connect_component        ┘  + uapki_bundle (статичне ядро UA
 
 | Режим | Файли в ZIP | Всього |
 |---|---|---|
-| **без `-WithUAPKI`** | `manifest.xml` + `SimplyAddinConnectWin_<версія>_x86.dll` + `..._x64.dll` | **3** |
+| **без `-WithUAPKI`** | `manifest.xml` + `SimplyAddinConnectWin32_<версія>.dll` + `SimplyAddinConnectWin64_<версія>.dll` | **3** |
 | **з `-WithUAPKI`** | те саме + `cm-pkcs12_x86.dll` + `cm-pkcs12_x64.dll` | **5** |
 
 Ім'я фінальної DLL складається в `CMake/output_settings.cmake`:
@@ -150,7 +150,7 @@ uapki_connect_component        ┘  + uapki_bundle (статичне ядро UA
 
 **У `bin/Release` імена стабільні** (`SimplyAddinConnectWin_x64.dll`) — на них зав'язані
 `run_tests.ps1`, `native_host`, `ecr_native_host`, `label_native_host`. **Усередині ZIP** головні
-DLL кладуться під версіонованими іменами: `SimplyAddinConnectWin_3_0_2_115_x64.dll`, і рівно ці
+DLL кладуться під версіонованими іменами: `SimplyAddinConnectWin64_3_0_2_116.dll`, і рівно ці
 імена пише `manifest.ps1` у `<component path="…">`.
 
 **Навіщо.** При **встановленні** компоненти (`УстановитьВнешнююКомпоненту`) 1С розпаковує DLL у
@@ -166,7 +166,7 @@ DLL кладуться під версіонованими іменами: `Simp
 | Спосіб | Куди платформа кладе DLL | Час життя |
 |---|---|---|
 | `УстановитьВнешнююКомпоненту` (встановлення в базу) | `%APPDATA%\1C\1cv8\ExtCompT\<path з маніфесту>` + запис у `registry.xml` | **постійно**; перевикористовується за іменем — тут і залипає |
-| `ПодключитьВнешнююКомпонентуАсинх(...)` **без** встановлення (так робить тестова обробка) | `%TEMP%\v8_<сесія>_c.<path з маніфесту>`, напр. `v8_1104_c.SimplyAddinConnectWin_3_0_2_115_x64.dll` | тимчасово, прибирається; `ExtCompT` **не задіяний узагалі** |
+| `ПодключитьВнешнююКомпонентуАсинх(...)` **без** встановлення (так робить тестова обробка) | `%TEMP%\v8_<сесія>_c.<path з маніфесту>`, напр. `v8_1104_c.SimplyAddinConnectWin64_3_0_2_116.dll` | тимчасово, прибирається; `ExtCompT` **не задіяний узагалі** |
 
 Обидва шляхи іменують файл **рівно так, як записано в `<component path="…">`**, тож версіонування
 працює для обох. Але наслідки різні:
@@ -271,8 +271,8 @@ ITS документує лише один спосіб доставити до�
 
 ```xml
 <bundle xmlns="http://v8.1c.ru/8.2/addin/bundle">
-  <component type="native" os="Windows" arch="i386"   path="SimplyAddinConnectWin_x86.dll" />
-  <component type="native" os="Windows" arch="x86_64" path="SimplyAddinConnectWin_x64.dll" />
+  <component type="native" os="Windows" arch="i386"   path="SimplyAddinConnectWin32_<версія>.dll" />
+  <component type="native" os="Windows" arch="x86_64" path="SimplyAddinConnectWin64_<версія>.dll" />
 </bundle>
 ```
 

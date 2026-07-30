@@ -57,7 +57,7 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTe
 Опції CMake: `-DBUILD_WITH_UAPKI=ON|OFF`, `-DBUILD_TESTS=ON|OFF` (обидві default OFF).
 
 Останнім кроком скрипт **необов'язково** перезбирає тестову зовнішню обробку 1С
-`bin/Release/NativeAddIn_Н.epf` зі свіжою компонентою в макеті. Немає платформи 1С / вихідників обробки або
+`bin/Release/SimplyAddinConnect.epf` зі свіжою компонентою в макеті. Немає платформи 1С / вихідників обробки або
 Конфігуратор упав — крок друкує `SKIP`/`WARNING` і **не змінює результат збірки**
 (деталі — `docs/architecture/build-and-packaging.md` §2.7).
 
@@ -147,7 +147,7 @@ tests/              # core_selftest (L0.5) + wire_selftest (L0.6) + ecr_privatjs
                     #   uapki_selftest (L1) + native_host (L2/L3) + uapki_fiscal_emulator
                     #   (— ручний, HTTP-оракул ЕЦП для тесту UAPKI з 1С) + scenarios/ + data/
 ExtDataProcessors/  # тестова зовнішня обробка 1С у форматі platform XML (Designer) —
-                    #   NativeAddIn_Н: форма з кнопками під усі компоненти + макет з DLL;
+                    #   SimplyAddinConnect: форма з кнопками під усі компоненти + макет з DLL;
                     #   v8project.yaml описує цей 1С-воркспейс (source-set
                     #   EXTERNAL_DATA_PROCESSORS) для плагіна Unica / v8-runner
 docs/architecture/    # архітектура по підсистемах (README + 01..04)

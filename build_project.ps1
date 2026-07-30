@@ -192,9 +192,12 @@ if ($dllFiles) {
         # Перейменовуємо ЛИШЕ головні DLL (їх описує manifest). Провайдери cm-pkcs12_*.dll
         # у маніфесті не згадані — 1С їх не розпаковує, вони їдуть у ZIP як є, для ручних
         # розгортань; компонента однаково несе провайдера вбудованим ресурсом.
+        # Шаблон <Назва>Win32|Win64_<версія>.dll — звірений із реальними компонентами в ExtCompT
+        # (NativeAddInWin32_0_3_2_83.dll від lintest, ScanOPOSNativeWin64_10_6_1_2.dll тощо).
+        # Мусить збігатися з тим, що пише manifest.ps1 у <component path="…">.
         $targetName = switch ($f.Name) {
-            'SimplyAddinConnectWin_x86.dll' { "SimplyAddinConnectWin_${verTag}_x86.dll" }
-            'SimplyAddinConnectWin_x64.dll' { "SimplyAddinConnectWin_${verTag}_x64.dll" }
+            'SimplyAddinConnectWin_x86.dll' { "SimplyAddinConnectWin32_${verTag}.dll" }
+            'SimplyAddinConnectWin_x64.dll' { "SimplyAddinConnectWin64_${verTag}.dll" }
             default                          { $f.Name }
         }
         Copy-Item -Path $f.FullName -Destination (Join-Path $stageFolder $targetName) -Force

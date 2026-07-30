@@ -20,12 +20,20 @@ if (-not $Version) {
     }
 }
 
-# Крапки в імені файлу замінюємо підкресленнями: 3.0.2.109 -> 3_0_2_109
+# Крапки в імені файлу замінюємо підкресленнями: 3.0.2.109 -> 3_0_2_109.
+# Шаблон імені звірений із реальними компонентами в %APPDATA%\1C\1cv8\ExtCompT:
+#   NativeAddInWin32_0_3_2_83.dll        (lintest/AddinTemplate — першоджерело цього проєкту)
+#   ScanOPOSNativeWin64_10_6_1_2.dll
+#   ExtraCryptoAPIAddInNativeWin32_3_0_1_26.dll
+#   ReceiptPrinterNativeWin32_3_1_4_6.dll
+# Тобто: <Назва>Win32|Win64_<версія>.dll — розрядність ЗЛИТНО (Win32/Win64, а не _x86/_x64),
+# версія — в кінці. Це стосується ЛИШЕ імен усередині ZIP; у bin/Release CMake лишає власну
+# конвенцію (SimplyAddinConnectWin_x64.dll), на яку спираються тести.
 $verTag = if ($Version) { "_" + ($Version -replace '\.', '_') } else { "" }
 
 # Формуємо шаблони імен файлів
-$fileTemplateWin32 = "${project}Win${verTag}_x86.dll"
-$fileTemplateWin64 = "${project}Win${verTag}_x64.dll"
+$fileTemplateWin32 = "${project}Win32${verTag}.dll"
+$fileTemplateWin64 = "${project}Win64${verTag}.dll"
 
 # Linux is not supported yet
 # $fileTemplateLin32 = "${project}Lin_x86.so"
