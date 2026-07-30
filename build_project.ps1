@@ -213,3 +213,105 @@ if ($missingFiles) {
     Write-Host "All required files built successfully:" -ForegroundColor Green
     $expectedFiles | ForEach-Object { Write-Host " - $_" -ForegroundColor Green }
 }
+
+#############################################
+# Тестова зовнішня обробка 1С (.epf) — НЕОБОВ'ЯЗКОВИЙ крок
+#############################################
+# Збирає ExtDataProcessors\SimplyAddinConnect_test у .epf, вбудувавши в макет NativeAddIn
+# СВІЖИЙ SimplyAddinConnectWin.zip — щоб після кожної збірки не міняти макет руками.
+#
+# Крок навмисно НЕ впливає на результат збірки: якщо в оточенні немає платформи 1С,
+# немає вихідників обробки або Конфігуратор повернув помилку — друкуємо попередження
+# і йдемо далі. Просто не буде нової обробки; попередня (якщо є) лишається як була.
+#
+# Збірка йде зі СТЕЙДЖ-копії вихідників у build_epf\src: макет у Git важить 4+ МБ,
+# і оновлення його на місці давало б бінарний diff на кожну збірку.
+# Платформу можна задати явно через змінну оточення SAC_1CV8_PATH.
+
+function Get-1CPlatformPath {
+    if ($env:SAC_1CV8_PATH -and (Test-Path $env:SAC_1CV8_PATH)) { return $env:SAC_1CV8_PATH }
+
+    $roots = @("$env:ProgramFiles\1cv8", "${env:ProgramFiles(x86)}\1cv8")
+    $candidates = foreach ($root in $roots) {
+        if (Test-Path $root) {
+            Get-ChildItem $root -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
+                ForEach-Object {
+                    $exe = Join-Path $_.FullName 'bin\1cv8.exe'
+                    if (Test-Path $exe) { [PSCustomObject]@{ Version = [version]$_.Name; Path = $exe } }
+                }
+        }
+    }
+    ($candidates | Sort-Object Version -Descending | Select-Object -First 1).Path
+}
+
+$epfSourceRoot = "$PSScriptRoot\ExtDataProcessors\SimplyAddinConnect_test"
+$epfWorkDir    = "$PSScriptRoot\build_epf"
+$componentZip  = Join-Path $releaseFolder "SimplyAddinConnectWin.zip"
+$platformExe   = Get-1CPlatformPath
+# Ім'я дескриптора містить кирилицю - беремо його з файлової системи, а не з коду скрипта
+$epfDescriptor = if (Test-Path $epfSourceRoot) {
+    Get-ChildItem $epfSourceRoot -Filter *.xml -File -ErrorAction SilentlyContinue | Select-Object -First 1
+} else { $null }
+
+if (-Not $platformExe) {
+    Write-Host "SKIP: 1C:Enterprise platform not found - test data processor (.epf) not rebuilt" -ForegroundColor Yellow
+} elseif (-Not $epfDescriptor) {
+    Write-Host "SKIP: no external data processor sources in $epfSourceRoot - .epf not rebuilt" -ForegroundColor Yellow
+} elseif (-Not (Test-Path $componentZip)) {
+    Write-Host "SKIP: $componentZip not found - .epf not rebuilt" -ForegroundColor Yellow
+} else {
+    try {
+        Write-Host "Building test data processor using $platformExe ..." -ForegroundColor Cyan
+        New-Item $epfWorkDir -ItemType Directory -Force | Out-Null
+
+        # 1. Стейдж-копія вихідників обробки
+        $stageSrc = Join-Path $epfWorkDir "src"
+        Remove-Item $stageSrc -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item $stageSrc -ItemType Directory -Force | Out-Null
+        Copy-Item "$epfSourceRoot\*" $stageSrc -Recurse -Force
+
+        # 2. Свіжий архів компоненти в макет NativeAddIn (TemplateType = BinaryData)
+        $stageTemplate = Get-ChildItem $stageSrc -Recurse -File -Filter "Template.bin" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Directory.Parent.Name -eq "NativeAddIn" } | Select-Object -First 1
+        if ($stageTemplate) {
+            Copy-Item $componentZip $stageTemplate.FullName -Force
+            Write-Host " - component archive embedded into NativeAddIn template"
+        } else {
+            Write-Host " - WARNING: NativeAddIn binary template not found, .epf keeps the template from sources" -ForegroundColor Yellow
+        }
+
+        # 3. Одноразова файлова ІБ - платформі потрібна база, щоб зібрати .epf з XML.
+        #    1cv8.exe - GUI-застосунок: без Start-Process -Wait код завершення не отримати.
+        $stageIb = Join-Path $epfWorkDir "ib"
+        if (-Not (Test-Path (Join-Path $stageIb "1Cv8.1CD"))) {
+            New-Item $stageIb -ItemType Directory -Force | Out-Null
+            $proc = Start-Process -FilePath $platformExe -Wait -PassThru -NoNewWindow -ArgumentList @(
+                'CREATEINFOBASE', "File=""$stageIb""",
+                '/DisableStartupDialogs', '/DisableStartupMessages',
+                "/Out""$epfWorkDir\create.log""")
+            if ($proc.ExitCode -ne 0) { throw "CREATEINFOBASE returned exit code $($proc.ExitCode)" }
+        }
+
+        # 4. Збірка .epf з XML-джерел
+        $stageDescriptor = Join-Path $stageSrc $epfDescriptor.Name
+        $stageEpf = Join-Path $epfWorkDir ($epfDescriptor.BaseName + ".epf")
+        Remove-Item $stageEpf -Force -ErrorAction SilentlyContinue
+        $proc = Start-Process -FilePath $platformExe -Wait -PassThru -NoNewWindow -ArgumentList @(
+            'DESIGNER', "/F""$stageIb""",
+            '/DisableStartupDialogs', '/DisableStartupMessages',
+            '/LoadExternalDataProcessorOrReportFromFiles', """$stageDescriptor""", """$stageEpf""",
+            "/Out""$epfWorkDir\load.log""")
+        if ($proc.ExitCode -ne 0 -or -Not (Test-Path $stageEpf)) {
+            throw "Designer returned exit code $($proc.ExitCode); see $epfWorkDir\load.log"
+        }
+
+        # 5. Публікація поруч зі скриптом - саме звідти обробку відкривають у 1С
+        $publishedEpf = Join-Path $PSScriptRoot ($epfDescriptor.BaseName + ".epf")
+        Copy-Item $stageEpf $publishedEpf -Force
+        Write-Host "Test data processor built: $publishedEpf" -ForegroundColor Green
+    } catch {
+        Write-Host "WARNING: test data processor was not rebuilt - $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "Build result is not affected." -ForegroundColor Yellow
+    }
+}
