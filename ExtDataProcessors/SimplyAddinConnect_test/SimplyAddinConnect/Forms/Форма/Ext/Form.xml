@@ -250,6 +250,12 @@
 							<ContextMenu name="ПолеШляхДоКлючаUAPKIContextMenu" id="354"/>
 							<ExtendedTooltip name="ПолеШляхДоКлючаUAPKIExtendedTooltip" id="355"/>
 						</InputField>
+						<InputField name="ПолеКаталогДанихUAPKI" id="411">
+							<DataPath>КаталогДанихUAPKI</DataPath>
+							<Title><v8:item><v8:lang>uk</v8:lang><v8:content>Каталог даних UAPKI (certs\ + crls\)</v8:content></v8:item></Title>
+							<ContextMenu name="ПолеКаталогДанихUAPKIContextMenu" id="412"/>
+							<ExtendedTooltip name="ПолеКаталогДанихUAPKIExtendedTooltip" id="413"/>
+						</InputField>
 						<InputField name="ПолеПарольКлючаUAPKI" id="356">
 							<DataPath>ПарольКлючаUAPKI</DataPath>
 							<Title>
@@ -1118,6 +1124,10 @@
 					<v8:AllowedLength>Variable</v8:AllowedLength>
 				</v8:StringQualifiers>
 			</Type>
+		</Attribute>
+		<Attribute name="КаталогДанихUAPKI" id="410">
+			<Title><v8:item><v8:lang>uk</v8:lang><v8:content>Каталог даних UAPKI (certs\ + crls\)</v8:content></v8:item></Title>
+			<Type><v8:Type>xs:string</v8:Type><v8:StringQualifiers><v8:Length>0</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers></Type>
 		</Attribute>
 	</Attributes>
 	<Commands>
