@@ -217,8 +217,9 @@ if ($missingFiles) {
 #############################################
 # Тестова зовнішня обробка 1С (.epf) — НЕОБОВ'ЯЗКОВИЙ крок
 #############################################
-# Збирає ExtDataProcessors\SimplyAddinConnect_test у .epf, вбудувавши в макет NativeAddIn
-# СВІЖИЙ SimplyAddinConnectWin.zip — щоб після кожної збірки не міняти макет руками.
+# Збирає ExtDataProcessors\SimplyAddinConnect_test у .epf і кладе його в bin\Release —
+# туди ж, куди й решту артефактів. У макет NativeAddIn вбудовується СВІЖИЙ
+# SimplyAddinConnectWin.zip, щоб після кожної збірки не міняти макет руками.
 #
 # Крок навмисно НЕ впливає на результат збірки: якщо в оточенні немає платформи 1С,
 # немає вихідників обробки або Конфігуратор повернув помилку — друкуємо попередження
@@ -306,8 +307,10 @@ if (-Not $platformExe) {
             throw "Designer returned exit code $($proc.ExitCode); see $epfWorkDir\load.log"
         }
 
-        # 5. Публікація поруч зі скриптом - саме звідти обробку відкривають у 1С
-        $publishedEpf = Join-Path $PSScriptRoot ($epfDescriptor.BaseName + ".epf")
+        # 5. Публікація в bin/Release - разом з рештою артефактів збірки.
+        #    Увага: bin/Release чиститься на початку кожного запуску скрипта, тож обробка
+        #    живе рівно від однієї успішної збірки до наступної.
+        $publishedEpf = Join-Path $releaseFolder ($epfDescriptor.BaseName + ".epf")
         Copy-Item $stageEpf $publishedEpf -Force
         Write-Host "Test data processor built: $publishedEpf" -ForegroundColor Green
     } catch {

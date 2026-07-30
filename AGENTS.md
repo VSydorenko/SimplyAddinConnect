@@ -57,7 +57,7 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTe
 Опції CMake: `-DBUILD_WITH_UAPKI=ON|OFF`, `-DBUILD_TESTS=ON|OFF` (обидві default OFF).
 
 Останнім кроком скрипт **необов'язково** перезбирає тестову зовнішню обробку 1С
-`NativeAddIn_Н.epf` зі свіжою компонентою в макеті. Немає платформи 1С / вихідників обробки або
+`bin/Release/NativeAddIn_Н.epf` зі свіжою компонентою в макеті. Немає платформи 1С / вихідників обробки або
 Конфігуратор упав — крок друкує `SKIP`/`WARNING` і **не змінює результат збірки**
 (деталі — `docs/architecture/build-and-packaging.md` §2.7).
 

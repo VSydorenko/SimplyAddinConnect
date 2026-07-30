@@ -13,7 +13,6 @@
 /tmp
 .build/
 manifest.xml
-*.epf
 *.o
 *.d
 *.so
