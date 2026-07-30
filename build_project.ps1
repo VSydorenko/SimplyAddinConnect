@@ -50,8 +50,10 @@ $versionFile = "$PSScriptRoot\version.h"
 #define VERSION_BUILD     $versionBuild
 "@ | Set-Content -Path $versionFile
 
-# Запуск скрипта для оновлення manifest.xml
-powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\manifest.ps1"
+# Запуск скрипта для оновлення manifest.xml.
+# Версію передаємо явно: імена DLL У ZIP версіонуються, щоб кеш 1С (ExtCompT) не віддавав
+# стару розпаковану компоненту — він звіряє лише ім'я файлу з manifest (див. manifest.ps1).
+powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\manifest.ps1" -Version $version
 
 # Очистка попередніх збірок проекта (но не тестов!)
 $foldersToRemove = @("build_x86", "build_x64", "build32Lin", "build64Lin")
@@ -172,20 +174,43 @@ $releaseFolder = "$PSScriptRoot\bin\Release"
 $dllFiles = Get-ChildItem -Path $releaseFolder -Filter *.dll -ErrorAction SilentlyContinue
 
 if ($dllFiles) {
-    # Створення zip архіву з файлами .dll та manifest.xml
+    # Створення zip архіву з файлами .dll та manifest.xml.
+    #
+    # У bin/Release імена лишаються СТАБІЛЬНИМИ (SimplyAddinConnectWin_x64.dll) — на них
+    # зав'язані run_tests.ps1 і тестові харнеси. А ось УСЕРЕДИНІ ZIP головні DLL кладемо під
+    # ВЕРСІОНОВАНИМИ іменами (SimplyAddinConnectWin_3_0_2_109_x64.dll), бо саме ім'я з
+    # <component path="..."> стає іменем у кеші 1С %APPDATA%\1C\1cv8\ExtCompT\, а платформа
+    # перевикористовує вже розпаковану DLL за ІМЕНЕМ, не звіряючи вміст (manifest формату
+    # <bundle> не має поля версії). Незмінне ім'я = 1С вічно вантажить першу розпаковану збірку.
     $manifestFile = "$PSScriptRoot\manifest.xml"
-    $filesToZip = @($dllFiles.FullName)
+    $verTag = $version -replace '\.', '_'
+
+    # Стейджинг поза bin/Release, щоб тимчасові копії не потрапили в наступний Get-ChildItem
+    $stageFolder = Join-Path ([System.IO.Path]::GetTempPath()) ("sac_zip_" + [guid]::NewGuid().ToString('N').Substring(0,8))
+    New-Item -ItemType Directory -Path $stageFolder -Force | Out-Null
+    foreach ($f in $dllFiles) {
+        # Перейменовуємо ЛИШЕ головні DLL (їх описує manifest). Провайдери cm-pkcs12_*.dll
+        # у маніфесті не згадані — 1С їх не розпаковує, вони їдуть у ZIP як є, для ручних
+        # розгортань; компонента однаково несе провайдера вбудованим ресурсом.
+        $targetName = switch ($f.Name) {
+            'SimplyAddinConnectWin_x86.dll' { "SimplyAddinConnectWin_${verTag}_x86.dll" }
+            'SimplyAddinConnectWin_x64.dll' { "SimplyAddinConnectWin_${verTag}_x64.dll" }
+            default                          { $f.Name }
+        }
+        Copy-Item -Path $f.FullName -Destination (Join-Path $stageFolder $targetName) -Force
+    }
     if (Test-Path $manifestFile) {
-        $filesToZip += $manifestFile
+        Copy-Item -Path $manifestFile -Destination $stageFolder -Force
         Write-Host "Adding manifest file: $manifestFile"
     } else {
         Write-Host "Warning: Manifest file not found at $manifestFile"
     }
 
     $zipFilePath = "$releaseFolder\SimplyAddinConnectWin.zip"
-    Compress-Archive -Path $filesToZip -DestinationPath $zipFilePath -Force
-    Write-Host "Archive created: $zipFilePath"
-    
+    Compress-Archive -Path (Join-Path $stageFolder '*') -DestinationPath $zipFilePath -Force
+    Remove-Item -Recurse -Force $stageFolder -ErrorAction SilentlyContinue
+    Write-Host "Archive created: $zipFilePath (DLL у архіві версіоновані: _$verTag)"
+
 } else {
     Write-Host "DLL files not found. Archive not created."
 }
