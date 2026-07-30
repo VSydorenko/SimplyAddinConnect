@@ -20,6 +20,21 @@
 		<Event name="OnCreateAtServer">ПриСозданииНаСервере</Event>
 	</Events>
 	<ChildItems>
+		<InputField name="ШляхДоКомпоненты" id="243">
+			<DataPath>ШляхДоКомпоненты</DataPath>
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Путь к компоненте (zip сборки; пусто — встроенный макет)</v8:content>
+				</v8:item>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>Шлях до компоненти (zip збірки; порожньо — вбудований макет)</v8:content>
+				</v8:item>
+			</Title>
+			<ContextMenu name="ШляхДоКомпонентыContextMenu" id="244"/>
+			<ExtendedTooltip name="ШляхДоКомпонентыExtendedTooltip" id="245"/>
+		</InputField>
 		<UsualGroup name="ГруппаКонстанты" id="59">
 			<Title>
 				<v8:item>
@@ -224,10 +239,172 @@
 					<Group>Vertical</Group>
 					<ExtendedTooltip name="ГруппаUAPKIРасширеннаяПодсказка" id="44"/>
 					<ChildItems>
-						<Button name="КомандаВерсияUAPKI" id="45">
+						<InputField name="ПолеШляхДоКлючаUAPKI" id="353">
+							<DataPath>ШляхДоКлючаUAPKI</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>Шлях до ключа .p12</v8:content>
+								</v8:item>
+							</Title>
+							<ContextMenu name="ПолеШляхДоКлючаUAPKIContextMenu" id="354"/>
+							<ExtendedTooltip name="ПолеШляхДоКлючаUAPKIExtendedTooltip" id="355"/>
+						</InputField>
+						<InputField name="ПолеКаталогДанихUAPKI" id="411">
+							<DataPath>КаталогДанихUAPKI</DataPath>
+							<Title><v8:item><v8:lang>uk</v8:lang><v8:content>Каталог даних UAPKI (certs\ + crls\)</v8:content></v8:item></Title>
+							<ContextMenu name="ПолеКаталогДанихUAPKIContextMenu" id="412"/>
+							<ExtendedTooltip name="ПолеКаталогДанихUAPKIExtendedTooltip" id="413"/>
+						</InputField>
+						<InputField name="ПолеПарольКлючаUAPKI" id="356">
+							<DataPath>ПарольКлючаUAPKI</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>Пароль ключа</v8:content>
+								</v8:item>
+							</Title>
+							<ContextMenu name="ПолеПарольКлючаUAPKIContextMenu" id="357"/>
+							<ExtendedTooltip name="ПолеПарольКлючаUAPKIExtendedTooltip" id="358"/>
+						</InputField>
+						<InputField name="ПолеІдКлючаUAPKI" id="359">
+							<DataPath>ІдКлючаUAPKI</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>Id ключа</v8:content>
+								</v8:item>
+							</Title>
+							<ContextMenu name="ПолеІдКлючаUAPKIContextMenu" id="360"/>
+							<ExtendedTooltip name="ПолеІдКлючаUAPKIExtendedTooltip" id="361"/>
+						</InputField>
+						<InputField name="ПолеДаніДляПідпису" id="362">
+							<DataPath>ДаніДляПідпису</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>Дані для підпису (XML чека)</v8:content>
+								</v8:item>
+							</Title>
+							<MultiLine>true</MultiLine>
+							<ContextMenu name="ПолеДаніДляПідписуContextMenu" id="363"/>
+							<ExtendedTooltip name="ПолеДаніДляПідписуExtendedTooltip" id="364"/>
+						</InputField>
+						<InputField name="ПолеПідписBase64" id="365">
+							<DataPath>ПідписBase64</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>Підпис (Base64)</v8:content>
+								</v8:item>
+							</Title>
+							<MultiLine>true</MultiLine>
+							<ContextMenu name="ПолеПідписBase64ContextMenu" id="366"/>
+							<ExtendedTooltip name="ПолеПідписBase64ExtendedTooltip" id="367"/>
+						</InputField>
+						<InputField name="ПолеХостКонсолі" id="368">
+							<DataPath>ХостКонсолі</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>Хост консолі</v8:content>
+								</v8:item>
+							</Title>
+							<ContextMenu name="ПолеХостКонсоліContextMenu" id="369"/>
+							<ExtendedTooltip name="ПолеХостКонсоліExtendedTooltip" id="370"/>
+						</InputField>
+						<InputField name="ПолеПортКонсолі" id="371">
+							<DataPath>ПортКонсолі</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>Порт консолі</v8:content>
+								</v8:item>
+							</Title>
+							<ContextMenu name="ПолеПортКонсоліContextMenu" id="372"/>
+							<ExtendedTooltip name="ПолеПортКонсоліExtendedTooltip" id="373"/>
+						</InputField>
+						<InputField name="ПолеРезультатUAPKI" id="374">
+							<DataPath>РезультатUAPKI</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>uk</v8:lang>
+									<v8:content>Результат UAPKI</v8:content>
+								</v8:item>
+							</Title>
+							<MultiLine>true</MultiLine>
+							<ContextMenu name="ПолеРезультатUAPKIContextMenu" id="375"/>
+							<ExtendedTooltip name="ПолеРезультатUAPKIExtendedTooltip" id="376"/>
+						</InputField>
+						<Button name="КомандаVERSIONUAPKI" id="45">
 							<Type>UsualButton</Type>
-							<CommandName>Form.Command.КомандаВерсияUAPKI</CommandName>
-							<ExtendedTooltip name="КомандаВерсияUAPKIРасширеннаяПодсказка" id="46"/>
+							<CommandName>Form.Command.КомандаVERSIONUAPKI</CommandName>
+							<ExtendedTooltip name="КомандаVERSIONUAPKIРасширеннаяПодсказка" id="46"/>
+						</Button>
+						<Button name="КнопкаСоздатьОбъектUAPKI" id="377">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.СоздатьОбъектUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаСоздатьОбъектUAPKITooltip" id="378"/>
+						</Button>
+						<Button name="КнопкаКомандаINITUAPKI" id="379">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.КомандаINITUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаКомандаINITUAPKITooltip" id="380"/>
+						</Button>
+						<Button name="КнопкаКомандаDEINITUAPKI" id="381">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.КомандаDEINITUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаКомандаDEINITUAPKITooltip" id="382"/>
+						</Button>
+						<Button name="КнопкаКомандаPROVIDERSUAPKI" id="383">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.КомандаPROVIDERSUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаКомандаPROVIDERSUAPKITooltip" id="384"/>
+						</Button>
+						<Button name="КнопкаКомандаOPENUAPKI" id="385">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.КомандаOPENUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаКомандаOPENUAPKITooltip" id="386"/>
+						</Button>
+						<Button name="КнопкаКомандаKEYSUAPKI" id="387">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.КомандаKEYSUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаКомандаKEYSUAPKITooltip" id="388"/>
+						</Button>
+						<Button name="КнопкаКомандаSELECTKEYUAPKI" id="389">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.КомандаSELECTKEYUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаКомандаSELECTKEYUAPKITooltip" id="390"/>
+						</Button>
+						<Button name="КнопкаКомандаSIGNUAPKI" id="391">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.КомандаSIGNUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаКомандаSIGNUAPKITooltip" id="392"/>
+						</Button>
+						<Button name="КнопкаКомандаVERIFYUAPKI" id="393">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.КомандаVERIFYUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаКомандаVERIFYUAPKITooltip" id="394"/>
+						</Button>
+						<Button name="КнопкаКомандаCLOSEUAPKI" id="395">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.КомандаCLOSEUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаКомандаCLOSEUAPKITooltip" id="396"/>
+						</Button>
+						<Button name="КнопкаКомандаDIGESTUAPKI" id="397">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.КомандаDIGESTUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаКомандаDIGESTUAPKITooltip" id="398"/>
+						</Button>
+						<Button name="КнопкаПодписатьИОтправитьUAPKI" id="399">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ПодписатьИОтправитьUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаПодписатьИОтправитьUAPKITooltip" id="400"/>
+						</Button>
+						<Button name="КнопкаЗапроситьЭталонUAPKI" id="401">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ЗапроситьЭталонUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаЗапроситьЭталонUAPKITooltip" id="402"/>
 						</Button>
 					</ChildItems>
 				</UsualGroup>
@@ -264,21 +441,6 @@
 					<ShowTitle>false</ShowTitle>
 					<ExtendedTooltip name="ГруппаПеременныеРасширеннаяПодсказка" id="253"/>
 					<ChildItems>
-						<InputField name="ШляхДоКомпоненты" id="243">
-							<DataPath>ШляхДоКомпоненты</DataPath>
-							<Title>
-								<v8:item>
-									<v8:lang>ru</v8:lang>
-									<v8:content>Путь к компоненте (zip сборки; пусто — встроенный макет)</v8:content>
-								</v8:item>
-								<v8:item>
-									<v8:lang>uk</v8:lang>
-									<v8:content>Путь к компоненте (zip сборки; пусто — встроенный макет)</v8:content>
-								</v8:item>
-							</Title>
-							<ContextMenu name="ШляхДоКомпонентыContextMenu" id="244"/>
-							<ExtendedTooltip name="ШляхДоКомпонентыExtendedTooltip" id="245"/>
-						</InputField>
 						<InputField name="СтрокаПодключения" id="202">
 							<DataPath>СтрокаПодключения</DataPath>
 							<Title>
@@ -558,7 +720,7 @@
 	<Attributes>
 		<Attribute name="Объект" id="1">
 			<Type>
-				<v8:Type>cfg:ExternalDataProcessorObject.Example</v8:Type>
+				<v8:Type>cfg:ExternalDataProcessorObject.SimplyAddinConnect</v8:Type>
 			</Type>
 			<MainAttribute>true</MainAttribute>
 		</Attribute>
@@ -843,6 +1005,130 @@
 				</v8:StringQualifiers>
 			</Type>
 		</Attribute>
+		<Attribute name="ШляхДоКлючаUAPKI" id="332">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>Шлях до ключа .p12</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="ПарольКлючаUAPKI" id="333">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>Пароль ключа</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="ДаніДляПідпису" id="334">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>Дані для підпису (XML чека)</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="ПідписBase64" id="335">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>Підпис (Base64)</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="ІдКлючаUAPKI" id="336">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>Id ключа</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="РезультатUAPKI" id="337">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>Результат UAPKI</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="ХостКонсолі" id="338">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>Хост консолі</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="ПортКонсолі" id="339">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>Порт консолі</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="КаталогДанихUAPKI" id="410">
+			<Title><v8:item><v8:lang>uk</v8:lang><v8:content>Каталог даних UAPKI (certs\ + crls\)</v8:content></v8:item></Title>
+			<Type><v8:Type>xs:string</v8:Type><v8:StringQualifiers><v8:Length>0</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers></Type>
+		</Attribute>
 	</Attributes>
 	<Commands>
 		<Command name="ВключитьСобытияECR" id="25">
@@ -1071,24 +1357,24 @@
 			</ToolTip>
 			<Action>ConnectToServer</Action>
 		</Command>
-		<Command name="КомандаВерсияUAPKI" id="3">
+		<Command name="КомандаVERSIONUAPKI" id="3">
 			<Title>
 				<v8:item>
 					<v8:lang>ru</v8:lang>
-					<v8:content>Версия UAPKI</v8:content>
+					<v8:content>VERSION</v8:content>
 				</v8:item>
 				<v8:item>
 					<v8:lang>uk</v8:lang>
-					<v8:content>Версия UAPKI</v8:content>
+					<v8:content>VERSION</v8:content>
 				</v8:item>
 			</Title>
 			<ToolTip>
 				<v8:item>
 					<v8:lang>uk</v8:lang>
-					<v8:content>Команда версия UAPKI</v8:content>
+					<v8:content>Виклик методу VERSION</v8:content>
 				</v8:item>
 			</ToolTip>
-			<Action>КомандаВерсияUAPKI</Action>
+			<Action>КомандаVERSIONUAPKI</Action>
 		</Command>
 		<Command name="КомандаВерсияJSON" id="8">
 			<Title>
@@ -1253,6 +1539,136 @@
 				</v8:item>
 			</Title>
 			<Action>ОтключитьПринтерLP</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="СоздатьОбъектUAPKI" id="340">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>Створити обʼєкт UAPKI</v8:content>
+				</v8:item>
+			</Title>
+			<Action>СоздатьОбъектUAPKI</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="КомандаINITUAPKI" id="341">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>INIT</v8:content>
+				</v8:item>
+			</Title>
+			<Action>КомандаINITUAPKI</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="КомандаDEINITUAPKI" id="342">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>DEINIT</v8:content>
+				</v8:item>
+			</Title>
+			<Action>КомандаDEINITUAPKI</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="КомандаPROVIDERSUAPKI" id="343">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>PROVIDERS</v8:content>
+				</v8:item>
+			</Title>
+			<Action>КомандаPROVIDERSUAPKI</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="КомандаOPENUAPKI" id="344">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>OPEN</v8:content>
+				</v8:item>
+			</Title>
+			<Action>КомандаOPENUAPKI</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="КомандаCLOSEUAPKI" id="345">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>CLOSE</v8:content>
+				</v8:item>
+			</Title>
+			<Action>КомандаCLOSEUAPKI</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="КомандаKEYSUAPKI" id="346">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>KEYS</v8:content>
+				</v8:item>
+			</Title>
+			<Action>КомандаKEYSUAPKI</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="КомандаSELECTKEYUAPKI" id="347">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>SELECT_KEY</v8:content>
+				</v8:item>
+			</Title>
+			<Action>КомандаSELECTKEYUAPKI</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="КомандаSIGNUAPKI" id="348">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>SIGN</v8:content>
+				</v8:item>
+			</Title>
+			<Action>КомандаSIGNUAPKI</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="КомандаVERIFYUAPKI" id="349">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>VERIFY</v8:content>
+				</v8:item>
+			</Title>
+			<Action>КомандаVERIFYUAPKI</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="КомандаDIGESTUAPKI" id="350">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>DIGEST</v8:content>
+				</v8:item>
+			</Title>
+			<Action>КомандаDIGESTUAPKI</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ПодписатьИОтправитьUAPKI" id="351">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>Підписати й відправити на валідацію</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ПодписатьИОтправитьUAPKI</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ЗапроситьЭталонUAPKI" id="352">
+			<Title>
+				<v8:item>
+					<v8:lang>uk</v8:lang>
+					<v8:content>Запитати еталон і перевірити</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ЗапроситьЭталонUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
 		</Command>
 	</Commands>

@@ -208,10 +208,11 @@ UAPKI (провайдер `cm-pkcs12`, файлові ключі). Загаль�
 - вкласти сертифікат підписувача, але НЕ вкладати CRL/OCSP/ланцюг видавця;
 - НЕ додавати content-timestamp.
 
-> ⚠️ Точні імена параметрів методу SIGN у UAPKI-протоколі (як саме
-> вимкнути content-TS, увімкнути enveloping, керувати вкладенням
-> сертифікатів) у цій сесії з коду НЕ звірені — перевіряйте
-> `docs/UAPKI_Protokol.md` і реалізацію хелпера перед використанням.
+> Імена параметрів методу SIGN (звірені з `tests/scenarios/*.json` і хелпером): формат —
+> `signParams.signatureFormat` (`"CAdES-T"`); enveloping — `detachedData:false`; вкласти
+> сертифікат — `includeCert:true`; НЕ додавати content-TS — `includeContentTS:false`; позначка
+> часу — `includeTime:true`. Повний опис полів SIGN і форматів підпису — настанова
+> `extern/uapki/doc/UAPKI-PM-2.0.16.md` (метод SIGN; Додаток Б).
 
 ---
 

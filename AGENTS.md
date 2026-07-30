@@ -48,13 +48,18 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTe
 - `-WithTests` — збирає тестові консольні exe з `tests/`. **`core_selftest`, `wire_selftest`,
   `ecr_privatjson_selftest`, `ecr_terminal_emulator`, `ecr_native_host`, `label_printer_selftest`,
   `label_printer_emulator` і `label_native_host` збираються завжди при `-WithTests`** (ядрові/ECR/
-  LabelPrinter-харнеси без UAPKI); а `uapki_selftest`/`native_host` — **лише разом з
-  `-WithUAPKI`** (залежать від крипто-ядра; без UAPKI ці дві цілі тихо пропущено, тека `tests/` на
-  Windows конфігурується завжди).
+  LabelPrinter-харнеси без UAPKI); а `uapki_selftest`/`uapki_fiscal_emulator`/`native_host` —
+  **лише разом з `-WithUAPKI`** (залежать від крипто-ядра; без UAPKI ці три цілі тихо пропущено,
+  тека `tests/` на Windows конфігурується завжди).
 
 Скрипт перегенеровує `version.h` (інкремент build), очищає `build_x86/`, `build_x64/`,
 `bin/Release/`, збирає обидві архітектури в Release і пакує в `bin/Release/SimplyAddinConnectWin.zip`.
 Опції CMake: `-DBUILD_WITH_UAPKI=ON|OFF`, `-DBUILD_TESTS=ON|OFF` (обидві default OFF).
+
+Останнім кроком скрипт **необов'язково** перезбирає тестову зовнішню обробку 1С
+`bin/Release/SimplyAddinConnect.epf` зі свіжою компонентою в макеті. Немає платформи 1С / вихідників обробки або
+Конфігуратор упав — крок друкує `SKIP`/`WARNING` і **не змінює результат збірки**
+(деталі — `docs/architecture/build-and-packaging.md` §2.7).
 
 ## Тести
 
@@ -65,7 +70,8 @@ DLL і НЕ підключають `src/core/pch.h`), `tests/core_selftest.cpp` 
 TCP-емулятор термінала), `tests/label_printer_selftest.cpp` (харнес драйвера LabelPrinter),
 `tests/label_native_host.cpp` + `tests/label_printer_emulator.cpp` +
 `tests/support/LabelEmulator.{h,cpp}` (компонента LabelPrinter через DLL + TCP-емулятор принтера
-етикеток), `tests/scenarios/*.json`
+етикеток), `tests/uapki_fiscal_emulator.cpp` (HTTP-оракул ЕЦП — ручний тест-контур UAPKI із 1С,
+опис нижче), `tests/scenarios/*.json`
 (7 сценаріїв L1), `tests/data/` (тестовий контейнер `test-diia.p12`, сертифікати, CRL — read-only вхід).
 
 Тестові цілі (лише Windows; окремі exe). Детальний склад перевірок кожного драйвера — у
@@ -82,12 +88,15 @@ TCP-емулятор термінала), `tests/label_printer_selftest.cpp` (х
 | `label_native_host.exe` | L-p3 | ні | компонента `LabelPrinter` через головну DLL проти `LabelEmulator` (TCP-захоплювач ZPL) |
 | `label_printer_emulator.exe` | — (ручний) | ні | standalone TCP-емулятор принтера етикеток (захоплює ZPL) для тесту з реальної 1С |
 | `uapki_selftest.exe` | L1 | **так** | UAPKI-ядро: JSON-сценарії `tests/scenarios/` через `process()`/`json_free()` |
-| `native_host.exe` | L2/L3 | **так** | компонента `AddinUAPKIConnect` через DLL, e2e + крос-валідація ПРРО (кейс 5 потребує `PRRO_DOCS_DIR`) |
+| `native_host.exe` | L2/L3 | **так** | компонента `AddinUAPKIConnect` через DLL, e2e + крос-валідація ПРРО (кейс 5 потребує `PRRO_DOCS_DIR`; шукає `*.signed` РЕКУРСИВНО, при їх відсутності віддає **exit 3 = SKIP**, а не PASS) |
+| `uapki_fiscal_emulator.exe` | — (ручний) | **так** | HTTP-оракул ЕЦП (грає сервер ДПС/ЄВПЕЗ) для тесту UAPKI з реальної 1С: VERIFY вхідного CMS + підписана квитанція + еталони (`--self-test` — вбудовані перевірки без 1С) |
 
 Цілі без UAPKI (`core`/`wire`/`ecr_*`) збираються завжди при `BUILD_TESTS=ON`; `uapki_selftest`/
-`native_host` — лише разом з `-WithUAPKI` (без UAPKI тихо пропущені). `[SKIP]`-рядки (напр.
-`ComRoundtrip` без пари com0com) — НЕ FAIL: гейт дивиться лише exit-код 0. Тест-контур із боку
-1С (для прикладного розробника) — `docs/integration-1c/<driver>.md`.
+`uapki_fiscal_emulator`/`native_host` — лише разом з `-WithUAPKI` (без UAPKI тихо пропущені).
+`[SKIP]`-рядки (напр. `ComRoundtrip` без пари com0com) — НЕ FAIL: гейт дивиться лише exit-код 0.
+Виняток — `native_host` **кейс 5**: щоб відсутність вхідних еталонів не зараховувалась як покриття,
+він віддає окремий **exit 3 (SKIPPED)**, і оркестратор показує його як `SKIP`, а не `PASS`.
+Тест-контур із боку 1С (для прикладного розробника) — `docs/integration-1c/<driver>.md`.
 
 Запуск: `build_project.ps1 -WithUAPKI -WithTests`, потім
 `powershell -File run_tests.ps1 [x64|x86] [-NoUapki]` (оркестратор: L0 dumpbin-інваріанти →
@@ -135,7 +144,12 @@ tests/              # core_selftest (L0.5) + wire_selftest (L0.6) + ecr_privatjs
                     #   ecr_terminal_emulator (standalone EXE для 1С) + label_printer_selftest (L-p1,
                     #   драйвер LabelPrinter) + label_native_host (L-p3, компонента через DLL) +
                     #   label_printer_emulator (standalone EXE для 1С, +support/LabelEmulator) +
-                    #   uapki_selftest (L1) + native_host (L2/L3) + scenarios/ + data/
+                    #   uapki_selftest (L1) + native_host (L2/L3) + uapki_fiscal_emulator
+                    #   (— ручний, HTTP-оракул ЕЦП для тесту UAPKI з 1С) + scenarios/ + data/
+ExtDataProcessors/  # тестова зовнішня обробка 1С у форматі platform XML (Designer) —
+                    #   SimplyAddinConnect: форма з кнопками під усі компоненти + макет з DLL;
+                    #   v8project.yaml описує цей 1С-воркспейс (source-set
+                    #   EXTERNAL_DATA_PROCESSORS) для плагіна Unica / v8-runner
 docs/architecture/    # архітектура по підсистемах (README + 01..04)
 docs/               # специфікації протоколів (ECR/UAPKI), tasks/
 extern/             # сабмодулі: spdlog, nlohmann_json, ixwebsocket, uapki

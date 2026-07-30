@@ -226,7 +226,7 @@ endif()
 # BUILD_WITH_UAPKI). Без нього тихо пропускаємо решту файлу.
 # ---------------------------------------------------------------------------
 if(NOT BUILD_WITH_UAPKI)
-    message(STATUS "[tests] uapki_selftest/native_host пропущено (потрібен BUILD_WITH_UAPKI)")
+    message(STATUS "[tests] uapki_selftest/uapki_fiscal_emulator/native_host пропущено (потрібен BUILD_WITH_UAPKI)")
     return()
 endif()
 
@@ -258,6 +258,51 @@ target_include_directories(uapki_selftest PRIVATE
 # інакше MSVC читає його в системному кодуванні й ламає літерали/коментарі.
 if(MSVC)
     target_compile_options(uapki_selftest PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
+# uapki_fiscal_emulator — HTTP-оракул ЕЦП (РУЧНИЙ інструмент, у run_tests.ps1 НЕ входить).
+# Грає «приймаючу сторону» (сервер ДПС/ЄВПЕЗ) для тесту крипто-стека з реальної 1С:
+# приймає по HTTP підписаний компонентою CMS, незалежним шляхом інтеграції
+# (process()/json_free() статично злінкованого ядра, як uapki_selftest) перевіряє
+# підпис і повертає підписану квитанцію. Ціль ручна — бо потребує живої 1С по той
+# бік; автоматична частина покрита вбудованим режимом --self-test.
+# ---------------------------------------------------------------------------
+add_executable(uapki_fiscal_emulator uapki_fiscal_emulator.cpp)
+
+set_target_properties(uapki_fiscal_emulator PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "uapki_fiscal_emulator${_TEST_ARCH_SUFFIX}"
+)
+
+# uapki_bundle — крипто-ядро (process/json_free); parson — його JSON-залежність;
+# ixwebsocket+ws2_32 — HTTP-сервер ix::HttpServer поверх Winsock.
+target_link_libraries(uapki_fiscal_emulator PRIVATE uapki_bundle parson ixwebsocket ws2_32)
+
+# uapki-інклюди НЕ потрібні: process/json_free оголошені у вихіднику власноруч
+# (extern "C"), а відповіді розбираються nlohmann-ом. IXWEBSOCKET_INCLUDE_DIR =
+# extern/ixwebsocket, тож інклюд пишеться як <ixwebsocket/IXHttpServer.h>.
+target_include_directories(uapki_fiscal_emulator PRIVATE
+    ${NLOHMANN_JSON_INCLUDE_DIR}
+    ${IXWEBSOCKET_INCLUDE_DIR}
+)
+
+# HOST_DATA_DIR — дефолтний каталог тест-даних (certs/ + crls/ + test-diia.p12).
+# Каталог провайдера НЕ впаюємо: --providers за замовчуванням = каталог самого exe
+# (GetModuleFileNameW), бо cm-pkcs12_*.dll лягає поруч із ним і переживає копіювання збірки.
+target_compile_definitions(uapki_fiscal_emulator PRIVATE _WINDOWS UNICODE _UNICODE
+    HOST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data"
+)
+
+# Провайдер НКІ потрібен у рантаймі (без нього countCmProviders==0 і OPEN/SIGN не
+# працюють) — гарантуємо його збірку навіть при збірці лише цієї цілі.
+add_dependencies(uapki_fiscal_emulator cm-pkcs12-provider)
+
+# /utf-8 — вихідник у UTF-8 з кириличними коментарями Й кириличними wide-літералами
+# (імена файлів-зразків ПРРО), інакше MSVC зіпсує і коментарі, і літерали.
+if(MSVC)
+    target_compile_options(uapki_fiscal_emulator PRIVATE /utf-8)
 endif()
 
 # ---------------------------------------------------------------------------

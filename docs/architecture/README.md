@@ -113,7 +113,7 @@ flowchart TD
 - **[AGENTS.md](../../AGENTS.md)** — команди збірки, конвенції коду, як додати компоненту, розділ «Тести».
 - **Специфікації протоколів:**
   - [ECR_Privat_JSON_Protokol.md](../ECR_Privat_JSON_Protokol.md) — протокол платіжного термінала ПриватБанку.
-  - [UAPKI_Protokol.md](../UAPKI_Protokol.md) — JSON-протокол UAPKI (методи, параметри, коди помилок).
-- **[tasks/](../tasks/)** — робочі звіти з імплементації (напр. `2026-07-19_uapki_embedded_providers_and_tests.md` — доведені емпіричні факти про поведінку 1С).
+  - [`extern/uapki/doc/UAPKI-PM-2.0.16.md`](../../extern/uapki/doc/UAPKI-PM-2.0.16.md) — JSON-протокол UAPKI (методи, параметри, коди помилок; є й англійська версія). Прикладна інтеграція з 1С — [integration-1c/uapki.md](../integration-1c/uapki.md).
+- **[tasks/](../tasks/)** — робочі звіти з імплементації (напр. `2026-07-19_uapki_fork_update_and_upstream_pr.md` — синхронізація форку UAPKI з upstream). Емпіричні факти про доставку в 1С — [build-and-packaging.md](build-and-packaging.md) §4.
 - **[CMake/components.cmake](../../CMake/components.cmake)** — джерело правди щодо складу й залежностей компонент.
 - **Скіли** (`.claude/skills/`): `1c-native-component`, `uapki-integration`, `ecp-testing-without-1c`, `prro-fiscal` — переносне ноу-хау.

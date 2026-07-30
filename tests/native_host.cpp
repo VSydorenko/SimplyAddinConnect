@@ -363,7 +363,17 @@ static bool case1_resourceDeploy(const std::wstring& mainDllSrc) {
 
     // Чистимо стан
     rmrf(appDir);
-    CHECK(!pathExists(appDir), "%LOCALAPPDATA%\\SimplyAddinConnect прибрано");
+    // Найчастіша причина невдачі — каталог тримає ЗАПУЩЕНА 1С із раніше підключеною компонентою:
+    // вона завантажила cm-pkcs12_*.dll із providers/<версія>/, і Windows не дає видалити файл.
+    // Без цієї підказки кейс падав глухим FAIL, і причину доводилось шукати щоразу наново.
+    if (pathExists(appDir)) {
+        printf("  FAIL: не вдалося прибрати %s\n"
+               "        Найімовірніше каталог тримає запущена 1С (провайдер cm-pkcs12 завантажений\n"
+               "        у процес 1cv8 після підключення компоненти). Закрийте 1С і повторіть прогін.\n",
+               w2u8(appDir).c_str());
+        return false;
+    }
+    printf("  ok: %%LOCALAPPDATA%%\\SimplyAddinConnect прибрано\n");
 
     // Тимч. каталог ТІЛЬКИ з головною DLL (без провайдера поруч)
     std::wstring tmp = makeTempDir(L"case1");
@@ -406,6 +416,15 @@ static bool case2_providerBeside(const std::wstring& mainDllSrc, const std::wstr
     std::wstring appDir = localAppDataApp();
     CHECK(!appDir.empty(), "LOCALAPPDATA визначено");
     rmrf(appDir);
+    // Та сама пастка, що й у кейсі 1: кейс доводить ВІДСУТНІСТЬ розгортання, тож починати
+    // мусить з чистого каталогу — інакше залишок від запущеної 1С дасть хибний FAIL наприкінці.
+    if (pathExists(appDir)) {
+        printf("  FAIL: не вдалося прибрати %s\n"
+               "        Найімовірніше каталог тримає запущена 1С (провайдер cm-pkcs12 завантажений\n"
+               "        у процес 1cv8 після підключення компоненти). Закрийте 1С і повторіть прогін.\n",
+               w2u8(appDir).c_str());
+        return false;
+    }
 
     std::wstring tmp = makeTempDir(L"case2");
     std::wstring dllName  = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
@@ -549,22 +568,46 @@ static bool case4_fullChain(const std::wstring& binDir, const std::wstring& data
 // ========================================================================
 // КЕЙС 5 — L3.1 крос-валідація на еталонах ДФС (опційно)
 // ========================================================================
-static bool case5_crossValidatePrro(const std::wstring& binDir, const std::wstring& prroDir) {
+// Рекурсивний збір *.signed. Еталони ДПС лежать НЕ в корені prro_docs, а трьома рівнями
+// глибше («…/Єдине вікно…/Приклади/Приклади з КЕП»), тож нерекурсивний пошук у корені завжди
+// давав порожній список -> «SKIP» -> exit 0 -> гейт малював PASS. Порожня перевірка читалась
+// як покриття, тому пошук тепер рекурсивний, а «нічого не знайдено» — окремий статус (skipped).
+static void collectSignedRec(const std::wstring& dir, std::vector<std::wstring>& out) {
+    WIN32_FIND_DATAW fd;
+    HANDLE hf = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (hf == INVALID_HANDLE_VALUE) return;
+    do {
+        const std::wstring n = fd.cFileName;
+        if (n == L"." || n == L"..") continue;
+        const std::wstring full = dir + L"\\" + n;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            collectSignedRec(full, out);
+        } else if (n.size() >= 7 && _wcsicmp(n.c_str() + (n.size() - 7), L".signed") == 0) {
+            out.push_back(full);
+        }
+    } while (FindNextFileW(hf, &fd));
+    FindClose(hf);
+}
+
+// skipped=true -> еталонів немає (кейс не виконувався). Викликач мусить показати це як SKIP,
+// а НЕ як PASS: інакше відсутність даних невідрізненна від успішної перевірки.
+static bool case5_crossValidatePrro(const std::wstring& binDir, const std::wstring& prroDir,
+                                    bool& skipped) {
     printf("== Case 5: L3.1 крос-валідація еталонів ДФС ==\n");
+    skipped = false;
     if (prroDir.empty() || !pathExists(prroDir)) {
         printf("SKIP (prro_docs недоступний)\n");
-        return true; // не провал
+        skipped = true;
+        return true; // не провал, але й НЕ покриття
     }
-    // Перелік *.signed у каталозі (уникаємо кириличних літералів у коді)
     std::vector<std::wstring> files;
-    { WIN32_FIND_DATAW fd; HANDLE hf = FindFirstFileW((prroDir + L"\\*.signed").c_str(), &fd);
-      if (hf != INVALID_HANDLE_VALUE) {
-          do { if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
-                   files.push_back(prroDir + L"\\" + fd.cFileName);
-          } while (FindNextFileW(hf, &fd));
-          FindClose(hf);
-      } }
-    if (files.empty()) { printf("SKIP (prro_docs без *.signed файлів)\n"); return true; }
+    collectSignedRec(prroDir, files);
+    if (files.empty()) {
+        printf("SKIP (prro_docs без *.signed файлів)\n");
+        skipped = true;
+        return true;
+    }
+    printf("  знайдено еталонів: %zu\n", files.size());
 
     std::wstring dllName = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
     Component c;
@@ -574,24 +617,60 @@ static bool case5_crossValidatePrro(const std::wstring& binDir, const std::wstri
     std::string r = c.call("INIT", buildInit(true));
     CHECK(errCode(r, j) == 0, "INIT errorCode == 0");
 
+    // RET_UAPKI_CERT_NOT_FOUND. Еталони ДПС підписані з позначкою часу (CAdES-T), а в тестовому
+    // наборі немає сертифіката TSP-СЕРВЕРА (у відповіді видно "expectedCerts":[{"entity":"TSP"…}]).
+    // Офлайн його нізвідки взяти, тож ланцюг лишається невизначеним — це властивість ВХІДНИХ
+    // ДАНИХ, а не дефект компоненти. Такий документ зараховуємо, ЯКЩО структурна частина
+    // (підпис + геші + сертифікат підписувача) валідна.
+    const long RET_CERT_NOT_FOUND = 4161;
+
     bool allOk = true;
     for (const auto& f : files) {
         printf("  -- %s\n", w2u8(f).c_str());
         std::vector<unsigned char> raw;
         if (!readFileBytes(f, raw) || raw.empty()) { printf("  FAIL: не прочитано файл\n"); allOk = false; continue; }
-        json p; p["signature"]["bytes"] = b64encode(raw);
+        json p;
+        p["signature"]["bytes"]        = b64encode(raw);
+        p["options"]["validationType"] = "STRUCT";   // офлайн: без OCSP/CRL/TSP
         r = c.call("VERIFY", p.dump());
-        long ec = errCode(r, j);
-        if (ec != 0) { printf("  FAIL: VERIFY errorCode=%ld\n", ec); allOk = false; continue; }
-        auto& res = j["result"];
-        if (!res.contains("signatureInfos") || !res["signatureInfos"].is_array() || res["signatureInfos"].empty()) {
-            printf("  FAIL: немає signatureInfos\n"); allOk = false; continue;
+        const long ec = errCode(r, j);
+
+        // result заповнюється навіть при errorCode != 0: api-json.cpp створює jo_result ДО
+        // виклику методу й при помилці не чистить — саме там лежить діагностика.
+        json* si = nullptr;
+        if (j.contains("result") && j["result"].is_object()) {
+            auto& res = j["result"];
+            if (res.contains("signatureInfos") && res["signatureInfos"].is_array()
+                && !res["signatureInfos"].empty())
+                si = &res["signatureInfos"][0];
         }
-        auto& si = res["signatureInfos"][0];
-        std::string ss = si.value("statusSignature", std::string());
-        bool ok = (ss.rfind("VALID", 0) == 0) && si.contains("signerCertId");
-        printf("  %s statusSignature=%s signerCertId=%s\n", ok ? "ok:" : "FAIL:",
-               ss.c_str(), si.contains("signerCertId") ? "є" : "нема");
+        if (!si) {
+            printf("  FAIL: немає signatureInfos (errorCode=%ld)\n", ec);
+            allOk = false;
+            continue;
+        }
+        const std::string st = si->value("status", std::string());
+        const std::string ss = si->value("statusSignature", std::string());
+        const bool validDig  = si->value("validDigests", false);
+        const bool hasSigner = si->contains("signerCertId")
+                            && !si->value("signerCertId", std::string()).empty();
+        // Структурна валідність: підпис над signedAttributes + геші вмісту + є підписувач.
+        const bool structOk = (ss.rfind("VALID", 0) == 0) && validDig && hasSigner;
+
+        bool ok = false;
+        const char* verdict = "";
+        if (ec == 0 && st == "TOTAL-VALID") {
+            ok = true;  verdict = "повністю валідний";
+        } else if (ec == RET_CERT_NOT_FOUND && structOk) {
+            ok = true;  verdict = "структурно валідний; ланцюг/TSP офлайн не перевіряються (очікувано)";
+        }
+        printf("  %s errorCode=%ld status=%s statusSignature=%s validDigests=%s signerCertId=%s%s%s\n",
+               ok ? "ok:" : "FAIL:", ec,
+               st.empty() ? "(немає)" : st.c_str(),
+               ss.empty() ? "(немає)" : ss.c_str(),
+               validDig ? "true" : "false",
+               hasSigner ? "є" : "нема",
+               ok ? " | " : "", verdict);
         if (!ok) allOk = false;
     }
     c.call("DEINIT", "");
@@ -655,13 +734,14 @@ int main() {
     }
 
     bool pass = false;
+    bool skipped = false;   // лише кейс 5: еталонів немає -> це НЕ покриття (exit 3)
     try {
         switch (kase) {
             case 1: pass = case1_resourceDeploy(mainDll);          break;
             case 2: pass = case2_providerBeside(mainDll, binDir);  break;
             case 3: pass = case3_explicitDir(binDir);              break;
             case 4: pass = case4_fullChain(binDir, dataDir);       break;
-            case 5: pass = case5_crossValidatePrro(binDir, prroDir); break;
+            case 5: pass = case5_crossValidatePrro(binDir, prroDir, skipped); break;
         }
     } catch (const std::exception& e) {
         printf("FATAL: незловлений виняток: %s\n", e.what());
@@ -671,6 +751,12 @@ int main() {
         return 2;
     }
 
+    // exit 3 = SKIPPED (кейс не виконувався через відсутність вхідних даних). Окремий код
+    // потрібен, щоб оркестратор не малював PASS там, де нічого не перевірялось.
+    if (skipped) {
+        printf("\n=== Case %d: SKIPPED (немає вхідних еталонів) ===\n", kase);
+        return 3;
+    }
     printf("\n=== Case %d: %s ===\n", kase, pass ? "PASS" : "FAIL");
     return pass ? 0 : 1;
 }

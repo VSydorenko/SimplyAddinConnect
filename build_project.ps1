@@ -50,8 +50,10 @@ $versionFile = "$PSScriptRoot\version.h"
 #define VERSION_BUILD     $versionBuild
 "@ | Set-Content -Path $versionFile
 
-# Запуск скрипта для оновлення manifest.xml
-powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\manifest.ps1"
+# Запуск скрипта для оновлення manifest.xml.
+# Версію передаємо явно: імена DLL У ZIP версіонуються, щоб кеш 1С (ExtCompT) не віддавав
+# стару розпаковану компоненту — він звіряє лише ім'я файлу з manifest (див. manifest.ps1).
+powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\manifest.ps1" -Version $version
 
 # Очистка попередніх збірок проекта (но не тестов!)
 $foldersToRemove = @("build_x86", "build_x64", "build32Lin", "build64Lin")
@@ -172,20 +174,46 @@ $releaseFolder = "$PSScriptRoot\bin\Release"
 $dllFiles = Get-ChildItem -Path $releaseFolder -Filter *.dll -ErrorAction SilentlyContinue
 
 if ($dllFiles) {
-    # Створення zip архіву з файлами .dll та manifest.xml
+    # Створення zip архіву з файлами .dll та manifest.xml.
+    #
+    # У bin/Release імена лишаються СТАБІЛЬНИМИ (SimplyAddinConnectWin_x64.dll) — на них
+    # зав'язані run_tests.ps1 і тестові харнеси. А ось УСЕРЕДИНІ ZIP головні DLL кладемо під
+    # ВЕРСІОНОВАНИМИ іменами (SimplyAddinConnectWin_3_0_2_109_x64.dll), бо саме ім'я з
+    # <component path="..."> стає іменем у кеші 1С %APPDATA%\1C\1cv8\ExtCompT\, а платформа
+    # перевикористовує вже розпаковану DLL за ІМЕНЕМ, не звіряючи вміст (manifest формату
+    # <bundle> не має поля версії). Незмінне ім'я = 1С вічно вантажить першу розпаковану збірку.
     $manifestFile = "$PSScriptRoot\manifest.xml"
-    $filesToZip = @($dllFiles.FullName)
+    $verTag = $version -replace '\.', '_'
+
+    # Стейджинг поза bin/Release, щоб тимчасові копії не потрапили в наступний Get-ChildItem
+    $stageFolder = Join-Path ([System.IO.Path]::GetTempPath()) ("sac_zip_" + [guid]::NewGuid().ToString('N').Substring(0,8))
+    New-Item -ItemType Directory -Path $stageFolder -Force | Out-Null
+    foreach ($f in $dllFiles) {
+        # Перейменовуємо ЛИШЕ головні DLL (їх описує manifest). Провайдери cm-pkcs12_*.dll
+        # у маніфесті не згадані — 1С їх не розпаковує, вони їдуть у ZIP як є, для ручних
+        # розгортань; компонента однаково несе провайдера вбудованим ресурсом.
+        # Шаблон <Назва>Win32|Win64_<версія>.dll — звірений із реальними компонентами в ExtCompT
+        # (NativeAddInWin32_0_3_2_83.dll від lintest, ScanOPOSNativeWin64_10_6_1_2.dll тощо).
+        # Мусить збігатися з тим, що пише manifest.ps1 у <component path="…">.
+        $targetName = switch ($f.Name) {
+            'SimplyAddinConnectWin_x86.dll' { "SimplyAddinConnectWin32_${verTag}.dll" }
+            'SimplyAddinConnectWin_x64.dll' { "SimplyAddinConnectWin64_${verTag}.dll" }
+            default                          { $f.Name }
+        }
+        Copy-Item -Path $f.FullName -Destination (Join-Path $stageFolder $targetName) -Force
+    }
     if (Test-Path $manifestFile) {
-        $filesToZip += $manifestFile
+        Copy-Item -Path $manifestFile -Destination $stageFolder -Force
         Write-Host "Adding manifest file: $manifestFile"
     } else {
         Write-Host "Warning: Manifest file not found at $manifestFile"
     }
 
     $zipFilePath = "$releaseFolder\SimplyAddinConnectWin.zip"
-    Compress-Archive -Path $filesToZip -DestinationPath $zipFilePath -Force
-    Write-Host "Archive created: $zipFilePath"
-    
+    Compress-Archive -Path (Join-Path $stageFolder '*') -DestinationPath $zipFilePath -Force
+    Remove-Item -Recurse -Force $stageFolder -ErrorAction SilentlyContinue
+    Write-Host "Archive created: $zipFilePath (DLL у архіві версіоновані: _$verTag)"
+
 } else {
     Write-Host "DLL files not found. Archive not created."
 }
@@ -212,4 +240,109 @@ if ($missingFiles) {
 } else {
     Write-Host "All required files built successfully:" -ForegroundColor Green
     $expectedFiles | ForEach-Object { Write-Host " - $_" -ForegroundColor Green }
+}
+
+#############################################
+# Тестова зовнішня обробка 1С (.epf) — НЕОБОВ'ЯЗКОВИЙ крок
+#############################################
+# Збирає ExtDataProcessors\SimplyAddinConnect_test у .epf і кладе його в bin\Release —
+# туди ж, куди й решту артефактів. У макет NativeAddIn вбудовується СВІЖИЙ
+# SimplyAddinConnectWin.zip, щоб після кожної збірки не міняти макет руками.
+#
+# Крок навмисно НЕ впливає на результат збірки: якщо в оточенні немає платформи 1С,
+# немає вихідників обробки або Конфігуратор повернув помилку — друкуємо попередження
+# і йдемо далі. Просто не буде нової обробки; попередня (якщо є) лишається як була.
+#
+# Збірка йде зі СТЕЙДЖ-копії вихідників у build_epf\src: макет у Git важить 4+ МБ,
+# і оновлення його на місці давало б бінарний diff на кожну збірку.
+# Платформу можна задати явно через змінну оточення SAC_1CV8_PATH.
+
+function Get-1CPlatformPath {
+    if ($env:SAC_1CV8_PATH -and (Test-Path $env:SAC_1CV8_PATH)) { return $env:SAC_1CV8_PATH }
+
+    $roots = @("$env:ProgramFiles\1cv8", "${env:ProgramFiles(x86)}\1cv8")
+    $candidates = foreach ($root in $roots) {
+        if (Test-Path $root) {
+            Get-ChildItem $root -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
+                ForEach-Object {
+                    $exe = Join-Path $_.FullName 'bin\1cv8.exe'
+                    if (Test-Path $exe) { [PSCustomObject]@{ Version = [version]$_.Name; Path = $exe } }
+                }
+        }
+    }
+    ($candidates | Sort-Object Version -Descending | Select-Object -First 1).Path
+}
+
+$epfSourceRoot = "$PSScriptRoot\ExtDataProcessors\SimplyAddinConnect_test"
+$epfWorkDir    = "$PSScriptRoot\build_epf"
+$componentZip  = Join-Path $releaseFolder "SimplyAddinConnectWin.zip"
+$platformExe   = Get-1CPlatformPath
+# Ім'я дескриптора містить кирилицю - беремо його з файлової системи, а не з коду скрипта
+$epfDescriptor = if (Test-Path $epfSourceRoot) {
+    Get-ChildItem $epfSourceRoot -Filter *.xml -File -ErrorAction SilentlyContinue | Select-Object -First 1
+} else { $null }
+
+if (-Not $platformExe) {
+    Write-Host "SKIP: 1C:Enterprise platform not found - test data processor (.epf) not rebuilt" -ForegroundColor Yellow
+} elseif (-Not $epfDescriptor) {
+    Write-Host "SKIP: no external data processor sources in $epfSourceRoot - .epf not rebuilt" -ForegroundColor Yellow
+} elseif (-Not (Test-Path $componentZip)) {
+    Write-Host "SKIP: $componentZip not found - .epf not rebuilt" -ForegroundColor Yellow
+} else {
+    try {
+        Write-Host "Building test data processor using $platformExe ..." -ForegroundColor Cyan
+        New-Item $epfWorkDir -ItemType Directory -Force | Out-Null
+
+        # 1. Стейдж-копія вихідників обробки
+        $stageSrc = Join-Path $epfWorkDir "src"
+        Remove-Item $stageSrc -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item $stageSrc -ItemType Directory -Force | Out-Null
+        Copy-Item "$epfSourceRoot\*" $stageSrc -Recurse -Force
+
+        # 2. Свіжий архів компоненти в макет NativeAddIn (TemplateType = BinaryData)
+        $stageTemplate = Get-ChildItem $stageSrc -Recurse -File -Filter "Template.bin" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Directory.Parent.Name -eq "NativeAddIn" } | Select-Object -First 1
+        if ($stageTemplate) {
+            Copy-Item $componentZip $stageTemplate.FullName -Force
+            Write-Host " - component archive embedded into NativeAddIn template"
+        } else {
+            Write-Host " - WARNING: NativeAddIn binary template not found, .epf keeps the template from sources" -ForegroundColor Yellow
+        }
+
+        # 3. Одноразова файлова ІБ - платформі потрібна база, щоб зібрати .epf з XML.
+        #    1cv8.exe - GUI-застосунок: без Start-Process -Wait код завершення не отримати.
+        $stageIb = Join-Path $epfWorkDir "ib"
+        if (-Not (Test-Path (Join-Path $stageIb "1Cv8.1CD"))) {
+            New-Item $stageIb -ItemType Directory -Force | Out-Null
+            $proc = Start-Process -FilePath $platformExe -Wait -PassThru -NoNewWindow -ArgumentList @(
+                'CREATEINFOBASE', "File=""$stageIb""",
+                '/DisableStartupDialogs', '/DisableStartupMessages',
+                "/Out""$epfWorkDir\create.log""")
+            if ($proc.ExitCode -ne 0) { throw "CREATEINFOBASE returned exit code $($proc.ExitCode)" }
+        }
+
+        # 4. Збірка .epf з XML-джерел
+        $stageDescriptor = Join-Path $stageSrc $epfDescriptor.Name
+        $stageEpf = Join-Path $epfWorkDir ($epfDescriptor.BaseName + ".epf")
+        Remove-Item $stageEpf -Force -ErrorAction SilentlyContinue
+        $proc = Start-Process -FilePath $platformExe -Wait -PassThru -NoNewWindow -ArgumentList @(
+            'DESIGNER', "/F""$stageIb""",
+            '/DisableStartupDialogs', '/DisableStartupMessages',
+            '/LoadExternalDataProcessorOrReportFromFiles', """$stageDescriptor""", """$stageEpf""",
+            "/Out""$epfWorkDir\load.log""")
+        if ($proc.ExitCode -ne 0 -or -Not (Test-Path $stageEpf)) {
+            throw "Designer returned exit code $($proc.ExitCode); see $epfWorkDir\load.log"
+        }
+
+        # 5. Публікація в bin/Release - разом з рештою артефактів збірки.
+        #    Увага: bin/Release чиститься на початку кожного запуску скрипта, тож обробка
+        #    живе рівно від однієї успішної збірки до наступної.
+        $publishedEpf = Join-Path $releaseFolder ($epfDescriptor.BaseName + ".epf")
+        Copy-Item $stageEpf $publishedEpf -Force
+        Write-Host "Test data processor built: $publishedEpf" -ForegroundColor Green
+    } catch {
+        Write-Host "WARNING: test data processor was not rebuilt - $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "Build result is not affected." -ForegroundColor Yellow
+    }
 }

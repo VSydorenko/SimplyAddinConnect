@@ -6,21 +6,21 @@
 				<xr:ClassId>c3831ec8-d8d5-4f93-8a22-f9bfae07327f</xr:ClassId>
 				<xr:ObjectId>107f250f-3da6-4f2f-9ed8-51d31d1eeb6f</xr:ObjectId>
 			</xr:ContainedObject>
-			<xr:GeneratedType name="ExternalDataProcessorObject.Example" category="Object">
+			<xr:GeneratedType name="ExternalDataProcessorObject.SimplyAddinConnect" category="Object">
 				<xr:TypeId>0b8b980f-5587-43cf-a49e-52faffe460ef</xr:TypeId>
 				<xr:ValueId>dbb0c778-5188-4644-9591-6bd192c72254</xr:ValueId>
 			</xr:GeneratedType>
 		</InternalInfo>
 		<Properties>
-			<Name>Example</Name>
+			<Name>SimplyAddinConnect</Name>
 			<Synonym>
 				<v8:item>
 					<v8:lang>ru</v8:lang>
-					<v8:content>Example</v8:content>
+					<v8:content>SimplyAddinConnect</v8:content>
 				</v8:item>
 			</Synonym>
 			<Comment/>
-			<DefaultForm>ExternalDataProcessor.Example.Form.Форма</DefaultForm>
+			<DefaultForm>ExternalDataProcessor.SimplyAddinConnect.Form.Форма</DefaultForm>
 			<AuxiliaryForm/>
 		</Properties>
 		<ChildObjects>

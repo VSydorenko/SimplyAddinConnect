@@ -165,3 +165,76 @@
   `add_UAPKI` = **PASS=17**, дерево чисте. `add_UAPKI` **не запушено** — PR у `main` робить користувач.
 - **Лишилось за користувачем:** надіслати 2 PR у specinfo-ua; push `add_UAPKI` + PR у `main`; ручний тест
   у реальній 1С на оновленому ядрі (INIT → `countCmProviders:1`).
+
+---
+
+## 10. Ітерація 2026-07-22 — доопрацювання PR #26 за рев'ю (виконано)
+
+Обидва PR подано в specinfo-ua (2026-07-20). **PR #25** (`static-export-headers`) — **MERGED**
+(upstream `c64181c`) без зауважень. **PR #26** (`loadlibraryw-utf8`) отримав FAIL SonarCloud +
+коментарі; цикл виправлень нижче. Робота велась у гілці `docs-uapki`; правки коду — у сабмодулі
+на гілці `loadlibraryw-utf8` (форк).
+
+### 10.1. Фідбек по PR #26
+- **SonarCloud Quality Gate — FAIL:** «B Maintainability Rating on New Code» (треба ≥ A) — на нових
+  рядках хелпера (ручні `malloc`/`free` + C-касти).
+- **Мейнтейнер `specinfo-ua` (OWNER):** дав готовий RAII-варіант через `std::wstring`+`static_cast`;
+  попросив «залишити один dl-macros.h (`common/cryptoki/dl-macros.h` та `common/loaders/dl-macros.h`)».
+- **Контриб'ютор `DJm00n`:** додати прапорець `MB_ERR_INVALID_CHAR`.
+
+### 10.2. Аналіз (звірено з форком)
+- Причина SonarCloud — ручне керування пам'яттю + C-касти; RAII-варіант мейнтейнера їх прибирає.
+- **Виявлено дубль:** у v2.0.16 з'явився ДРУГИЙ `library/common/cryptoki/dl-macros.h` (для cm-pkcs11),
+  майже байт-ідентичний, **той самий include-guard `DL_MACROS_H`**, досі з `LoadLibraryA` — той самий
+  баг кириличних шляхів; `cryptoki-loader.cpp:80` вантажив PKCS#11-драйвер через `DL_LOAD_LIBRARY`.
+  Звідси прохання мейнтейнера про єдиний файл.
+- **Дефекти сніпета мейнтейнера, виправлені при адаптації:** (1) проєкт на **C++11**
+  (`CMAKE_CXX_STANDARD 11` всюди), де `std::wstring::data()` повертає `const wchar_t*` → не годиться
+  як OUT-буфер `MultiByteToWideChar` → використано `&wbuf[0]` (неконстантний з C++11); (2) `<string>`
+  не можна включати всередині `extern "C"` → винесено під `#ifdef __cplusplus` перед блоком.
+
+### 10.3. Рішення (за вибором користувача) і зміни
+Обрано: **звести дубль в один фізичний файл** + додати `MB_ERR_INVALID_CHARS`.
+- `loaders/dl-macros.h` — канонічний: RAII `std::wstring`, `static_cast`, `&wbuf[0]`,
+  `MB_ERR_INVALID_CHARS` в обох викликах, самодостатній guarded `<string>`.
+- Видалено `cryptoki/dl-macros.h`; `cryptoki-loader.h` → `#include "../loaders/dl-macros.h"`;
+  `cryptoki-loader.cpp` → `dl_load_library_utf8` (фікс поширено й на cm-pkcs11).
+- Архітектурний нюанс: додається залежність `common/cryptoki → common/loaders` (CMake cm-pkcs11
+  не референсив `loaders/`, але quote-include резолвиться без правок CMake). У відповіді PR
+  мейнтейнеру запропоновано перенести спільний файл у нейтральний `common/`, якщо він хоче
+  зберегти ізоляцію cm-pkcs11.
+
+### 10.4. Баг, спійманий локальним білдом (КРИТИЧНИЙ УРОК)
+Перша збірка ВПАЛА: `MB_ERR_INVALID_CHAR: необъявленный идентификатор`. Правильний Win32-макрос —
+**`MB_ERR_INVALID_CHARS`** (з 'S'); DJm00n написав розмовно в однині, я скопіював без 'S'. Виправлено.
+**Урок:** upstream CI (`.github/workflows/native-test.yml`) = **тільки Linux** (`ubuntu-latest`,
+`cmake -S library`) — Windows-гілку `dl-macros.h` (`#if defined(_WIN32)`) НЕ компілює взагалі
+(активний `dlopen`-аліас). Windows-помилки ловить лише **локальний Windows-білд**. SonarCloud
+аналізує нові рядки diff незалежно від платформи. SimplyAddinConnect не будує cm-pkcs11 → cryptoki-
+сторону консолідації валідує лише Linux-CI. **Завжди білдити локально Windows перед пушем.**
+
+### 10.5. Валідація
+- Збірка `-WithUAPKI -WithTests` x86+x64 — ✅ зелена (5 файлів + ZIP).
+- `run_tests` x64 = **PASS=21**/FAIL=2; x86 = **PASS=20**/FAIL=2/SKIP=1. Усі крипто-рівні (L0 експорти
+  3/7 без витоку, L1×7 SIGN/VERIFY/encrypt, native_host case 3/4/5) — PASS. FAIL = `native_host`
+  case 1/2: precondition-очищення `%LOCALAPPDATA%\SimplyAddinConnect` заблоковане живими сесіями 1С
+  (`Case 1: FAIL — прибрано`) — середовищне, до крипто-логіки, не код. SKIP x86 `py-provider_info` —
+  64-біт Python не вантажить 32-біт DLL. Ідентично базлайну §9.5.
+
+### 10.6. Результат
+- PR-гілку `loadlibraryw-utf8` перероблено в один атомарний коміт **`ac41747`**, force-запушено
+  (`--force-with-lease`) у форк `origin/loadlibraryw-utf8` — PR #26 оновлено.
+- Технічну відповідь опубліковано в тред PR #26 (issuecomment-5044045064): що прийнято, що і чому
+  підправлено (C++11, макрос), питання по консолідації мейнтейнеру.
+- **CI на оновленому PR #26 — усе зелене:** `SonarCloud Code Analysis` **pass** (гейт A — B-зауваження
+  знято), `test` (Linux native build) **pass** (консолідація компілюється, включно з `cryptoki-loader.cpp`).
+- Сабмодуль повернуто на `main-dev` (`cb39ea9`) — git основного репо чистий; PR-покращення живуть на
+  `loadlibraryw-utf8` у форку.
+
+### 10.7. Лишилось (за іншими)
+- Рішення мейнтейнера по консолідації: лишити залежність `cryptoki → loaders` чи перенести спільний
+  `dl-macros.h` у нейтральний `common/`.
+- Прийняття/зауваження PR #26 від specinfo-ua; за потреби — наступний цикл виправлень (тим самим
+  шляхом: правка на `loadlibraryw-utf8` → локальний білд → force-push).
+- Інтеграція покращень PR #26 назад у `main-dev`/`add_UAPKI` — коли/якщо PR приймуть upstream
+  (через звичайний sync `main`→`main-dev`, див. §7 арх-документа).

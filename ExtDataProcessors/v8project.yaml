@@ -1,0 +1,34 @@
+# Конфіг 1С-воркспейсу для плагіна Unica (MCP `unica`) та v8-runner.
+#
+# Воркспейс навмисно обмежений текою ExtDataProcessors/, а не коренем репозиторію:
+# у корені лежать C++-сабмодулі (extern/), автоскан на них падає на не-UTF-8 файлі
+# extern/pugixml/docs/samples/weekly-shift_jis.xml, і BSL-індекс марно обходив би все дерево.
+#
+# Тут описані лише ЗОВНІШНІ ОБРОБКИ (source-set типу EXTERNAL_DATA_PROCESSORS).
+# CONFIGURATION source-set у цьому репозиторії немає — це проєкт нативної компоненти,
+# а не конфігурації, тому `config-init` тут не спрацює (він вимагає конфігурацію).
+#
+# Типове застосування (через MCP `unica`, cwd = ця тека):
+#   unica.project.map                     — перевірити склад і формат source-set
+#   unica.form.info / form.edit           — читати й правити форму обробки
+#   unica.code.diagnostics                — діагностика BSL (bsl-analyzer)
+#   unica.runtime.execute operation=make  — зібрати .epf (output = КАТАЛОГ публікації)
+#   unica.runtime.execute operation=syntax — синтаксичний контроль модулів
+#
+# Штатну збірку .epf у CI-режимі робить build_project.ps1 напряму через Конфігуратор,
+# без Unica — щоб збірка проєкту не залежала від плагіна агента.
+
+workPath: '.build/v8'
+execution_timeout: 600000
+format: DESIGNER
+builder: DESIGNER
+
+infobase:
+  # Одноразова локальна файлова ІБ-«риштування»: потрібна платформі, щоб зібрати .epf з XML.
+  # Даних не тримає, лежить у .build/ (ігнорується git).
+  connection: 'File=.build/v8/ib'
+
+source-set:
+  - name: test-processors
+    type: EXTERNAL_DATA_PROCESSORS
+    path: 'SimplyAddinConnect_test'
