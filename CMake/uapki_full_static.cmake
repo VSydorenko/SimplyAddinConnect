@@ -241,7 +241,50 @@ else()
     set(CURL_LIBRARY "${CMAKE_SOURCE_DIR}/extern/uapki/library/common/curl/builds/windows_x86/libcurl.lib")
 endif()
 
+# Прибудований libcurl 8.21.0 (upstream v2.0.16) посилається на __imp_if_nametoindex
+# (iphlpapi) — без нього лінк падає з unresolved. `normaliz` (IDN) додано для паритету
+# з власним library/uapki/CMakeLists.txt upstream, де перелічені обидві.
 message(STATUS "[UAPKI] Using libcurl: ${CURL_LIBRARY}")
+
+# --- volatileaccessu.lib: прихована залежність прибудованого libcurl 8.21.0 ---
+# Кожен об'єктний файл цього libcurl несе /DEFAULTLIB:volatileaccessu.lib і посилається
+# на RtlSetVolatileMemory: у Windows SDK 10.0.26100+ саме так реалізовано SecureZeroMemory.
+# У старіших SDK (напр. 10.0.20348 — дефолт на Windows Server 2022) файлу немає, і фінальний
+# лінк головної DLL падає з LNK1104. Тому шукаємо цей .lib у ВСІХ встановлених Windows Kits
+# і лінкуємо повним шляхом (якщо поточний SDK уже свіжий — знайдеться той самий файл).
+if(WIN32)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(_VA_ARCH "x64")
+    else()
+        set(_VA_ARCH "x86")
+    endif()
+    set(_VA_KITS_ROOTS
+        "$ENV{WindowsSdkDir}"
+        "$ENV{ProgramFiles\(x86\)}/Windows Kits/10"
+        "$ENV{ProgramFiles}/Windows Kits/10"
+        "C:/Program Files (x86)/Windows Kits/10"
+    )
+    set(_VA_CANDIDATES "")
+    foreach(_root IN LISTS _VA_KITS_ROOTS)
+        if(_root)
+            file(GLOB _found "${_root}/Lib/*/um/${_VA_ARCH}/volatileaccessu.lib")
+            list(APPEND _VA_CANDIDATES ${_found})
+        endif()
+    endforeach()
+    if(_VA_CANDIDATES)
+        list(REMOVE_DUPLICATES _VA_CANDIDATES)
+        list(SORT _VA_CANDIDATES COMPARE NATURAL)
+        list(GET _VA_CANDIDATES -1 VOLATILEACCESS_LIBRARY)
+        message(STATUS "[UAPKI] Using volatileaccessu: ${VOLATILEACCESS_LIBRARY}")
+        target_link_libraries(uapki PUBLIC "${VOLATILEACCESS_LIBRARY}")
+    else()
+        message(FATAL_ERROR
+            "[UAPKI] volatileaccessu.lib (${_VA_ARCH}) не знайдено в жодному Windows Kit. "
+            "Прибудований libcurl 8.21.0 з UAPKI v2.0.16 посилається на RtlSetVolatileMemory — "
+            "встановіть Windows SDK 10.0.26100 або новіший.")
+    endif()
+endif()
+
 target_link_libraries(uapki PUBLIC ${CURL_LIBRARY})
 
 # --- Создаем объединенную библиотеку всех компонентов UAPKI ---
@@ -270,7 +313,8 @@ if(WIN32)
         asn1
         parson
         ${CURL_LIBRARY}
-        wldap32 crypt32 ws2_32 winmm bcrypt
+        ${VOLATILEACCESS_LIBRARY}
+        wldap32 crypt32 ws2_32 winmm bcrypt normaliz iphlpapi
     )
 else()
     # Для Linux и других платформ
@@ -298,7 +342,7 @@ add_library(uapki_bundle INTERFACE)
 target_link_libraries(uapki_bundle INTERFACE uapki_full_static)
 # Системные библиотеки для Windows
 if(WIN32)
-    target_link_libraries(uapki_bundle INTERFACE wldap32 crypt32 ws2_32 winmm bcrypt)
+    target_link_libraries(uapki_bundle INTERFACE wldap32 crypt32 ws2_32 winmm bcrypt normaliz iphlpapi)
 endif()
 target_include_directories(uapki_bundle INTERFACE
     ${CMAKE_SOURCE_DIR}/extern/uapki/library/uapkic/include
@@ -319,8 +363,8 @@ target_compile_definitions(uapki_bundle INTERFACE WITH_UAPKI CURL_STATICLIB CURL
 
 # --- Системные бібліотеки ---
 if(WIN32)
-    target_link_libraries(uapki PUBLIC crypt32 ws2_32 bcrypt)
-    target_link_libraries(uapki_bundle INTERFACE crypt32 ws2_32 bcrypt)
+    target_link_libraries(uapki PUBLIC crypt32 ws2_32 bcrypt normaliz iphlpapi)
+    target_link_libraries(uapki_bundle INTERFACE crypt32 ws2_32 bcrypt normaliz iphlpapi)
 endif()
 if(UNIX)
     target_link_libraries(uapki PUBLIC pthread dl)

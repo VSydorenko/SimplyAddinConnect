@@ -231,10 +231,94 @@
 - Сабмодуль повернуто на `main-dev` (`cb39ea9`) — git основного репо чистий; PR-покращення живуть на
   `loadlibraryw-utf8` у форку.
 
-### 10.7. Лишилось (за іншими)
-- Рішення мейнтейнера по консолідації: лишити залежність `cryptoki → loaders` чи перенести спільний
-  `dl-macros.h` у нейтральний `common/`.
-- Прийняття/зауваження PR #26 від specinfo-ua; за потреби — наступний цикл виправлень (тим самим
-  шляхом: правка на `loadlibraryw-utf8` → локальний білд → force-push).
-- Інтеграція покращень PR #26 назад у `main-dev`/`add_UAPKI` — коли/якщо PR приймуть upstream
-  (через звичайний sync `main`→`main-dev`, див. §7 арх-документа).
+### 10.7. Лишилось (за іншими) — **ЗАКРИТО 2026-08-28, див. §11**
+- ~~Рішення мейнтейнера по консолідації~~ → прийнято як є: `cryptoki-loader` тепер інклудить
+  `common/loaders/dl-macros.h`, окремого файлу в `common/cryptoki/` більше немає.
+- ~~Прийняття PR #26~~ → **MERGED 2026-07-26** (`e9bb7fa`).
+- ~~Інтеграція покращень PR #26 назад у `main-dev`~~ → виконано разом із синхронізацією §11.
+
+---
+
+## 11. Ітерація 2026-08-28 — синхронізація з релізом upstream v2.0.16 (виконано)
+
+**Гілка головного репо:** `uapki-sync-v2.0.16` (від `main`). **Сабмодуль:** `main-dev` → `325be0d`.
+
+### 11.1. Обидва PR прийняті в upstream — форк більше не тримає власних правок
+| PR | Гілка форку | Merged | Коміт upstream |
+|---|---|---|---|
+| [#25](https://github.com/specinfo-ua/UAPKI/pull/25) `*_STATIC` export headers | `static-export-headers` | 2026-07-20 | `c64181c` |
+| [#26](https://github.com/specinfo-ua/UAPKI/pull/26) `LoadLibraryW` UTF-8 + консолідація `dl-macros.h` | `loadlibraryw-utf8` | 2026-07-26 | `e9bb7fa` |
+
+Звірено пофайлово: `*_STATIC`-гілки є в усіх трьох export-заголовках, `WIN32_LEAN_AND_MEAN`-guard —
+в `asn_system.h` (upstream переніс його в `library/uapkif/include/`), `dl_load_library_utf8` —
+у `common/loaders/dl-macros.h`, дубля `common/cryptoki/dl-macros.h` немає. Тобто **наші два локальні
+коміти (`f5ca33a`, `cb39ea9`) стали зайвими** — `main` і `main-dev` форку виставлено рівно на
+`upstream/main`; локальної дельти немає (`git rev-list --count upstream/main..main-dev` = 0).
+
+Upstream уже переписав нашу правку далі («Some rewrites on loaders macro»): виклик іде через
+макрос `DL_LOAD_LIBRARY`, який на Windows розкривається в `dl_load_library_utf8`, на Linux/macOS —
+в `dlopen`, для Emscripten — інертна заглушка. Поведінка на Windows та сама.
+
+### 11.2. Що приїхало з upstream (28 комітів, `69053dc` → `325be0d`)
+Реліз **v2.0.16** (тег = `12d8ff2`) + 1 коміт по їхніх build-скриптах. Версії: ядро `uapki` 2.0.16,
+провайдер `cm-pkcs12` 1.0.24, `cm-pkcs11` 1.0.12.
+
+**Функціонального впливу на нас — нуль.** 39 методів JSON-API незмінні (нових `api/*.cpp` не
+додано — лише правки в `verify-csr.cpp`, `cm-storage-proxy.cpp`, `store-json.cpp`, здебільшого
+косметика const-кастів); `process()`/`json_free()`, 7 обов'язкових cm-api символів провайдера,
+поля `cmProviders`/`countCmProviders` — без змін, `UAPKIConnectHelper` правити не довелось.
+Решта — платформи, яких ми не збираємо: Android/JNI, iOS, Emscripten/WASM, Windows ARM64,
+PKCS#11-інтерфейс (узгоджений з «Автор»), SonarCloud-фікси.
+
+### 11.3. Дві поломки збірки й фікси (`CMake/uapki_full_static.cmake`)
+Обидві — від того, що upstream підмінив прибудований `common/curl/builds/windows_*/libcurl.lib`
+на **libcurl 8.21.0**:
+
+1. **`unresolved __imp_if_nametoindex`** → додано `iphlpapi` (і `normaliz` — для паритету з
+   переліком у власному `library/uapki/CMakeLists.txt` upstream) у WIN32-гілки лінковки
+   `uapki` / `uapki_full_static` / `uapki_bundle`.
+2. **`LINK : fatal error LNK1104: не удается открыть файл "volatileaccessu.lib"`** на фінальному
+   лінку головної DLL. Причина: **кожен** об'єктний файл нового libcurl несе
+   `/DEFAULTLIB:volatileaccessu.lib` і посилається на `RtlSetVolatileMemory` — у Windows SDK
+   **10.0.26100+** саме так реалізовано `SecureZeroMemory`. Збірка тут іде проти SDK 10.0.20348
+   (дефолт на Windows Server 2022), де такого файлу немає. Фікс: CMake шукає `volatileaccessu.lib`
+   потрібної арх у **всіх** встановлених Windows Kits, бере найновіший і лінкує повним шляхом;
+   якщо не знайдено — зрозумілий `FATAL_ERROR` замість `LNK1104`. Вимогу «Windows SDK 10.0.26100+
+   для `-WithUAPKI`» додано в `AGENTS.md`.
+
+Діагностика, яка це виявила (варто повторювати при кожній підміні libcurl):
+`dumpbin /DIRECTIVES libcurl.lib` (які `/DEFAULTLIB`) + `dumpbin /SYMBOLS libcurl.lib | findstr UNDEF`.
+
+### 11.4. Результати
+- **Версію піднято `3.0.2` → `3.0.3`** (`VERSION.txt`). Причина не косметична: змінилося
+  крипто-ядро, а версіоновані імена DLL усередині ZIP (`..._3_0_3_122_x64.dll`) — єдиний
+  надійний спосіб не дати 1С підхопити стару компоненту з кешу `ExtCompT` при ручному тесті.
+- **Збірка `build_project.ps1 -WithUAPKI -WithTests`** — ✅ зелена, x86+x64, 0 помилок; ZIP із
+  5 файлів + тестова обробка `.epf` (версія 3.0.3.122).
+- **`run_tests.ps1 x64` = PASS=23, FAIL=0, SKIP=0** — усе, включно з `native_host` **case 5**
+  (L3-крос-валідація на еталонах ПРРО) і всіма 7 сценаріями L1.
+- **`run_tests.ps1 x86` = PASS=22, FAIL=0, SKIP=1** — єдиний SKIP задокументований
+  (`py-provider_info`: 64-бітний системний python не вантажить 32-бітну DLL).
+- Дерево чисте: `tests/data/certs` цього разу **не** зачепило (канонічний неймінг з §9.6 тримається).
+
+### 11.5. Оновлена документація
+- `docs/architecture/uapki.md`: §2.1 — нові системні залежності libcurl + механізм пошуку
+  `volatileaccessu.lib`; §4 — виклик через `DL_LOAD_LIBRARY`, актуальні номери рядків, помітка що це
+  вже upstream-код (PR #26), а не наш патч; §7 — поточний указник (v2.0.16), таблиця прийнятих PR,
+  `main-dev` без власних правок, у чек-лист синхронізації додано пункт про системні залежності
+  прибудованого libcurl.
+- `AGENTS.md` — вимога Windows SDK 10.0.26100+ для `-WithUAPKI`.
+- `.claude/skills/ecp-testing-without-1c` — прибрано застаріле «зелений стан = PASS=17»
+  (число росте з новими драйверами; гейт — exit-код).
+
+### 11.6. Стан репозиторіїв — закрито
+- **Форк `VSydorenko/UAPKI`:** `main` оновлено (`69053dc`→`325be0d`), `main-dev` force-оновлено
+  (`cb39ea9`→`325be0d`). Злиті topic-гілки `static-export-headers` / `loadlibraryw-utf8` GitHub
+  видалив при merge; локальні копії теж прибрано. У форку лишились рівно `main` і `main-dev`.
+- **Головне репо:** гілка `uapki-sync-v2.0.16` запушена, PR у `main` відкрито.
+
+**Лишилось за користувачем:** ручний тест у реальній 1С на оновленому ядрі
+(`INIT` → `countCmProviders:1`) — версія 3.0.3.122 гарантовано не візьметься з кешу.
+
+**Окремою задачею (обговорюється):** другий провайдер `cm-pkcs11` (v1.0.12) — підтримка
+апаратних носіїв КЕП і HSM.
