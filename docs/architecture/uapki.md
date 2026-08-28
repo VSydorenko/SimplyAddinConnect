@@ -90,11 +90,20 @@ DLL, а провайдер `cm-pkcs12` збирається як окрема с
 головної DLL:
 
 - `add_library(uapki STATIC ...)` лінкує `uapkic stacktrace uapkif asn1 ba-utils parson
-  dirent-internal` (`uapki_full_static.cmake:204-226`);
+  dirent-internal` (`uapki_full_static.cmake:208-229`);
 - `add_library(uapki_full_static STATIC ...)` — WIN32-гілка додає системні `wldap32
-  crypt32 ws2_32 winmm bcrypt` (`uapki_full_static.cmake:249-268`);
+  crypt32 ws2_32 winmm bcrypt normaliz iphlpapi` (`uapki_full_static.cmake:296-322`).
+  `normaliz` (IDN-нормалізація) і `iphlpapi` (`if_nametoindex`) потрібні прибудованому
+  libcurl 8.21.0 з upstream v2.0.16 — той самий перелік має і власний
+  `library/uapki/CMakeLists.txt` UAPKI; без них лінк ядра падає з unresolved;
+- **`volatileaccessu.lib`** — прихована залежність того ж libcurl: кожен його об'єктний
+  файл несе `/DEFAULTLIB:volatileaccessu.lib` і посилається на `RtlSetVolatileMemory`
+  (так у Windows SDK 10.0.26100+ реалізовано `SecureZeroMemory`). У старіших SDK файлу
+  немає й фінальний лінк головної DLL падає з `LNK1104`, тому збірка сама шукає його в
+  усіх встановлених Windows Kits і лінкує повним шляхом
+  (`uapki_full_static.cmake:249-286`);
 - `add_library(uapki_bundle INTERFACE)` → `target_link_libraries(uapki_bundle INTERFACE
-  uapki_full_static)` (`uapki_full_static.cmake:289-294`);
+  uapki_full_static)` (`uapki_full_static.cmake:341-346`);
 - підключення до головної цілі: `include(CMake/uapki_full_static.cmake)` +
   `target_link_libraries(${TARGET} PRIVATE uapki_bundle)` під `BUILD_WITH_UAPKI`
   (`CMake/components.cmake:357-359`).
@@ -107,23 +116,23 @@ DLL, а провайдер `cm-pkcs12` збирається як окрема с
 
 Провайдер **не лінкується статично в головну DLL** — це окрема самодостатня SHARED-DLL,
 яка вантажиться ядром у рантаймі через `LoadLibrary` і не має символьних залежностей від
-головної DLL (`uapki_full_static.cmake:130-134`):
+головної DLL (`uapki_full_static.cmake:131-135`):
 
 - `add_library(cm-pkcs12-provider SHARED ...)` (`uapki_full_static.cmake:143`);
 - усередину провайдера лінкуються **статичні** `uapkic uapkif asn1 parson ba-utils
   byte-array stacktrace dirent-internal` плюс системні `bcrypt crypt32 ws2_32`
-  (`uapki_full_static.cmake:167-170`); `curl` навмисно не лінкується — він потрібен лише
+  (`uapki_full_static.cmake:171-175`); `curl` навмисно не лінкується — він потрібен лише
   ядру `uapki`;
 - ім'я виходу несе арх-суфікс: `OUTPUT_NAME "cm-pkcs12_x64"` (64-біт) /
-  `"cm-pkcs12_x86"` (32-біт), вихід у `bin/Release` (`uapki_full_static.cmake:178-183`).
+  `"cm-pkcs12_x86"` (32-біт), вихід у `bin/Release` (`uapki_full_static.cmake:183-191`).
 
 **Чисті експорти.** Провайдер експортує рівно 7 обов'язкових CM-API символів (позначених
 `CM_EXPORT`), для чого зібраний з `CM_LIBRARY`, **без** `CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS`
-і без `.def` — інакше експортувалися б тисячі символів (`uapki_full_static.cmake:171-174`).
+і без `.def` — інакше експортувалися б тисячі символів (`uapki_full_static.cmake:176-178`).
 Мінімальний обов'язковий набір перевіряється при завантаженні в `CmLoader::load`:
 `provider_info`, `provider_init`, `provider_deinit`, `provider_open`, `provider_close`,
-`block_free`, `bytearray_free` (`extern/uapki/library/common/loaders/cm-loader.cpp:77-86`;
-перевірка наявності — `cm-loader.cpp:89-90`). Символи `list_storages` / `storage_info` /
+`block_free`, `bytearray_free` (`extern/uapki/library/common/loaders/cm-loader.cpp:94-103`;
+перевірка наявності — `cm-loader.cpp:106-107`). Символи `list_storages` / `storage_info` /
 `format` — опціональні.
 
 Таким чином `bcrypt` / `crypt32` / `ws2_32` — єдині системні залежності провайдера, а сам
@@ -193,14 +202,20 @@ GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT` та адресою функції
 
 `CmLoader::load` формує ім'я файлу через `getLibName` (`LIBNAME_PREFIX + libName + "." +
 LIBNAME_EXT`; на Windows `LIBNAME_PREFIX=""`, `LIBNAME_EXT="dll"`) і викликає
-`dl_load_library_utf8(lib_name.c_str())` (`cm-loader.cpp:55-74`, рядок 73).
+`DL_LOAD_LIBRARY(lib_name.c_str())` (`cm-loader.cpp:78-116`, рядок 90).
 
-На Windows `dl_load_library_utf8` конвертує UTF-8-шлях у UTF-16 через
-`MultiByteToWideChar(CP_UTF8, ...)` і викликає `LoadLibraryW`
-(`extern/uapki/library/common/loaders/dl-macros.h:47-59`). Це навмисно: шляхи з не-ASCII
-символами (наприклад, кирилицею в `%LOCALAPPDATA%\<Користувач>\...`) обробляються коректно
-незалежно від активної ANSI-кодової сторінки. На Linux/macOS цей символ — макрос-аліас на
-`dlopen` (`dl-macros.h:71`).
+На Windows макрос `DL_LOAD_LIBRARY` розкривається в `dl_load_library_utf8`
+(`extern/uapki/library/common/loaders/dl-macros.h:43`), який конвертує UTF-8-шлях у UTF-16
+через `MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, ...)` і викликає `LoadLibraryW`
+(`dl-macros.h:50-60`). Це навмисно: шляхи з не-ASCII символами (наприклад, кирилицею в
+`%LOCALAPPDATA%\<Користувач>\...`) обробляються коректно незалежно від активної
+ANSI-кодової сторінки. На Linux/macOS той самий макрос — аліас на `dlopen`
+(`dl-macros.h:71`), для Emscripten — інертна заглушка (провайдер там лінкується статично).
+
+Це поведінка **самого upstream**, а не наш патч: правку прийнято в specinfo-ua як
+[PR #26](https://github.com/specinfo-ua/UAPKI/pull/26) (merged 2026-07-26, `e9bb7fa`), і
+цей же `dl-macros.h` тепер обслуговує й лоадер `cm-pkcs11` — дубль
+`common/cryptoki/dl-macros.h` при злитті прибрано.
 
 **Конфіг `cmProviders`.** Коли викликач не задав `cmProviders`, хелпер підставляє типову
 конфігурацію (`UAPKIConnectHelper.cpp:412-427`):
@@ -282,13 +297,24 @@ return RET_OK;
 статично тягне сирці ядра прямо з дерева сабмодуля (`file(GLOB)`), тож власна система збірки
 сабмодуля нам не потрібна.
 
+**Поточний указник** (2026-08-28): `upstream/main` = `325be0d`, тобто реліз **v2.0.16**
+(тег `v2.0.16` = `12d8ff2`) плюс один коміт по їхніх власних build-скриптах. Версії
+компонентів: ядро `uapki` — 2.0.16, провайдер `cm-pkcs12` — 1.0.24.
+
 ### 7.1. Гілки форку
 
 | Гілка | Роль | Base | Указник сабмодуля |
 |---|---|---|---|
 | `main` | **Дзеркало upstream.** Власних правок немає; оновлюється reset/ff до `upstream/main`. | `upstream/main` | ні |
-| `main-dev` | **Гілка розробки/адаптації.** Upstream + наші правки, ще НЕ прийняті в upstream (наразі `*_STATIC` export-заголовки + `LoadLibraryW` UTF-8) + за потреби адаптація складу збірки. | `main` | **так** (`.gitmodules: branch = main-dev`) |
+| `main-dev` | **Гілка розробки/адаптації.** Upstream + наші правки, ще НЕ прийняті в upstream, + за потреби адаптація складу збірки. **Станом на 2026-08-28 власних правок немає** — обидва наші патчі прийняті в upstream, тож `main-dev` == `main`. | `main` | **так** (`.gitmodules: branch = main-dev`) |
 | topic-гілки (напр. `static-export-headers`, `loadlibraryw-utf8`) | **PR у upstream** — по одній атомарній зміні. | `upstream/main` | ні; живуть, доки відкритий відповідний PR (видалення гілки закриває PR) |
+
+**Внесок, прийнятий в upstream** (обидва патчі більше не тримаємо у форку — вони частина ядра):
+
+| PR | Що | Merged | Коміт upstream |
+|---|---|---|---|
+| [#25](https://github.com/specinfo-ua/UAPKI/pull/25) | `*_STATIC`-гілки в export-заголовках `uapkic`/`uapkif`/`uapki` + guard `WIN32_LEAN_AND_MEAN` в `asn_system.h` | 2026-07-20 | `c64181c` |
+| [#26](https://github.com/specinfo-ua/UAPKI/pull/26) | Завантаження CM/UAPKI-провайдерів через `LoadLibraryW` (UTF-8→UTF-16); дубль `common/cryptoki/dl-macros.h` зведено в `common/loaders/dl-macros.h` | 2026-07-26 | `e9bb7fa` |
 
 Указник сабмодуля в гілці головного репо завжди вказує на коміт **`main-dev`**. Правки в сабмодулі
 комітяться **всередині сабмодуля** (не з кореня) — не загубити при `submodule update`.
@@ -302,11 +328,19 @@ return RET_OK;
    історія збережена, адаптацію легко ревʼюити. (Саме тому `main` — чисте дзеркало: щоб такий PR був
    зрозумілим diff'ом «нове ядро vs наші правки».)
 3. Вирішити конфлікти в `main-dev` (наші правки vs оновлене ядро), за потреби адаптувати
-   `CMake/uapki_full_static.cmake` — **особлива увага до ЯВНИХ (не-glob) посилань на сирці**: ядро
-   тягнеться `file(GLOB)`, а ось ціль `cm-pkcs12-provider` перелічує `common/pkix/*.c` поіменно
-   (напр. при оновленні 2026-07 довелось додати `ecdsa-params.c`, який почав викликати `private-key.c`).
+   `CMake/uapki_full_static.cmake`. Два місця, які реально ламаються при оновленні:
+   - **ЯВНІ (не-glob) посилання на сирці**: ядро тягнеться `file(GLOB)`, а ось ціль
+     `cm-pkcs12-provider` перелічує `common/pkix/*.c` поіменно (при оновленні 2026-07 довелось
+     додати `ecdsa-params.c`, який почав викликати `private-key.c`);
+   - **системні залежності прибудованого `libcurl`**: upstream періодично підміняє
+     `common/curl/builds/windows_*/libcurl.lib` новішим бінарником, і той приносить нові
+     `/DEFAULTLIB` та unresolved-символи. При оновленні 2026-08 (curl 8.21.0) додалися
+     `iphlpapi` (`if_nametoindex`) і `volatileaccessu.lib` з Windows SDK 10.0.26100+
+     (`RtlSetVolatileMemory` — саме так у новому SDK реалізовано `SecureZeroMemory`).
+     Швидка діагностика: `dumpbin /DIRECTIVES` і `dumpbin /SYMBOLS | findstr UNDEF` по
+     новому `libcurl.lib`, звірка з переліком у власному `library/uapki/CMakeLists.txt` upstream.
 4. Оновити указник сабмодуля в гілці головного репо; `build_project.ps1 -WithUAPKI -WithTests` +
-   `run_tests` мають лишатись зеленими (PASS=17). Ручний тест у 1С (`INIT` → `countCmProviders:1`).
+   `run_tests` мають лишатись зеленими. Ручний тест у 1С (`INIT` → `countCmProviders:1`).
 
 ### 7.3. Додавання функціоналу, що зачіпає UAPKI, і внесок назад в upstream
 

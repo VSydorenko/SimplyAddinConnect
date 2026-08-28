@@ -186,8 +186,10 @@ powershell -ExecutionPolicy Bypass -File run_tests.ps1 [x64|x86]
   `cmake -S <root> -B build_<arch> -A <platform> -DBUILD_WITH_UAPKI=ON -DBUILD_TESTS=ON`.
 - `tests/data` — read-only вхід; сценарії пишуть лише в тимчасовий каталог.
 
-Зелений стан на дату фіксації фактів — `PASS=17` (L0 dumpbin ×4, L1 селфтест ×7,
-L2/L3 native_host ×5, плюс build-етап), FAIL/SKIP=0.
+Зелений стан крипто-рівнів — L0 dumpbin-інваріанти, всі 7 сценаріїв L1 і 5 кейсів
+L2/L3 `native_host` у PASS. Конкретне число PASS у підсумковій таблиці НЕ фіксоване:
+`run_tests.ps1` ганяє ще й некрипто-рівні (ядро, device-core, ECR, LabelPrinter), і їх
+кількість росте з новими драйверами — гейт дивиться на exit-код, а не на число.
 
 ## Типові пастки
 

@@ -31,7 +31,9 @@
 
 ## Збірка
 
-Вимоги: **Visual Studio 2022** (C++ desktop), **CMake ≥ 3.16**, ініціалізовані сабмодулі:
+Вимоги: **Visual Studio 2022** (C++ desktop), **CMake ≥ 3.16**, ініціалізовані сабмодулі.
+Для `-WithUAPKI` додатково потрібен **Windows SDK 10.0.26100+** (прибудований libcurl у UAPKI
+посилається на `volatileaccessu.lib`, якого немає в старіших SDK — див. `docs/architecture/uapki.md` §7.2):
 ```powershell
 git submodule update --init --recursive
 ```
