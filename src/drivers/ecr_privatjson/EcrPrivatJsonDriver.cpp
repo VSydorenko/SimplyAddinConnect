@@ -368,6 +368,17 @@ ResultEnvelope EcrPrivatJsonDriver::Refund(const std::string& amount, const std:
     return Execute("Refund", p, kOperationTimeoutMs);
 }
 
+ResultEnvelope EcrPrivatJsonDriver::Audit(const std::string& merchantId) {
+    // §5.17: X-звіт (підсумки БЕЗ вилучення) — {merchantId}; відповідь {receipt}.
+    return Execute("Audit", {{"merchantId", merchantId}}, kOperationTimeoutMs);
+}
+
+ResultEnvelope EcrPrivatJsonDriver::Verify(const std::string& merchantId) {
+    // §5.18: Звірка (Загальний звіт) — підсумки на хост для звірки; йде до хоста,
+    // тож таймаут операційний, як у Purchase.
+    return Execute("Verify", {{"merchantId", merchantId}}, kOperationTimeoutMs);
+}
+
 ResultEnvelope EcrPrivatJsonDriver::CheckConnection() {
     return Execute("CheckConnection", nlohmann::json::object(), kHandshakeTimeoutMs);
 }

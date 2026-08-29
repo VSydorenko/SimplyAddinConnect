@@ -165,6 +165,7 @@ Poller зберігає останній код у `lastStatus_` (атомік, 
 
 `Execute(method, params, timeoutMs)` → `ExecuteInternal`. Реалізовані:
 `Purchase(amount)`, `Refund(amount, rrn)`, `CheckConnection()`, `GetReceiptInfo(invoiceNumber)`,
+`Audit(merchantId="0")` (X-звіт, §5.17), `Verify(merchantId="0")` (Звірка/Загальний звіт, §5.18),
 плюс `Execute("GetTerminalInfo", …)`.
 
 **Обов'язкові поля params оплати/повернення** (`FillPaymentDefaults`, спека §5.1.1/§5.2.1):

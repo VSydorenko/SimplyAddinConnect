@@ -291,6 +291,55 @@ static void TestDriverStrictTerminalParams() {
     emu.Stop();
 }
 
+// ---- Звіти для звірки з обліковою системою: Audit (X-баланс) і Verify (Звірка/Z) ----
+// Спека §5.17/§5.18: обидва запити — {merchantId}; відповідь — {receipt, responseCode}.
+static void TestDriverReports() {
+    TerminalEmulator emu;
+    emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","step":0,"params":{"responseCode":"0000"},"error":false,"errorDescription":""})"; });
+    emu.OnRequest("ServiceMessage", [](const nlohmann::json& q)->std::string{
+        auto mt = q.contains("params") ? q["params"].value("msgType","") : std::string{};
+        if (mt == "identify") return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"NEWLAND","model":"N950"},"error":false})";
+        if (mt == "getLastStatMsgCode") return R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":"0"},"error":false})";
+        return "";
+    });
+    // Ехо merchantId у відповідь — щоб перевірити і дефолт "0", і явне значення.
+    auto report = [](const nlohmann::json& q, const char* method) -> std::string {
+        auto p = q.value("params", nlohmann::json::object());
+        if (!p.contains("merchantId"))
+            return std::string(R"({"method":")") + method + R"(","step":0,"params":{"responseCode":"1000"},"error":true,"errorDescription":"Введіть merchantId"})";
+        nlohmann::json r = {
+            {"method", method}, {"step", 0},
+            {"params", {{"receipt", std::string("[ ") + method + " OK ]"},
+                        {"merchantId", p["merchantId"]},
+                        {"responseCode", "0000"}}},
+            {"error", false}, {"errorDescription", ""}
+        };
+        return r.dump();
+    };
+    emu.OnRequest("Audit",  [&](const nlohmann::json& q){ return report(q, "Audit");  });
+    emu.OnRequest("Verify", [&](const nlohmann::json& q){ return report(q, "Verify"); });
+    CHECK(emu.Start(), "Reports: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "Reports: Connect");
+
+    auto x = drv.Audit();
+    CHECK(x.ok && x.code == "0000" && x.payload["merchantId"] == "0"
+              && x.payload["receipt"] == "[ Audit OK ]",
+          "Audit (X-звіт) → ok, merchantId дефолт 0, receipt");
+
+    auto x2 = drv.Audit("2");
+    CHECK(x2.ok && x2.payload["merchantId"] == "2", "Audit з явним merchantId");
+
+    auto v = drv.Verify();
+    CHECK(v.ok && v.code == "0000" && v.payload["merchantId"] == "0"
+              && v.payload["receipt"] == "[ Verify OK ]",
+          "Verify (Звірка) → ok, merchantId дефолт 0, receipt");
+
+    drv.Disconnect();
+    emu.Stop();
+}
+
 static void TestDriverStatusPoll() {
     TerminalEmulator emu;
     emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","params":{"responseCode":"0000"},"error":false})"; });
@@ -490,6 +539,7 @@ int main() {
     TestJobEngine();
     TestDriverPurchaseHappy();
     TestDriverStrictTerminalParams();
+    TestDriverReports();
     TestDriverStatusPoll();
     TestDriverInterrupt();
     TestDriverAsync();

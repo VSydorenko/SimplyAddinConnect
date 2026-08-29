@@ -61,6 +61,10 @@ public:
     ResultEnvelope Refund(const std::string& amount, const std::string& rrn, const nlohmann::json& extra = {});
     ResultEnvelope CheckConnection();
     ResultEnvelope GetReceiptInfo(const std::string& invoiceNumber);
+    /// X-звіт (спека §5.17 "Audit. Він же X-balance") — підсумки без вилучення.
+    ResultEnvelope Audit(const std::string& merchantId = "0");
+    /// Звірка / Загальний звіт (спека §5.18 "Verify") — звірка підсумків із хостом.
+    ResultEnvelope Verify(const std::string& merchantId = "0");
 
     /// Останній прочитаний getLastStatMsgCode (-1, якщо ще не було).
     int LastStatus() const;
