@@ -165,7 +165,16 @@ Poller зберігає останній код у `lastStatus_` (атомік, 
 
 `Execute(method, params, timeoutMs)` → `ExecuteInternal`. Реалізовані:
 `Purchase(amount)`, `Refund(amount, rrn)`, `CheckConnection()`, `GetReceiptInfo(invoiceNumber)`,
-плюс `Execute("GetTerminalInfo", …)`. Кожна: скид прапорців скасування (у **викликача**, не в
+плюс `Execute("GetTerminalInfo", …)`.
+
+**Обов'язкові поля params оплати/повернення** (`FillPaymentDefaults`, спека §5.1.1/§5.2.1):
+`Purchase`/`StartPurchase` і `Refund`/`StartRefund` перед відправленням дозаповнюють
+`discount:""`, `merchantId:"0"`, а Purchase — ще `facepay:"false"`. Реальний термінал
+(Newland N950, інцидент 2026-08-29) без цих полів відбиває запит кодом `1000`
+«Введіть discount» — еталонна каса ПриватБанк шле їх завжди. Дефолти не перетирають
+значення, передані через `extra`; `subMerchant` свідомо НЕ додається (спека дозволяє
+поле лише після реєстрації субмерчанта в банку). Регрес-тест — строгий емулятор у
+`TestDriverStrictTerminalParams` (`ecr_privatjson_selftest`). Кожна: скид прапорців скасування (у **викликача**, не в
 worker — інакше cancel одразу після Start губиться) → `job_.ResetToIdle()` → `ExecuteInternal`:
 перевірка `IsConnected` → підняти poller (RAII) → `GateSend` → `RequestPrimary` → мапінг у
 `ResultEnvelope`.
