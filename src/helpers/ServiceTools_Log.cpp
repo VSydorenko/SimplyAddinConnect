@@ -79,17 +79,37 @@ static spdlog::level::level_enum ConvertLogLevel(LogLevel level) {
  * @param componentName Название компонента
  * @return std::shared_ptr<spdlog::logger> Указатель на логгер компонента или дефолтный логгер
  */
-// Fallback-логер до першого EnableLogging: OutputDebugString (видно в DebugView/
-// відладчику), рівень warn — щоб діагностика старту DLL не губилась мовчки.
+// Fallback-логер до першого EnableLogging: OutputDebugString, рівень warn — щоб
+// діагностика старту DLL не губилась мовчки. msvc_sink_mt(false): БЕЗ перевірки
+// IsDebuggerPresent — інакше DebugView (який читає буфер DBWIN, але відладчиком
+// не є) не бачив жодного рядка, і зібрати діагностику без Visual Studio було
+// неможливо (інцидент 2026-08-29).
 static std::shared_ptr<spdlog::logger> GetFallbackLogger() {
     static std::shared_ptr<spdlog::logger> fallback = [] {
-        auto sink = std::make_shared<spdlog::sinks::msvc_sink_mt>();
+        auto sink = std::make_shared<spdlog::sinks::msvc_sink_mt>(false);
         auto logger = std::make_shared<spdlog::logger>("SimplyAddinConnect", sink);
         logger->set_level(spdlog::level::warn);
         logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%n] [%l] %v");
         return logger;
     }();
     return fallback;
+}
+
+// Прив'язує логер "General" до sink'ів логера-донора (спільний файл, той самий
+// рівень). "General" — канал NEUTRAL_REPORT_* (транспорти, драйвери, статичні
+// методи): окремо він ніде не реєструється, тож без прив'язки вся діагностика
+// Connect/TransportTCP ішла у fallback і НЕ потрапляла у файл, увімкнений через
+// ИспользоватьЛогирование. Семантика: останній EnableLogging виграє.
+// Викликати ЛИШЕ під loggersMutex. Логер створюємо вручну (НЕ через фабрику
+// spdlog) — щоб ім'я "General" не потрапляло в глобальний реєстр spdlog і не
+// конфліктувало при повторних прив'язках.
+static void BindGeneralToLocked(const std::shared_ptr<spdlog::logger>& donor) {
+    auto general = std::make_shared<spdlog::logger>(
+        "General", donor->sinks().begin(), donor->sinks().end());
+    general->set_level(donor->level());
+    // info+ — одразу на диск (див. коментар у InitLogging)
+    general->flush_on(spdlog::level::info);
+    loggers["General"] = general;
 }
 
 static std::shared_ptr<spdlog::logger> GetLogger(const std::string& componentName) {
@@ -128,9 +148,11 @@ bool InitLogging(const std::string& componentName, LogLevel level, const std::st
             componentLogSettings[componentName] = settings;
             
             // Логируем информацию об обновлении уровня логирования
-            it->second->info("Уровень логирования обновлен для компонента {}, новый уровень: {}, путь: {}", 
+            it->second->info("Уровень логирования обновлен для компонента {}, новый уровень: {}, путь: {}",
                           componentName, static_cast<int>(level), filePath);
-            
+
+            // Оновлюємо прив'язку neutral-каналу "General" (рівень міг змінитись)
+            BindGeneralToLocked(it->second);
             return true;
         }
         
@@ -144,7 +166,14 @@ bool InitLogging(const std::string& componentName, LogLevel level, const std::st
         
         // Устанавливаем уровень логирования
         logger->set_level(ConvertLogLevel(level));
-        
+
+        // info+ (Connect/Disconnect/помилки) — скидати на диск ОДРАЗУ: інакше хвіст
+        // лога сидить у буфері spdlog, і файл, скопійований при живому процесі 1С,
+        // бреше про останні події (інцидент 2026-08-29 — «Отключить без сліду»).
+        // trace/debug (wire-дамп, байти) лишаються буферизованими до наступного
+        // info+ або Shutdown — спільний sink скидає їх разом.
+        logger->flush_on(spdlog::level::info);
+
         // Настраиваем форматирование сообщений
         logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%n] [%l] %v");
         
@@ -156,9 +185,11 @@ bool InitLogging(const std::string& componentName, LogLevel level, const std::st
         componentLogSettings[componentName] = settings;
         
         // Логируем информацию об инициализации логирования
-        logger->info("Логирование инициализировано для компонента {}, уровень: {}, путь: {}", 
+        logger->info("Логирование инициализировано для компонента {}, уровень: {}, путь: {}",
                   componentName, static_cast<int>(level), filePath);
-        
+
+        // Neutral-репорти (NEUTRAL_REPORT_*) — у той самий файл
+        BindGeneralToLocked(logger);
         return true;
     }
     catch (const spdlog::spdlog_ex& ex) {
@@ -194,6 +225,19 @@ void ShutdownLogging(const std::string& componentName) {
             auto settingsIt = componentLogSettings.find(componentName);
             if (settingsIt != componentLogSettings.end()) {
                 componentLogSettings.erase(settingsIt);
+            }
+
+            // "General" міг ділити sink із логером, що закривається: переприв'язуємо
+            // до будь-якого живого компонентного логера, а якщо їх не лишилось —
+            // прибираємо (інакше він тримав би файл відкритим після Shutdown).
+            std::shared_ptr<spdlog::logger> donor;
+            for (const auto& kv : loggers) {
+                if (kv.first != "General") { donor = kv.second; break; }
+            }
+            if (donor) {
+                BindGeneralToLocked(donor);
+            } else {
+                loggers.erase("General");
             }
         }
         catch (...) {

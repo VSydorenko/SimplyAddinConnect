@@ -333,6 +333,25 @@ Init → setMemManager → GetInfo → робота → Done
 __func__, ...)`. Є два перевантаження `NeutralReportImpl` — з тегом і без
 (`ServiceTools.h:367-368`); якщо тег не вказано, використовується `"General"`.
 
+**Neutral-канал прив'язано до файлового лога.** Логер `"General"` окремо ніде не
+реєструється, тож раніше ВСІ `NEUTRAL_REPORT_*` (транспорти, драйвери, статичні
+методи) йшли лише у fallback і не потрапляли у файл, увімкнений через
+`ИспользоватьЛогирование`, — діагностика `Connect`/`TransportTCP` була невидимою
+з 1С (інцидент 2026-08-29). Тепер `InitLogging` після створення/оновлення
+файлового логера компоненти викликає `BindGeneralToLocked(logger)`
+(`ServiceTools_Log.cpp`): `"General"` отримує ті самі sink'и й рівень (семантика
+«останній `EnableLogging` виграє»; логер створюється вручну, повз глобальний
+реєстр spdlog). `ShutdownLogging` переприв'язує `"General"` до будь-якого живого
+компонентного логера, а якщо їх не лишилось — прибирає (інакше він тримав би
+файл відкритим). Регрес-тест — `TestNeutralReportReachesFile` (`core_selftest`).
+
+**Живий flush.** Файлові логери створюються з `flush_on(spdlog::level::info)`
+(і `"General"` теж): рядки info+ (Connect/Disconnect/помилки) лягають на диск
+одразу, а trace/debug (wire-дамп) буферизуються до наступного info+ або
+`ShutdownLogging` — спільний sink скидає їх разом. Без цього лог, скопійований
+при живому процесі 1С, обривався посеред рядка й «губив» останні події
+(інцидент 2026-08-29 №2). Регрес-тест — `TestInfoFlushedWithoutShutdown`.
+
 `ReportComponentEvent(component, level, methodName, message)` (декларація
 `ServiceTools.h:365`): якщо `level == "error"`, викликає `AddComponentError`;
 інакше перевіряє `IsComponentLoggingEnabled` і за потреби `AddComponentLog`.
@@ -470,9 +489,12 @@ bool PostExternalEvent(const std::u16string& message, const std::u16string& data
   усікало його (UB на x64). При `*pInterface != nullptr` — одразу `0` (відмова
   створювати поверх наявного).
 - **Fallback-sink логера.** До першого `EnableLogging` `GetLogger`
-  (`ServiceTools_Log.cpp:104`) повертає не «порожній» `spdlog::default_logger`, а
-  `GetFallbackLogger()` (`:84`) — `msvc_sink_mt` (OutputDebugString, видно в
-  DebugView/відладчику), рівень `warn`: рання діагностика старту DLL не губиться.
+  (`ServiceTools_Log.cpp`) повертає не «порожній» `spdlog::default_logger`, а
+  `GetFallbackLogger()` — `msvc_sink_mt(false)` (OutputDebugString), рівень
+  `warn`: рання діагностика старту DLL не губиться. Аргумент `false` вимикає
+  перевірку `IsDebuggerPresent`: DebugView читає буфер DBWIN, але відладчиком не
+  є, тож із дефолтним `check_debugger_present=true` він не бачив ЖОДНОГО рядка
+  (інцидент 2026-08-29 — діагностику без Visual Studio зібрати було неможливо).
 
 ### 6.7. Захист індексів методів/властивостей
 
