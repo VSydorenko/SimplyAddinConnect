@@ -8,6 +8,7 @@
 #include <cstring>
 #include <atomic>
 #include <chrono>
+#include <fstream>
 #include <future>
 #include <string>
 #include <thread>
@@ -217,6 +218,56 @@ static void TestReInitLoggingAfterShutdown() {
     ServiceTools::ShutdownLogging("ReInitProbe");
 }
 
+// ---- Neutral-репорти (транспорти/драйвери) мають потрапляти у файловий лог ----
+// До фіксу NEUTRAL_REPORT_* писали в логер "General", який ніде не реєструвався:
+// уся діагностика Connect/TransportTCP ішла у fallback (OutputDebugString) і НЕ
+// досягала файлу, увімкненого через ИспользоватьЛогирование, — з 1С неможливо
+// було зрозуміти, чому Подключить() повернув Ложь (інцидент 2026-08-29).
+static void TestNeutralReportReachesFile() {
+    const char* tempDir = std::getenv("TEMP");
+    std::string path = std::string(tempDir ? tempDir : ".") + "\\core_selftest_neutral.log";
+    std::remove(path.c_str());
+    CHECK(ServiceTools::InitLogging("NeutralProbe", ServiceTools::LogLevel::Trace, path),
+          "InitLogging(NeutralProbe)");
+    NEUTRAL_REPORT_INFO("TransportTCP", "NEUTRAL-MARKER-7501");
+    ServiceTools::ShutdownLogging("NeutralProbe");
+
+    std::ifstream f(path, std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    f.close();
+    CHECK(content.find("NEUTRAL-MARKER-7501") != std::string::npos,
+          "neutral report lands in component log file");
+
+    // Після Shutdown спільний sink звільнено: повторний InitLogging того ж файлу
+    // працює, а neutral-репорт без жодного активного логера не падає (fallback).
+    NEUTRAL_REPORT_INFO("TransportTCP", "після shutdown — у fallback");
+    CHECK(ServiceTools::InitLogging("NeutralProbe", ServiceTools::LogLevel::Info, path),
+          "re-InitLogging after shutdown");
+    ServiceTools::ShutdownLogging("NeutralProbe");
+}
+
+// ---- info+ скидається на диск ОДРАЗУ, без Shutdown (інцидент 2026-08-29 №2) ----
+// Користувач копіював лог при живому процесі 1С: файл обривався посеред рядка, а
+// записи Disconnect сиділи в буфері spdlog — «останній» лог брехав про стан.
+// Вимога: рядок рівня info+ (Connect/Disconnect/помилки) видно у файлі одразу
+// після повернення з логуючого виклику; trace/debug можуть лишатись у буфері.
+static void TestInfoFlushedWithoutShutdown() {
+    const char* tempDir = std::getenv("TEMP");
+    std::string path = std::string(tempDir ? tempDir : ".") + "\\core_selftest_flush.log";
+    std::remove(path.c_str());
+    CHECK(ServiceTools::InitLogging("FlushProbe", ServiceTools::LogLevel::Trace, path),
+          "InitLogging(FlushProbe)");
+    NEUTRAL_REPORT_INFO("ECRPrivatJSON", "FLUSH-MARKER-7502");
+
+    // Читаємо файл, поки логер ЖИВИЙ (без Shutdown/flush) — як користувач копіює лог.
+    std::ifstream f(path, std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    f.close();
+    CHECK(content.find("FLUSH-MARKER-7502") != std::string::npos,
+          "info-line hits disk immediately (no shutdown)");
+    ServiceTools::ShutdownLogging("FlushProbe");
+}
+
 // ---- Спільний EnableLogging/ИспользоватьЛогирование у базі ----
 static void TestBaseEnableLogging() {
     // CoreProbe зареєстрована в TestSmokeLifecycle і нічого сама не реєструє —
@@ -363,6 +414,8 @@ int main() {
     TestRegisterComponentMacro();
     TestShutdownLoggingNoDeadlock();
     TestReInitLoggingAfterShutdown();
+    TestNeutralReportReachesFile();
+    TestInfoFlushedWithoutShutdown();
     TestBaseEnableLogging();
     TestParamValidation();
     TestIndexHardening();

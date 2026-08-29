@@ -56,6 +56,9 @@ int main(int argc, char** argv) {
     });
     emu.OnRequest("Refund", [](const nlohmann::json&){ return R"({"method":"Refund","step":0,"params":{"responseCode":"0000","invoiceNumber":"1002"},"error":false,"errorDescription":""})"; });
     emu.OnRequest("GetReceiptInfo", [](const nlohmann::json&){ return R"({"method":"GetReceiptInfo","step":0,"params":{"responseCode":"0000","invoiceNumber":"1001","txnType":"1","trnStatus":"1"},"error":false,"errorDescription":""})"; });
+    // Звіти (спека §5.17/§5.18): X-звіт і Звірка — receipt як у реального термінала.
+    emu.OnRequest("Audit",  [](const nlohmann::json&){ return R"({"method":"Audit","step":0,"params":{"receipt":"[ X БАЛАНС ] ТЕРМ. EMU00001 Загальні підсумки: 0.00 ГРН","responseCode":"0000"},"error":false,"errorDescription":""})"; });
+    emu.OnRequest("Verify", [](const nlohmann::json&){ return R"({"method":"Verify","step":0,"params":{"receipt":"[ Z БАЛАНС ] ТЕРМ. EMU00001 ПІДСУМКИ ВИЛУЧЕНІ","responseCode":"0000"},"error":false,"errorDescription":""})"; });
 
     if (!emu.Start(port)) { std::printf("Не вдалося зайняти порт %d\n", port); return 1; }
     std::printf("ECR terminal emulator слухає 127.0.0.1:%d — Ctrl-C для виходу\n", emu.Port());

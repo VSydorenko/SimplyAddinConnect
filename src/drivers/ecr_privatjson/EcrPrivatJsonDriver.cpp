@@ -13,6 +13,17 @@
 namespace {
 constexpr int kHandshakeTimeoutMs = 5000;   // Ping/Identify — з запасом (Verifone 3-5с)
 constexpr int kPostPingPauseMs    = 1000;   // пауза 1с після Ping (спека §3.4)
+
+// Обов'язковий склад params оплати/повернення (спека §5.1.1/§5.2.1): реальні
+// термінали (Newland N950, інцидент 2026-08-29) без discount/merchantId відбивають
+// запит кодом 1000 "Введіть discount" — еталонна каса ПриватБанк ці поля шле завжди.
+// Дефолти НЕ перетирають значення, передані викликачем через extra. subMerchant
+// свідомо НЕ додаємо: спека дозволяє поле лише після реєстрації субмерчанта в банку.
+void FillPaymentDefaults(nlohmann::json& p, bool withFacepay) {
+    if (!p.contains("discount"))   p["discount"] = "";
+    if (!p.contains("merchantId")) p["merchantId"] = "0";
+    if (withFacepay && !p.contains("facepay")) p["facepay"] = "false";
+}
 }
 
 EcrPrivatJsonDriver::EcrPrivatJsonDriver() = default;
@@ -148,11 +159,13 @@ bool EcrPrivatJsonDriver::StartOperation(const std::string& method, const nlohma
 
 bool EcrPrivatJsonDriver::StartPurchase(const std::string& amount, const nlohmann::json& extra) {
     nlohmann::json p = extra.is_object() ? extra : nlohmann::json::object(); p["amount"] = amount;
+    FillPaymentDefaults(p, /*withFacepay=*/true);
     return StartOperation("Purchase", p, kOperationTimeoutMs);
 }
 
 bool EcrPrivatJsonDriver::StartRefund(const std::string& amount, const std::string& rrn, const nlohmann::json& extra) {
     nlohmann::json p = extra.is_object() ? extra : nlohmann::json::object(); p["amount"] = amount; p["rrn"] = rrn;
+    FillPaymentDefaults(p, /*withFacepay=*/false);
     return StartOperation("Refund", p, kOperationTimeoutMs);
 }
 
@@ -162,7 +175,15 @@ void EcrPrivatJsonDriver::CancelOperation() { RequestInterrupt(); job_.RequestCa
 
 void EcrPrivatJsonDriver::Disconnect() {
     job_.Join();   // дочекатись worker, щоб не рвати сесію під активним запитом
-    if (session_) { session_->Stop(); session_.reset(); }
+    if (session_) {
+        session_->Stop();
+        session_.reset();
+        NEUTRAL_REPORT_INFO("ECRPrivatJSON", "Disconnect: сесію закрито");
+    } else {
+        // Повторний Отключить без активної сесії — легальний no-op; пишемо в лог,
+        // щоб «нічого не сталося на терміналі» не виглядало як збій (2026-08-29).
+        NEUTRAL_REPORT_INFO("ECRPrivatJSON", "Disconnect: сесії немає (вже відключено) — no-op");
+    }
 }
 
 bool EcrPrivatJsonDriver::IsConnected() const { return session_ && session_->IsConnected(); }
@@ -336,13 +357,26 @@ ResultEnvelope EcrPrivatJsonDriver::RecoverAfterDesync() {
 ResultEnvelope EcrPrivatJsonDriver::Purchase(const std::string& amount, const nlohmann::json& extra) {
     nlohmann::json p = extra.is_object() ? extra : nlohmann::json::object();
     p["amount"] = amount;
+    FillPaymentDefaults(p, /*withFacepay=*/true);
     return Execute("Purchase", p, kOperationTimeoutMs);
 }
 
 ResultEnvelope EcrPrivatJsonDriver::Refund(const std::string& amount, const std::string& rrn, const nlohmann::json& extra) {
     nlohmann::json p = extra.is_object() ? extra : nlohmann::json::object();
     p["amount"] = amount; p["rrn"] = rrn;
+    FillPaymentDefaults(p, /*withFacepay=*/false);
     return Execute("Refund", p, kOperationTimeoutMs);
+}
+
+ResultEnvelope EcrPrivatJsonDriver::Audit(const std::string& merchantId) {
+    // §5.17: X-звіт (підсумки БЕЗ вилучення) — {merchantId}; відповідь {receipt}.
+    return Execute("Audit", {{"merchantId", merchantId}}, kOperationTimeoutMs);
+}
+
+ResultEnvelope EcrPrivatJsonDriver::Verify(const std::string& merchantId) {
+    // §5.18: Звірка (Загальний звіт) — підсумки на хост для звірки; йде до хоста,
+    // тож таймаут операційний, як у Purchase.
+    return Execute("Verify", {{"merchantId", merchantId}}, kOperationTimeoutMs);
 }
 
 ResultEnvelope EcrPrivatJsonDriver::CheckConnection() {

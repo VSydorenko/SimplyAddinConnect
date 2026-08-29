@@ -84,6 +84,22 @@ void AddinECRPrivatJSON::RegisterMethods() {
         },
         std::vector<ParamSpec>{ ParamSpec{ u"invoiceNumber", u"НомерЧека", true, {} } });
 
+    // --- Звіти для звірки з обліковою системою (спека §5.17/§5.18) -----------
+    // merchantId необов'язковий (дефолт "0" — усі мерчанти за замовчуванням).
+    AddFunction(u"Audit", u"ХОтчет",
+        [this, runSync](VH merchantId) {
+            try { runSync(driver_.Audit(static_cast<std::string>(merchantId))); }
+            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка ХОтчет: ") + e.what()); runSync(ResultEnvelope::Fail("EXCEPTION", e.what())); }
+        },
+        std::vector<ParamSpec>{ ParamSpec{ u"merchantId", u"ИндексМерчанта", false, DefaultHelper(u"0") } });
+
+    AddFunction(u"Verify", u"Сверка",
+        [this, runSync](VH merchantId) {
+            try { runSync(driver_.Verify(static_cast<std::string>(merchantId))); }
+            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка Сверка: ") + e.what()); runSync(ResultEnvelope::Fail("EXCEPTION", e.what())); }
+        },
+        std::vector<ParamSpec>{ ParamSpec{ u"merchantId", u"ИндексМерчанта", false, DefaultHelper(u"0") } });
+
     // --- Асинхронні операції ------------------------------------------------
     AddFunction(u"StartPurchase", u"НачатьОплату",
         Ret([this](VH amount) -> bool {

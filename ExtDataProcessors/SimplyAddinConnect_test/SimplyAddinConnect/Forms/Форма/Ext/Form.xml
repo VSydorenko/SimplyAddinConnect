@@ -605,6 +605,16 @@
 							<CommandName>Form.Command.ВключитьСобытияECR</CommandName>
 							<ExtendedTooltip name="КнопкаВключитьСобытияECRTooltip" id="251"/>
 						</Button>
+						<Button name="КнопкаХОтчетECR" id="252">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ХОтчетECR</CommandName>
+							<ExtendedTooltip name="КнопкаХОтчетECRTooltip" id="253"/>
+						</Button>
+						<Button name="КнопкаСверкаECR" id="254">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.СверкаECR</CommandName>
+							<ExtendedTooltip name="КнопкаСверкаECRTooltip" id="255"/>
+						</Button>
 					</ChildItems>
 				</UsualGroup>
 			</ChildItems>
@@ -1219,6 +1229,26 @@
 				</v8:item>
 			</Title>
 			<Action>ПолучитьЧекECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ХОтчетECR" id="353">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Х-звіт (Audit)</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ХОтчетECR</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="СверкаECR" id="354">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Звірка (Verify)</v8:content>
+				</v8:item>
+			</Title>
+			<Action>СверкаECR</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
 		</Command>
 		<Command name="НачатьОплатуECR" id="21">

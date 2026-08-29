@@ -241,6 +241,105 @@ static void TestDriverPurchaseHappy() {
     emu.Stop();
 }
 
+// ---- Реальний термінал строгий до складу params (інцидент 2026-08-29, Newland N950) ----
+// Перша оплата на реальному N950 → {"code":"1000","description":"Введіть discount"}:
+// драйвер слав лише amount. Спека §5.1.1: запит Purchase містить amount+discount+
+// merchantId+facepay; §5.2.1: Refund — amount+discount+merchantId+rrn. subMerchant
+// дозволено слати ЛИШЕ після реєстрації субмерчанта в банку — за замовчуванням
+// поля НЕ має бути. Емулятор тут валідує запит так само строго, як термінал.
+static void TestDriverStrictTerminalParams() {
+    TerminalEmulator emu;
+    emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","step":0,"params":{"responseCode":"0000"},"error":false,"errorDescription":""})"; });
+    emu.OnRequest("ServiceMessage", [](const nlohmann::json& q)->std::string{
+        auto mt = q.contains("params") ? q["params"].value("msgType","") : std::string{};
+        if (mt == "identify") return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"NEWLAND","model":"N950"},"error":false})";
+        if (mt == "getLastStatMsgCode") return R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":"0"},"error":false})";
+        return "";
+    });
+    // Строга перевірка як у прошивці N950: бракує поля → responseCode 1000.
+    auto strict = [](const nlohmann::json& q, const char* method, bool needFacepay, bool needRrn) -> std::string {
+        auto p = q.value("params", nlohmann::json::object());
+        auto reject = [&](const std::string& what) {
+            return std::string(R"({"method":")") + method +
+                   R"(","step":0,"params":{"responseCode":"1000"},"error":true,"errorDescription":"Введіть )" + what + R"("})";
+        };
+        if (!p.contains("amount"))      return reject("amount");
+        if (!p.contains("discount"))    return reject("discount");
+        if (!p.contains("merchantId"))  return reject("merchantId");
+        if (needFacepay && !p.contains("facepay")) return reject("facepay");
+        if (needRrn && !p.contains("rrn"))         return reject("rrn");
+        if (p.contains("subMerchant"))  return reject("subMerchant НЕ дозволено без реєстрації");
+        return std::string(R"({"method":")") + method +
+               R"(","step":0,"params":{"responseCode":"0000","invoiceNumber":"42"},"error":false,"errorDescription":""})";
+    };
+    emu.OnRequest("Purchase", [&](const nlohmann::json& q){ return strict(q, "Purchase", /*facepay*/true,  /*rrn*/false); });
+    emu.OnRequest("Refund",   [&](const nlohmann::json& q){ return strict(q, "Refund",   /*facepay*/false, /*rrn*/true);  });
+    CHECK(emu.Start(), "StrictParams: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "StrictParams: Connect");
+
+    auto pr = drv.Purchase("1.00");
+    CHECK(pr.ok && pr.code == "0000",
+          "Purchase проти строгого термінала → ok (дефолти discount/merchantId/facepay)");
+
+    auto rf = drv.Refund("1.00", "123456");
+    CHECK(rf.ok && rf.code == "0000",
+          "Refund проти строгого термінала → ok (дефолти discount/merchantId)");
+
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// ---- Звіти для звірки з обліковою системою: Audit (X-баланс) і Verify (Звірка/Z) ----
+// Спека §5.17/§5.18: обидва запити — {merchantId}; відповідь — {receipt, responseCode}.
+static void TestDriverReports() {
+    TerminalEmulator emu;
+    emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","step":0,"params":{"responseCode":"0000"},"error":false,"errorDescription":""})"; });
+    emu.OnRequest("ServiceMessage", [](const nlohmann::json& q)->std::string{
+        auto mt = q.contains("params") ? q["params"].value("msgType","") : std::string{};
+        if (mt == "identify") return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"NEWLAND","model":"N950"},"error":false})";
+        if (mt == "getLastStatMsgCode") return R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":"0"},"error":false})";
+        return "";
+    });
+    // Ехо merchantId у відповідь — щоб перевірити і дефолт "0", і явне значення.
+    auto report = [](const nlohmann::json& q, const char* method) -> std::string {
+        auto p = q.value("params", nlohmann::json::object());
+        if (!p.contains("merchantId"))
+            return std::string(R"({"method":")") + method + R"(","step":0,"params":{"responseCode":"1000"},"error":true,"errorDescription":"Введіть merchantId"})";
+        nlohmann::json r = {
+            {"method", method}, {"step", 0},
+            {"params", {{"receipt", std::string("[ ") + method + " OK ]"},
+                        {"merchantId", p["merchantId"]},
+                        {"responseCode", "0000"}}},
+            {"error", false}, {"errorDescription", ""}
+        };
+        return r.dump();
+    };
+    emu.OnRequest("Audit",  [&](const nlohmann::json& q){ return report(q, "Audit");  });
+    emu.OnRequest("Verify", [&](const nlohmann::json& q){ return report(q, "Verify"); });
+    CHECK(emu.Start(), "Reports: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "Reports: Connect");
+
+    auto x = drv.Audit();
+    CHECK(x.ok && x.code == "0000" && x.payload["merchantId"] == "0"
+              && x.payload["receipt"] == "[ Audit OK ]",
+          "Audit (X-звіт) → ok, merchantId дефолт 0, receipt");
+
+    auto x2 = drv.Audit("2");
+    CHECK(x2.ok && x2.payload["merchantId"] == "2", "Audit з явним merchantId");
+
+    auto v = drv.Verify();
+    CHECK(v.ok && v.code == "0000" && v.payload["merchantId"] == "0"
+              && v.payload["receipt"] == "[ Verify OK ]",
+          "Verify (Звірка) → ok, merchantId дефолт 0, receipt");
+
+    drv.Disconnect();
+    emu.Stop();
+}
+
 static void TestDriverStatusPoll() {
     TerminalEmulator emu;
     emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","params":{"responseCode":"0000"},"error":false})"; });
@@ -439,6 +538,8 @@ int main() {
     TestConnectReferenceScheme();
     TestJobEngine();
     TestDriverPurchaseHappy();
+    TestDriverStrictTerminalParams();
+    TestDriverReports();
     TestDriverStatusPoll();
     TestDriverInterrupt();
     TestDriverAsync();
