@@ -284,15 +284,10 @@ long AddInNative::GetNParams(const long lMethodNum)
 	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= methods.size()) return 0;
 	auto it = std::next(methods.begin(), lMethodNum);
 	if (it == methods.end()) return 0;
-	if (std::get_if<MethFunction0>(&it->handler)) return 0;
-	if (std::get_if<MethFunction1>(&it->handler)) return 1;
-	if (std::get_if<MethFunction2>(&it->handler)) return 2;
-	if (std::get_if<MethFunction3>(&it->handler)) return 3;
-	if (std::get_if<MethFunction4>(&it->handler)) return 4;
-	if (std::get_if<MethFunction5>(&it->handler)) return 5;
-	if (std::get_if<MethFunction6>(&it->handler)) return 6;
-	if (std::get_if<MethFunction7>(&it->handler)) return 7;
-	return 0;
+	// Альтернативи MethFunction упорядковані за арністю (MethFunctionN на позиції N),
+	// тож індекс variant-а і Є кількістю параметрів. Інваріант закріплено static_assert-ами.
+	if (it->handler.valueless_by_exception()) return 0;
+	return static_cast<long>(it->handler.index());
 }
 
 bool AddInNative::GetParamDefValue(const long lMethodNum, const long lParamNum, tVariant* pvarParamDefValue)
@@ -347,46 +342,26 @@ bool AddInNative::HasRetVal(const long lMethodNum)
 
 bool AddInNative::CallMethod(MethFunction* func, tVariant* p, Meth* m, const long lSizeArray)
 {
-	if (auto handler = std::get_if<MethFunction0>(func)) {
-		(*handler)();
-		return true;
-	}
-	if (auto handler = std::get_if<MethFunction1>(func)) {
-		if (lSizeArray < 1) throw std::bad_function_call();
-		(*handler)(VA(p, m, 0));
-		return true;
-	}
-	if (auto handler = std::get_if<MethFunction2>(func)) {
-		if (lSizeArray < 2) throw std::bad_function_call();
-		(*handler)(VA(p, m, 0), VA(p, m, 1));
-		return true;
-	}
-	if (auto handler = std::get_if<MethFunction3>(func)) {
-		if (lSizeArray < 3) throw std::bad_function_call();
-		(*handler)(VA(p, m, 0), VA(p, m, 1), VA(p, m, 2));
-		return true;
-	}
-	if (auto handler = std::get_if<MethFunction4>(func)) {
-		if (lSizeArray < 4) throw std::bad_function_call();
-		(*handler)(VA(p, m, 0), VA(p, m, 1), VA(p, m, 2), VA(p, m, 3));
-		return true;
-	}
-	if (auto handler = std::get_if<MethFunction5>(func)) {
-		if (lSizeArray < 5) throw std::bad_function_call();
-		(*handler)(VA(p, m, 0), VA(p, m, 1), VA(p, m, 2), VA(p, m, 3), VA(p, m, 4));
-		return true;
-	}
-	if (auto handler = std::get_if<MethFunction6>(func)) {
-		if (lSizeArray < 6) throw std::bad_function_call();
-		(*handler)(VA(p, m, 0), VA(p, m, 1), VA(p, m, 2), VA(p, m, 3), VA(p, m, 4), VA(p, m, 5));
-		return true;
-	}
-	if (auto handler = std::get_if<MethFunction7>(func)) {
-		if (lSizeArray < 7) throw std::bad_function_call();
-		(*handler)(VA(p, m, 0), VA(p, m, 1), VA(p, m, 2), VA(p, m, 3), VA(p, m, 4), VA(p, m, 5), VA(p, m, 6));
-		return true;
-	}
-	return false;
+	// Кожна гілка: «якщо у variant лежить саме ця арність — перевірити кількість
+	// фактичних параметрів і викликати». Короткозамкнене || дає ту саму семантику,
+	// що й колишній ланцюжок if-ів, але без рукописних списків VA(p, m, 0..N).
+	return TryCallArity<0,  MethFunction0 >(func, p, m, lSizeArray)
+	    || TryCallArity<1,  MethFunction1 >(func, p, m, lSizeArray)
+	    || TryCallArity<2,  MethFunction2 >(func, p, m, lSizeArray)
+	    || TryCallArity<3,  MethFunction3 >(func, p, m, lSizeArray)
+	    || TryCallArity<4,  MethFunction4 >(func, p, m, lSizeArray)
+	    || TryCallArity<5,  MethFunction5 >(func, p, m, lSizeArray)
+	    || TryCallArity<6,  MethFunction6 >(func, p, m, lSizeArray)
+	    || TryCallArity<7,  MethFunction7 >(func, p, m, lSizeArray)
+	    || TryCallArity<8,  MethFunction8 >(func, p, m, lSizeArray)
+	    || TryCallArity<9,  MethFunction9 >(func, p, m, lSizeArray)
+	    || TryCallArity<10, MethFunction10>(func, p, m, lSizeArray)
+	    || TryCallArity<11, MethFunction11>(func, p, m, lSizeArray)
+	    || TryCallArity<12, MethFunction12>(func, p, m, lSizeArray)
+	    || TryCallArity<13, MethFunction13>(func, p, m, lSizeArray)
+	    || TryCallArity<14, MethFunction14>(func, p, m, lSizeArray)
+	    || TryCallArity<15, MethFunction15>(func, p, m, lSizeArray)
+	    || TryCallArity<16, MethFunction16>(func, p, m, lSizeArray);
 }
 
 bool AddInNative::CallAsProc(const long lMethodNum, tVariant* paParams, const long lSizeArray)

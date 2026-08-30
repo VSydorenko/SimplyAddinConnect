@@ -183,6 +183,108 @@ static void TestRetViaCallAsProc() {
     comp->Done(); delete comp;
 }
 
+// ---- Широкі арності (8..16) + IN/OUT-параметр ----
+// Контракт БПО «Подключаемое оборудование» має методи на 9-10 параметрів
+// (ОплатитьПлатежнойКартой — 9, ОтменитьПлатежПоПлатежнойКарте — 10). До розширення
+// MethFunction такий метод не реєструвався ВЗАГАЛІ: CallMethod не мав гілки, а
+// GetNParams віддавав 0 — 1С вважала метод безпараметровим. Перевіряємо і кількість,
+// і ПОРЯДОК аргументів (щоб розгортання index_sequence не переплутало індекси).
+static std::string g_wide9;
+static std::string g_wide16;
+static void TestWideArity() {
+    struct WideProbe : public AddInNative {
+        WideProbe() {
+            AddFunction(u"Wide9", u"Широкий9",
+                Ret([](VH a, VH b, VH c, VH d, VH e, VH f, VH g, VH h, VH i) {
+                    g_wide9 = (std::string)a + (std::string)b + (std::string)c
+                            + (std::string)d + (std::string)e + (std::string)f
+                            + (std::string)g + (std::string)h + (std::string)i;
+                    return true;
+                }));
+            // Верхня межа списку альтернатив: остання арність мусить дожити до виклику.
+            AddFunction(u"Wide16", u"Широкий16",
+                Ret([](VH a, VH, VH, VH, VH, VH, VH, VH,
+                       VH, VH, VH, VH, VH, VH, VH, VH p16) {
+                    g_wide16 = (std::string)a + (std::string)p16;
+                    return true;
+                }));
+            // IN/OUT: параметр приходить ЗАПОВНЕНИМ, хендлер читає і перезаписує.
+            // Саме цей шлях вмикає clear() -> FreeMemory на чужому рядку; у продуктових
+            // фасадах (LabelPrinter) OUT-параметри завжди приходять порожніми, тож до
+            // БПО-еквайрингу гілка не виконувалась жодного разу.
+            AddProcedure(u"InOut", u"ВходВыход",
+                MethFunction(std::function<void(VH)>([](VH v) {
+                    std::string in = v;
+                    v = std::string("<") + in + ">";
+                })));
+        }
+    };
+    AddInNative::AddComponent(u"WideProbe", []() -> AddInNative* { return new WideProbe; });
+    AddInNative* comp = AddInNative::CreateObject(u"WideProbe");
+    MockConnect connect; MockMemory memory;
+    comp->Init(&connect); comp->setMemManager(&memory);
+
+    // --- 9 параметрів ---
+    long m9 = comp->FindMethod((WCHAR_T*)u"Wide9");
+    CHECK(m9 >= 0, "FindMethod(Wide9)");
+    CHECK(comp->GetNParams(m9) == 9, "GetNParams(Wide9) == 9");
+
+    tVariant args9[9]{};
+    std::u16string src9[9];
+    for (int k = 0; k < 9; ++k) {
+        std::memset(&args9[k], 0, sizeof(tVariant));
+        src9[k] = std::u16string(1, static_cast<char16_t>(u'1' + k));
+        args9[k].vt = VTYPE_PWSTR;
+        args9[k].pwstrVal = reinterpret_cast<WCHAR_T*>(const_cast<char16_t*>(src9[k].c_str()));
+        args9[k].wstrLen = 1;
+    }
+    g_wide9.clear();
+    tVariant r9{}; std::memset(&r9, 0, sizeof(r9)); r9.vt = VTYPE_EMPTY;
+    CHECK(comp->CallAsFunc(m9, &r9, args9, 9), "CallAsFunc(Wide9) dispatches");
+    CHECK(g_wide9 == "123456789", "Wide9 got all 9 params IN ORDER");
+
+    // --- 16 параметрів (верхня межа) ---
+    long m16 = comp->FindMethod((WCHAR_T*)u"Wide16");
+    CHECK(comp->GetNParams(m16) == 16, "GetNParams(Wide16) == 16");
+    tVariant args16[16]{};
+    std::u16string first = u"A", last = u"Z";
+    for (int k = 0; k < 16; ++k) {
+        std::memset(&args16[k], 0, sizeof(tVariant));
+        args16[k].vt = VTYPE_PWSTR;
+        const std::u16string& s = (k == 0) ? first : last;
+        args16[k].pwstrVal = reinterpret_cast<WCHAR_T*>(const_cast<char16_t*>(s.c_str()));
+        args16[k].wstrLen = 1;
+    }
+    g_wide16.clear();
+    tVariant r16{}; std::memset(&r16, 0, sizeof(r16)); r16.vt = VTYPE_EMPTY;
+    CHECK(comp->CallAsFunc(m16, &r16, args16, 16), "CallAsFunc(Wide16) dispatches");
+    CHECK(g_wide16 == "AZ", "Wide16 got first and last param");
+
+    // --- Регресія: старі арності не поїхали ---
+    CHECK(comp->GetNParams(comp->FindMethod((WCHAR_T*)u"InOut")) == 1, "GetNParams(InOut) == 1");
+
+    // --- IN/OUT: читання вхідного значення + перезапис ---
+    // Вхідний рядок виділяємо ЧЕРЕЗ той самий менеджер пам'яті, що й платформа,
+    // бо clear() віддасть його у FreeMemory — інакше перевірятимемо не той шлях.
+    tVariant io{}; std::memset(&io, 0, sizeof(io));
+    const std::u16string seed = u"IN";
+    void* mem = nullptr;
+    memory.AllocMemory(&mem, static_cast<unsigned long>((seed.size() + 1) * sizeof(char16_t)));
+    std::memcpy(mem, seed.c_str(), (seed.size() + 1) * sizeof(char16_t));
+    io.vt = VTYPE_PWSTR;
+    io.pwstrVal = static_cast<WCHAR_T*>(mem);
+    io.wstrLen = static_cast<uint32_t>(seed.size());
+
+    long mio = comp->FindMethod((WCHAR_T*)u"InOut");
+    CHECK(comp->CallAsProc(mio, &io, 1), "CallAsProc(InOut)");
+    CHECK(io.vt == VTYPE_PWSTR && io.wstrLen == 4, "InOut rewrote param in place");
+    CHECK(std::u16string(reinterpret_cast<char16_t*>(io.pwstrVal), io.wstrLen) == u"<IN>",
+          "InOut read incoming value and wrote back");
+    memory.FreeMemory(reinterpret_cast<void**>(&io.pwstrVal));
+
+    comp->Done(); delete comp;
+}
+
 // ---- Дедлок ShutdownLogging: до фіксу зависав назавжди, після — миттєво ----
 static void TestShutdownLoggingNoDeadlock() {
     const char* tempDir = std::getenv("TEMP");
@@ -410,6 +512,7 @@ int main() {
     TestBootFixes();
     TestRetConvention();
     TestRetViaCallAsProc();
+    TestWideArity();
     TestComponentRegistry();
     TestRegisterComponentMacro();
     TestShutdownLoggingNoDeadlock();
