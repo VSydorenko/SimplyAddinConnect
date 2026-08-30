@@ -53,20 +53,54 @@ std::string BuildDriverDescriptionXml() {
 }
 
 // TableParameters — опис форми налаштувань підключення (транспорт/порт/DPI/…).
+//
+// ФОРМАТ СУВОРИЙ. Форма налаштувань БПО (Catalogs.ПодключаемоеОборудование, ФормаНастройки)
+// читає XML послідовно і входить у розбір лише за умови кореневого вузла `Settings`:
+// корінь `Parameters` не проходить цю умову, і форма мовчки лишається БЕЗ ЖОДНОГО поля.
+// Тип параметра читається з атрибута `TypeValue` ("String"/"Number"/"Boolean"), а не `Type`.
+// Розпізнаються: Page@Caption, Group@Caption, Parameter@Name/@Caption/@TypeValue/
+// @DefaultValue/@Description/@FieldFormat/@ReadOnly і вкладений ChoiceList/Item@Value
+// (текст вузла — представлення). Решта атрибутів ігнорується.
+// Джерела: ІТС «Разработка драйвера для подключения оборудования локально к устройству
+// пользователя» (розділ ТаблицаПараметров) + розбір парсера у конфігурації УНФ.
 std::string BuildTableParametersXml() {
     return
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-        "<Parameters>"
-        "<Parameter Name=\"TransportKind\" Caption=\"Транспорт\" Type=\"String\" DefaultValue=\"spooler\"/>"
-        "<Parameter Name=\"PrinterName\" Caption=\"Ім'я черги Windows\" Type=\"String\" DefaultValue=\"\"/>"
-        "<Parameter Name=\"Host\" Caption=\"IP-адреса\" Type=\"String\" DefaultValue=\"\"/>"
-        "<Parameter Name=\"Port\" Caption=\"Порт\" Type=\"Number\" DefaultValue=\"9100\"/>"
-        "<Parameter Name=\"DotsPerMm\" Caption=\"Точок на мм (8/12/24)\" Type=\"Number\" DefaultValue=\"8\"/>"
-        "<Parameter Name=\"Darkness\" Caption=\"Темність\" Type=\"Number\" DefaultValue=\"10\"/>"
-        "<Parameter Name=\"Speed\" Caption=\"Швидкість\" Type=\"Number\" DefaultValue=\"4\"/>"
-        "<Parameter Name=\"LabelWidthMm\" Caption=\"Ширина етикетки, мм\" Type=\"Number\" DefaultValue=\"0\"/>"
-        "<Parameter Name=\"LabelHeightMm\" Caption=\"Висота етикетки, мм\" Type=\"Number\" DefaultValue=\"0\"/>"
-        "</Parameters>";
+        "<Settings>"
+        "<Page Caption=\"Параметри\">"
+        "<Group Caption=\"Підключення\">"
+        "<Parameter Name=\"TransportKind\" Caption=\"Транспорт\" TypeValue=\"String\" DefaultValue=\"spooler\""
+        " Description=\"spooler — черга Windows (USB/локальний); tcp — мережевий принтер\">"
+        "<ChoiceList>"
+        "<Item Value=\"spooler\">Черга Windows (USB/локальний)</Item>"
+        "<Item Value=\"tcp\">Мережевий (TCP)</Item>"
+        "</ChoiceList>"
+        "</Parameter>"
+        "<Parameter Name=\"PrinterName\" Caption=\"Ім'я черги Windows\" TypeValue=\"String\" DefaultValue=\"\""
+        " Description=\"Лише для транспорту spooler: точне ім'я черги як у «Пристрої та принтери»\"/>"
+        "<Parameter Name=\"Host\" Caption=\"IP-адреса\" TypeValue=\"String\" DefaultValue=\"\""
+        " Description=\"Лише для транспорту tcp\"/>"
+        "<Parameter Name=\"Port\" Caption=\"Порт\" TypeValue=\"Number\" DefaultValue=\"9100\""
+        " Description=\"Лише для транспорту tcp; RAW-друк — стандартно 9100\"/>"
+        "</Group>"
+        "<Group Caption=\"Друк\">"
+        "<Parameter Name=\"DotsPerMm\" Caption=\"Точок на мм\" TypeValue=\"Number\" DefaultValue=\"8\""
+        " Description=\"Роздільність друкувальної головки в точках на мм (не номінальний dpi)\">"
+        "<ChoiceList>"
+        "<Item Value=\"8\">8 (≈203 dpi)</Item>"
+        "<Item Value=\"12\">12 (≈300 dpi)</Item>"
+        "<Item Value=\"24\">24 (≈600 dpi)</Item>"
+        "</ChoiceList>"
+        "</Parameter>"
+        "<Parameter Name=\"Darkness\" Caption=\"Темність\" TypeValue=\"Number\" DefaultValue=\"10\"/>"
+        "<Parameter Name=\"Speed\" Caption=\"Швидкість\" TypeValue=\"Number\" DefaultValue=\"4\"/>"
+        "<Parameter Name=\"LabelWidthMm\" Caption=\"Ширина етикетки, мм\" TypeValue=\"Number\" DefaultValue=\"0\""
+        " Description=\"0 — не задавати (^PW)\"/>"
+        "<Parameter Name=\"LabelHeightMm\" Caption=\"Висота етикетки, мм\" TypeValue=\"Number\" DefaultValue=\"0\""
+        " Description=\"0 — не задавати (^LL)\"/>"
+        "</Group>"
+        "</Page>"
+        "</Settings>";
 }
 } // namespace
 

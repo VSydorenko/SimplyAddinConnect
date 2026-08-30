@@ -312,6 +312,14 @@ AddinLabelPrinter)`, тримає `LabelPrinterDriver driver_` + `lastErrorCode_
   `IntegrationComponent=false`, `IsEmulator=false`, `LocalizationSupported=false`, версії з
   `AddInNative::version()`); `EquipmentParameters` — `TableParameters` (форма налаштувань:
   транспорт/порт/DPI/темність/швидкість/розмір).
+- **`TableParameters` має суворий формат** (`BuildTableParametersXml`, виправлено 2026-08-31):
+  корінь **`Settings`** → `Page@Caption` → `Group@Caption` → `Parameter@Name/@Caption/
+  @TypeValue/@DefaultValue/@Description` (+ вкладений `ChoiceList/Item@Value`). Форма
+  налаштувань БПО входить у розбір лише за коренем `Settings` і читає тип з `TypeValue`;
+  попередній варіант (корінь `Parameters`, атрибут `Type`) давав **мовчки порожню форму**.
+  Не плутати з `ConnectionParameters` — там навпаки пласке `<Parameters><Parameter Name Value/>`.
+  Тест на це не ловився: `label_native_host` подає параметри підключення напряму, форму БПО
+  не емулює. Прикладний бік — `docs/integration-1c/label_printer.md` §3.
 - **`try/catch` у кожному методі** (виняток C++ межу 1С не перетинає): при винятку — `REPORT_ERROR`
   + `lastError` (LONG код + STRING опис), не сирий текст. `CodeToInt` (`AddinLabelPrinter.cpp`)
   дає LONG-код для `GetLastError`: **числова таксономія** — суто числовий код (напр. код відповіді
