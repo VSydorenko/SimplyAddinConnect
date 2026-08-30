@@ -96,34 +96,60 @@ void AddinProbeBPO::RegisterMethods() {
     AddProcedure(u"Reset", u"Сбросить",
         MethFunction(std::function<void()>([this]() { tick_.store(0); emitted_.store(0); })));
 
-    // ---- Зонд 0.5: дев'ять параметрів, чотири з них IN/OUT ----
-    // Розкладка повторює ОплатитьПлатежнойКартой: 0-2 — вхідні, 3-6 — IN/OUT
-    // (НомерКарты/НомерЧека/СсылочныйНомер/КодАвторизации), 7-8 — вихідні.
-    // Повертає JSON із тим, що ПРОЧИТАЛО, — щоб 1С звірила обидва напрямки.
-    AddFunction(u"InOut9", u"ВходВыход9",
-        Ret([](VH p0, VH p1, VH p2, VH p3, VH p4, VH p5, VH p6, VH p7, VH p8) -> std::string {
-            const std::string in0 = p0, in1 = p1, in2 = p2, in3 = p3,
-                              in4 = p4, in5 = p5, in6 = p6, in7 = p7, in8 = p8;
-            // IN/OUT: читаємо й перезаписуємо ТІ САМІ слоти.
-            p3 = std::string("<") + in3 + ">";
-            p4 = std::string("<") + in4 + ">";
-            p5 = std::string("<") + in5 + ">";
-            p6 = std::string("<") + in6 + ">";
-            // Чисті OUT.
-            p7 = std::string("OUT7");
-            p8 = std::string("OUT8");
-            return std::string("{\"read\":[\"")
-                + JsonEscape(in0) + "\",\"" + JsonEscape(in1) + "\",\"" + JsonEscape(in2)
-                + "\",\"" + JsonEscape(in3) + "\",\"" + JsonEscape(in4) + "\",\"" + JsonEscape(in5)
-                + "\",\"" + JsonEscape(in6) + "\",\"" + JsonEscape(in7) + "\",\"" + JsonEscape(in8)
-                + "\"]}";
+    // ---- Зонд 0.5: репетиція СПРАВЖНЬОЇ сигнатури ОплатитьПлатежнойКартой ----
+    // На ревізії 3004 (єдиній, що працює і в УНФ ru, і в BAS УНФ ua) метод має рівно сім
+    // параметрів, і всі шість після ИДУстройства — IN/OUT:
+    //   (ИДУстройства, НомерКарты, СуммаОперации, НомерЧека, СсылочныйНомер,
+    //    КодАвторизации, ТекстСлипЧека)
+    // Позиція 2 — ЧИСЛО, не рядок. Це окремий шлях у VariantHelper::clear()
+    // (VTYPE_R8/VTYPE_I4 не викликають FreeMemory, на відміну від VTYPE_PWSTR),
+    // і окремий ризик втрати дробової частини суми — тому читаємо/пишемо саме double.
+    AddFunction(u"InOut7", u"ВходВыход7",
+        Ret([](VH deviceId, VH cardNo, VH amount, VH receiptNo,
+               VH rrn, VH authCode, VH slip) -> std::string {
+            const std::string inDevice = deviceId;
+            const std::string inCard = cardNo, inReceipt = receiptNo,
+                              inRrn = rrn, inAuth = authCode, inSlip = slip;
+
+            // ЯКИЙ САМЕ tVariant-тип 1С прислала для числа — це і є головне питання зонда.
+            // VariantHelper::operator double() приймає лише I2/I4/UI1/ERROR/R4/R8 і кидає
+            // на решті (I8, UI4, INT, …). Якщо платформа передає суму іншим типом, конверсію
+            // в ядрі доведеться розширювати — але вгадувати не будемо, хай зонд покаже.
+            const int amountVt = static_cast<int>(amount.type());
+            double inAmount = 0.0;
+            bool amountReadOk = true;
+            try { inAmount = amount; }
+            catch (...) { amountReadOk = false; }
+            if (!amountReadOk) {
+                return std::string("{\"error\":\"amount: непідтримуваний tVariant-тип\",\"amountVt\":")
+                    + std::to_string(amountVt) + "}";
+            }
+
+            // IN/OUT: читаємо й перезаписуємо ТІ САМІ слоти (позицію 0 не чіпаємо — вона IN).
+            cardNo    = std::string("<") + inCard + ">";
+            amount    = inAmount + 0.01;      // видима зміна, що переживає лише double
+            receiptNo = std::string("<") + inReceipt + ">";
+            rrn       = std::string("<") + inRrn + ">";
+            authCode  = std::string("<") + inAuth + ">";
+            slip      = std::string("СЛІП\nрядок 2");
+
+            return std::string("{\"deviceId\":\"") + JsonEscape(inDevice)
+                + "\",\"cardNo\":\"" + JsonEscape(inCard)
+                + "\",\"amountVt\":" + std::to_string(amountVt)
+                + ",\"amount\":" + std::to_string(inAmount)
+                + ",\"receiptNo\":\"" + JsonEscape(inReceipt)
+                + "\",\"rrn\":\"" + JsonEscape(inRrn)
+                + "\",\"authCode\":\"" + JsonEscape(inAuth)
+                + "\",\"slip\":\"" + JsonEscape(inSlip) + "\"}";
         }),
         std::vector<ParamSpec>{
-            ParamSpec{ u"p0", u"П0", false, {} }, ParamSpec{ u"p1", u"П1", false, {} },
-            ParamSpec{ u"p2", u"П2", false, {} }, ParamSpec{ u"p3", u"П3", false, {} },
-            ParamSpec{ u"p4", u"П4", false, {} }, ParamSpec{ u"p5", u"П5", false, {} },
-            ParamSpec{ u"p6", u"П6", false, {} }, ParamSpec{ u"p7", u"П7", false, {} },
-            ParamSpec{ u"p8", u"П8", false, {} } });
+            ParamSpec{ u"deviceId",  u"ИДУстройства",   false, {} },
+            ParamSpec{ u"cardNo",    u"НомерКарты",     false, {} },
+            ParamSpec{ u"amount",    u"СуммаОперации",  false, {} },
+            ParamSpec{ u"receiptNo", u"НомерЧека",      false, {} },
+            ParamSpec{ u"rrn",       u"СсылочныйНомер", false, {} },
+            ParamSpec{ u"authCode",  u"КодАвторизации", false, {} },
+            ParamSpec{ u"slip",      u"ТекстСлипЧека",  false, {} } });
 
     REPORT_INFO("Реєстрація методів ProbeBPO завершена");
 }

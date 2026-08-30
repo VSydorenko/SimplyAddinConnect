@@ -217,6 +217,14 @@ static void TestWideArity() {
                     std::string in = v;
                     v = std::string("<") + in + ">";
                 })));
+            // ЧИСЛОВИЙ IN/OUT: у контракті БПО СуммаОперации приходить і повертається
+            // числом. Шлях у clear() інший, ніж для рядка (без FreeMemory), а ризик —
+            // втратити дробову частину суми, прочитавши її як ціле.
+            AddProcedure(u"InOutNum", u"ВходВыходЧисло",
+                MethFunction(std::function<void(VH)>([](VH v) {
+                    double in = v;
+                    v = in + 0.01;
+                })));
         }
     };
     AddInNative::AddComponent(u"WideProbe", []() -> AddInNative* { return new WideProbe; });
@@ -281,6 +289,16 @@ static void TestWideArity() {
     CHECK(std::u16string(reinterpret_cast<char16_t*>(io.pwstrVal), io.wstrLen) == u"<IN>",
           "InOut read incoming value and wrote back");
     memory.FreeMemory(reinterpret_cast<void**>(&io.pwstrVal));
+
+    // --- IN/OUT числом: дробова частина мусить вціліти (СуммаОперации у БПО) ---
+    tVariant num{}; std::memset(&num, 0, sizeof(num));
+    num.vt = VTYPE_R8; num.dblVal = 100.50;
+    long mnum = comp->FindMethod((WCHAR_T*)u"InOutNum");
+    CHECK(mnum >= 0, "FindMethod(InOutNum)");
+    CHECK(comp->CallAsProc(mnum, &num, 1), "CallAsProc(InOutNum)");
+    CHECK(num.vt == VTYPE_R8, "InOutNum kept numeric type");
+    CHECK(num.dblVal > 100.5049 && num.dblVal < 100.5151,
+          "InOutNum read 100.50 as double and wrote back 100.51 (fraction survived)");
 
     comp->Done(); delete comp;
 }
