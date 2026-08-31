@@ -205,6 +205,10 @@ extern/             # сабмодулі: spdlog, nlohmann_json, ixwebsocket, ua
 2. У `CMake/components.cmake`: додай файли до `HEADER_FILES`/`SOURCE_FILES`, за потреби окрему
    `add_library(... OBJECT ...)` з include-шляхами й `add_dependencies` (мінімум `base_component spdlog`),
    і `$<TARGET_OBJECTS:...>` до фінальної SHARED-цілі.
+2-біс. **`CMake/compiler_settings.cmake` — `target_compile_options(<ціль> PRIVATE /utf-8)`.**
+   Перелік там **поіменний**, і про нього легко забути. Без `/utf-8` MSVC читає джерело в
+   ANSI-кодуванні й **мовчки** спотворює кириличні `u"..."`-літерали: помилки збірки немає,
+   англійські імена методів у DLL є, російські — ні, а 1С каже «Метод объекта не обнаружен».
 3. Перевір збірку `build_project.ps1` (+`-WithUAPKI`, якщо залежить від UAPKI).
 
 Детальніше про модель ядра (VariantHelper, реєстрація, життєвий цикл, платформенні механізми

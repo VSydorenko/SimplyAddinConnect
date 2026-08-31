@@ -100,6 +100,11 @@ if (NOT UNIX)
     target_compile_options(ecr_facade_component PRIVATE /utf-8)
     target_compile_options(driver_label_printer_component PRIVATE /utf-8)
     target_compile_options(label_facade_component PRIVATE /utf-8)
+    # УВАГА: цей перелік ПОІМЕННИЙ. Нова ціль без /utf-8 компілюється в ANSI-кодуванні,
+    # і кириличні u"..."-літерали мовчки спотворюються: англійські імена методів
+    # потрапляють у DLL, російські — ні, а 1С каже «Метод объекта не обнаружен».
+    # Помилки збірки при цьому НЕМАЄ. Додаючи компоненту — додай рядок і сюди.
+    target_compile_options(probe_bpo_component PRIVATE /utf-8)
     # target_compile_options(ecrcommx_component PRIVATE /utf-8)
     # target_compile_options(posapi_component PRIVATE /utf-8)
 
