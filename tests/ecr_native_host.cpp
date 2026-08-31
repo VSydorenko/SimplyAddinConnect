@@ -176,6 +176,12 @@ int main() {
                            R"("rrn":"555000111","approvalCode":"A12345","cardPAN":"444455**1234",)"
                            R"("amount":"100.50","receiptText":"СЛІП\nрядок 2"},"error":false})");
     });
+    // Потрібен для перевірки скасування-через-повернення (VoidAsRefund).
+    emu.OnRequest("Refund", [](const json&) {
+        return std::string(R"({"method":"Refund","params":{"responseCode":"0000","invoiceNumber":"78",)"
+                           R"("rrn":"555000222","approvalCode":"B67890","cardPAN":"444455**1234",)"
+                           R"("amount":"100.50","receiptText":"ПОВЕРНЕННЯ"},"error":false})");
+    });
     CHECK(emu.Start(), "L3: емулятор стартував");
 
     // 2) Завантажити ГОЛОВНУ DLL і створити компоненту ECRPrivatJSON.
@@ -288,7 +294,20 @@ int main() {
                 setParam("EquipmentType", "ЭквайринговыйТерминал");
                 setParam("TransportKind", "tcp");
                 setParam("Host", "127.0.0.1");
-                setParam("Port", std::to_string(emu.Port()));
+
+                // ⚠️ Port оголошено в формі налаштувань як Number, тож 1С передає
+                // його ЧИСЛОМ, а не рядком. Пряме приведення VH до рядка на цьому
+                // кидає — саме тому подаємо число, а не std::to_string(port).
+                std::wstring wName = u8to16("Port");
+                tVariant pp[2];
+                for (auto& v : pp) tVarInit(&v);
+                pp[0].vt = VTYPE_PWSTR; pp[0].pwstrVal = (WCHAR_T*)wName.c_str();
+                pp[0].wstrLen = (uint32_t)wName.size();
+                pp[1].vt = VTYPE_R8;    pp[1].dblVal = (double)emu.Port();
+                tVariant pret; tVarInit(&pret);
+                bpo->CallAsFunc(idxSetParam, &pret, pp, 2);
+                CHECK(pret.vt == VTYPE_BOOL && pret.bVal,
+                      "L3-bpo: УстановитьПараметр приймає ЧИСЛОВЕ значення (Port)");
             }
 
             // Подключить: параметрів не приймає, ИДУстройства — OUT.
@@ -308,16 +327,28 @@ int main() {
                 CHECK(!deviceId.empty(), "L3-bpo: ИДУстройства повернуто в OUT");
             }
 
+            // ⚠️ Вхідний рядок IN/OUT-параметра ОБОВ'ЯЗКОВО виділяти через malloc:
+            // компонента перед перезаписом кличе FreeMemory на ньому (шлях
+            // VariantHelper::clear()). У реальній 1С пам'ять виділяє платформа своїм
+            // менеджером, тож це коректно; у харнесі вказівник на c_str() дав би
+            // STATUS_HEAP_CORRUPTION. Той самий malloc, що й у HostMemoryManager.
+            auto setInStr = [](tVariant& v, const std::wstring& s) {
+                tVarInit(&v);
+                const size_t bytes = (s.size() + 1) * sizeof(wchar_t);
+                v.vt = VTYPE_PWSTR;
+                v.pwstrVal = (WCHAR_T*)malloc(bytes);
+                memcpy(v.pwstrVal, s.c_str(), bytes);
+                v.wstrLen = (uint32_t)s.size();
+            };
+
             // ОплатитьПлатежнойКартой: сімка, позиція 2 — ЧИСЛО, решта після
             // ИДУстройства — IN/OUT. Перевіряємо саме запис назад у слоти.
             long idxPay = bpo->FindMethod(L"PayByPaymentCard");
             CHECK(idxPay >= 0, "L3-bpo: ОплатитьПлатежнойКартой знайдено");
             if (idxPay >= 0 && !deviceId.empty()) {
-                std::wstring wDev = u8to16(deviceId);
                 tVariant p[7];
                 for (auto& v : p) tVarInit(&v);
-                p[0].vt = VTYPE_PWSTR; p[0].pwstrVal = (WCHAR_T*)wDev.c_str();
-                p[0].wstrLen = (uint32_t)wDev.size();
+                setInStr(p[0], u8to16(deviceId));
                 p[2].vt = VTYPE_R8;    p[2].dblVal = 100.50;
                 // 1,3..6 лишаються VTYPE_EMPTY — саме так 1С шле незаповнені IN/OUT.
 
@@ -349,26 +380,54 @@ int main() {
                 CHECK(p[2].vt == VTYPE_R8 && p[2].dblVal > 100.49 && p[2].dblVal < 100.51,
                       "L3-bpo: СуммаОперации лишилась числом і не втратила дріб");
 
-                for (int i = 1; i < 7; ++i)
-                    if (p[i].vt == VTYPE_PWSTR && p[i].pwstrVal) free(p[i].pwstrVal);
+                for (auto& v : p)
+                    if (v.vt == VTYPE_PWSTR && v.pwstrVal) free(v.pwstrVal);
             }
 
-            // Скасування драйвер не реалізує — має бути ЧЕСНА ВІДМОВА, не мовчазний
-            // успіх, із текстом «не підтримується обладнанням» (вимога ІТС §1.3).
+            // Скасування (сторно). Власної операції void термінал не має, тож за
+            // дефолтним VoidAsRefund воно має піти ПОВЕРНЕННЯМ за RRN і вдатися;
+            // зі знятим параметром — чесно відмовити.
             long idxVoid = bpo->FindMethod(L"CancelPaymentByPaymentCard");
             CHECK(idxVoid >= 0, "L3-bpo: ОтменитьПлатежПоПлатежнойКарте зареєстровано");
-            if (idxVoid >= 0 && !deviceId.empty()) {
-                std::wstring wDev = u8to16(deviceId);
+
+            auto callVoid = [&](const std::string& rrnIn, bool& retBool,
+                                std::string& outSlip) {
                 tVariant p[7];
                 for (auto& v : p) tVarInit(&v);
-                p[0].vt = VTYPE_PWSTR; p[0].pwstrVal = (WCHAR_T*)wDev.c_str();
-                p[0].wstrLen = (uint32_t)wDev.size();
-                p[2].vt = VTYPE_R8;    p[2].dblVal = 10.0;
+                setInStr(p[0], u8to16(deviceId));
+                p[2].vt = VTYPE_R8; p[2].dblVal = 100.50;
+                setInStr(p[4], u8to16(rrnIn));
 
                 tVariant ret; tVarInit(&ret);
                 bpo->CallAsFunc(idxVoid, &ret, p, 7);
-                bool refused = (ret.vt == VTYPE_BOOL) && !ret.bVal;
-                CHECK(refused, "L3-bpo: скасування чесно відмовило (Ложь)");
+                retBool = (ret.vt == VTYPE_BOOL) && ret.bVal;
+                outSlip = (p[6].vt == VTYPE_PWSTR && p[6].pwstrVal)
+                    ? u16to8(reinterpret_cast<const wchar_t*>(p[6].pwstrVal), p[6].wstrLen)
+                    : std::string{};
+                for (auto& v : p)
+                    if (v.vt == VTYPE_PWSTR && v.pwstrVal) free(v.pwstrVal);
+            };
+
+            if (idxVoid >= 0 && !deviceId.empty()) {
+                bool rb = false; std::string slip;
+                callVoid("555000111", rb, slip);
+                CHECK(rb, "L3-bpo: скасування виконано поверненням за RRN (VoidAsRefund)");
+                CHECK(slip.find("ПОВЕРНЕННЯ") != std::string::npos,
+                      "L3-bpo: сліп скасування — від операції повернення");
+
+                // Порожній RRN: повертати нема за чим — має бути відмова, не тиша.
+                bool rbEmpty = false; std::string slipEmpty;
+                callVoid("", rbEmpty, slipEmpty);
+                CHECK(!rbEmpty, "L3-bpo: скасування без RRN відхилено");
+
+                // Вимикаємо VoidAsRefund → має спрацювати чесна відмова (ІТС §1.3).
+                if (idxSetParam >= 0) {
+                    bool sb = false; std::string ss; bool sg = false;
+                    callFunc(bpo, idxSetParam, { "VoidAsRefund", "false" }, sb, ss, sg);
+                }
+                bool rbOff = false; std::string slipOff;
+                callVoid("555000111", rbOff, slipOff);
+                CHECK(!rbOff, "L3-bpo: зі знятим VoidAsRefund скасування відмовило");
 
                 long idxErr = bpo->FindMethod(L"GetLastError");
                 if (idxErr >= 0) {
@@ -386,9 +445,26 @@ int main() {
                     CHECK(desc.find("не підтримується") != std::string::npos,
                           "L3-bpo: опис помилки каже, що операція не підтримується");
                 }
+            }
 
-                for (int i = 1; i < 7; ++i)
-                    if (p[i].vt == VTYPE_PWSTR && p[i].pwstrVal) free(p[i].pwstrVal);
+            // Асинхронна трійця ПОВЕРХ БПО: штатний обробник її не кличе, її бере
+            // розширення з точки розширення РМК, щоб показати живий статус.
+            {
+                const wchar_t* asyncNames[] = { L"StartPurchase", L"StartRefund",
+                                                L"OperationState", L"OperationResult",
+                                                L"LastStatus", L"CancelOperation" };
+                bool allFound = true;
+                for (const wchar_t* n : asyncNames)
+                    if (bpo->FindMethod(n) < 0) { allFound = false; std::printf("  немає: %ls\n", n); }
+                CHECK(allFound, "L3-bpo: асинхронна трійця зареєстрована на фасаді");
+
+                long idxState = bpo->FindMethod(L"OperationState");
+                if (idxState >= 0) {
+                    tVariant ret; tVarInit(&ret);
+                    bpo->CallAsFunc(idxState, &ret, nullptr, 0);
+                    long st = (ret.vt == VTYPE_I4) ? ret.lVal : (long)ret.dblVal;
+                    CHECK(st == 0, "L3-bpo: СостояниеОперации == 0 (Idle) без активної операції");
+                }
             }
 
             long idxBpoDisc = bpo->FindMethod(L"Disconnect");

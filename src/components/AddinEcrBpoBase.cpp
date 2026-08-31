@@ -112,6 +112,42 @@ std::string AddinEcrBpoBase::AmountToString(double amount) {
     return s;
 }
 
+std::string AddinEcrBpoBase::VariantToString(VH value) {
+    try {
+        switch (value.type()) {
+        case VTYPE_PWSTR:
+            return static_cast<std::string>(value);
+        case VTYPE_EMPTY:
+        case VTYPE_NULL:
+            return {};
+        case VTYPE_BOOL:
+            return static_cast<bool>(value) ? "true" : "false";
+        case VTYPE_R4:
+        case VTYPE_R8: {
+            const double d = value;
+            // Ціле значення віддаємо без дробової частини: Port=2000, а не 2000.00.
+            if (d == static_cast<double>(static_cast<long long>(d)))
+                return std::to_string(static_cast<long long>(d));
+            return AmountToString(d);
+        }
+        default:
+            return std::to_string(static_cast<int64_t>(value));
+        }
+    } catch (...) {
+        return {};
+    }
+}
+
+double AddinEcrBpoBase::VariantToDouble(VH value) {
+    try { return static_cast<double>(value); }
+    catch (...) { return 0.0; }
+}
+
+bool AddinEcrBpoBase::VoidAsRefundEnabled() const {
+    const std::string v = ToUpperAscii(Param("VoidAsRefund", "true"));
+    return !(v == "FALSE" || v == "0" || v == "НЕТ" || v == "НІ");
+}
+
 std::string AddinEcrBpoBase::Param(const char* name, const std::string& fallback) const {
     auto it = params_.find(name);
     return (it == params_.end() || it->second.empty()) ? fallback : it->second;
@@ -159,10 +195,21 @@ ResultEnvelope AddinEcrBpoBase::RunRefund(double amount, const std::string& rrn)
     }
 }
 
-ResultEnvelope AddinEcrBpoBase::RunVoid() {
-    // Драйвер ECRPrivatJSON окремої операції скасування не має (див.
-    // docs/architecture/ecrprivatjson.md §8) — чесна відмова, а не мовчазний успіх.
-    return Unsupported("ОтменитьПлатежПоПлатежнойКарте");
+ResultEnvelope AddinEcrBpoBase::RunVoid(double amount, const std::string& rrn) {
+    // Власної операції void протокол у нашій реалізації не має. Штатний шлях для
+    // таких терміналів — скасування ПОВЕРНЕННЯМ за RRN (так само робить наявний
+    // модуль Ingenico у розширенні). Керується параметром підключення, бо це
+    // рішення бізнесу: void скасовує до звірки й сліду не лишає, refund створює
+    // зворотну транзакцію.
+    if (!VoidAsRefundEnabled())
+        return Unsupported("ОтменитьПлатежПоПлатежнойКарте");
+
+    if (rrn.empty()) {
+        return ResultEnvelope::Fail("BAD_INPUT",
+            "Скасування виконується поверненням за RRN, але СсылочныйНомер порожній");
+    }
+    REPORT_INFO("Скасування виконується поверненням за RRN " + rrn + " (VoidAsRefund)");
+    return RunRefund(amount, rrn);
 }
 
 ResultEnvelope AddinEcrBpoBase::RunEmergencyVoid() {
@@ -244,6 +291,13 @@ void AddinEcrBpoBase::RegisterSystemMethods() {
                     " Description=\"Лише для транспорту com, напр. COM4\"/>"
                     "<Parameter Name=\"Baud\" Caption=\"Швидкість COM\" TypeValue=\"Number\" DefaultValue=\"115200\"/>"
                     "</Group>"
+                    "<Group Caption=\"Поведінка операцій\">"
+                    "<Parameter Name=\"VoidAsRefund\" Caption=\"Скасування виконувати поверненням\""
+                    " TypeValue=\"Boolean\" DefaultValue=\"true\""
+                    " Description=\"Термінал не має власної операції скасування. Увімкнено —"
+                    " скасування виконується поверненням за RRN (зворотна транзакція)."
+                    " Вимкнено — операція відхиляється як непідтримувана\"/>"
+                    "</Group>"
                     "<Group Caption=\"Журналювання\">"
                     "<Parameter Name=\"LogLevel\" Caption=\"Рівень деталізації\" TypeValue=\"String\" DefaultValue=\"Info\">"
                     "<ChoiceList>"
@@ -272,8 +326,10 @@ void AddinEcrBpoBase::RegisterSystemMethods() {
     AddFunction(u"SetParameter", u"УстановитьПараметр",
         Ret([this](VH name, VH value) -> bool {
             try {
-                const std::string n = name;
-                const std::string v = value;
+                // ⚠️ Тільки через VariantToString: Port/Baud приходять ЧИСЛАМИ, а
+                // VoidAsRefund — БУЛЕВИМ, і пряме приведення до рядка кинуло б.
+                const std::string n = VariantToString(name);
+                const std::string v = VariantToString(value);
                 if (n == "EquipmentType") {
                     // ⚠️ 1С передає ІМ'Я ЗНАЧЕННЯ ПЕРЕЛІКУ (ЭквайринговыйТерминал),
                     // а не англійський рядок ІТС. Порівнюємо толерантно й приймаємо
@@ -329,7 +385,7 @@ void AddinEcrBpoBase::RegisterSystemMethods() {
     AddFunction(u"Disconnect", u"Отключить",
         Ret([this](VH deviceId) -> bool {
             try {
-                const std::string id = deviceId;
+                const std::string id = VariantToString(deviceId);
                 if (!deviceId_.empty() && id != deviceId_) {
                     SetError(1, "Невідомий ідентифікатор пристрою: " + id);
                     return false;
@@ -409,7 +465,7 @@ void AddinEcrBpoBase::RegisterSystemMethods() {
     AddFunction(u"DoAdditionalAction", u"ВыполнитьДополнительноеДействие",
         Ret([this](VH actionName) -> bool {
             try {
-                const std::string action = actionName;
+                const std::string action = VariantToString(actionName);
                 if (action != "XReport") {
                     SetError(2, "Невідома додаткова дія: " + action);
                     return false;
@@ -429,7 +485,7 @@ void AddinEcrBpoBase::RegisterSystemMethods() {
     AddFunction(u"TerminalParameters", u"ПараметрыТерминала",
         Ret([this](VH deviceId, VH out) -> bool {
             try {
-                const std::string id = deviceId;
+                const std::string id = VariantToString(deviceId);
                 if (!CheckDeviceId(id)) return false;
                 const std::string model = driver_.Model();
                 out = std::string(
@@ -458,5 +514,80 @@ void AddinEcrBpoBase::RegisterSystemMethods() {
     AddFunction(u"PrintSlipOnTerminal", u"ПечатьКвитанцийНаТерминале",
         Ret([this]() -> bool { ClearError(); return true; }));
 
+    RegisterAsyncExtensions();
+
     REPORT_INFO("Реєстрація системних методів БПО-фасаду еквайрингу завершена");
+}
+
+// ==================== асинхронне розширення поверх БПО ====================
+//
+// Штатний обробник БПО цих методів не знає й ніколи не покличе — він працює лише
+// синхронним контрактом. Їх бере РОЗШИРЕННЯ 1С із точки розширення РМК
+// (`МенеджерОборудованияРМККлиентПереопределяемый.НачатьВыполнениеОперацииНа-
+// ЭквайринговомТерминале`), взявши ТОЙ САМИЙ екземпляр через
+// `ПодключенноеУстройство.ОбъектДрайвера`.
+//
+// Чому саме тут, а не в прямому класі `ECRPrivatJSON`: доступ до термінала
+// МОНОПОЛЬНИЙ. Обладнання вже підключене цим об'єктом, тож другий об'єкт до того
+// самого термінала не під'єднається. Один об'єкт — обидва режими.
+//
+// Навіщо взагалі: під час синхронного виклику драйвера клієнтський потік 1С мертвий
+// (зміряно зондом — див. bpo-contract.md §4), тож живий статус можливий лише коли
+// операцію веде розширення: старт → полінг стану й статусу → результат.
+void AddinEcrBpoBase::RegisterAsyncExtensions() {
+
+    AddFunction(u"StartPurchase", u"НачатьОплату",
+        Ret([this](VH amount) -> bool {
+            try {
+                if (deviceId_.empty()) { SetError(1, "Обладнання не підключено"); return false; }
+                ClearError();
+                return driver_.StartPurchase(AmountToString(static_cast<double>(amount)));
+            } catch (const std::exception& e) {
+                SetError(-1, e.what());
+                REPORT_ERROR(std::string("Помилка НачатьОплату: ") + e.what());
+                return false;
+            }
+        }),
+        std::vector<ParamSpec>{ ParamSpec{ u"Amount", u"Сумма", true, {} } });
+
+    AddFunction(u"StartRefund", u"НачатьВозврат",
+        Ret([this](VH amount, VH rrn) -> bool {
+            try {
+                if (deviceId_.empty()) { SetError(1, "Обладнання не підключено"); return false; }
+                ClearError();
+                return driver_.StartRefund(AmountToString(static_cast<double>(amount)),
+                                           VariantToString(rrn));
+            } catch (const std::exception& e) {
+                SetError(-1, e.what());
+                REPORT_ERROR(std::string("Помилка НачатьВозврат: ") + e.what());
+                return false;
+            }
+        }),
+        std::vector<ParamSpec>{ ParamSpec{ u"Amount", u"Сумма", true, {} },
+                                ParamSpec{ u"RRN", u"СсылочныйНомер", true, {} } });
+
+    // 0 Idle, 1 Running, 2 Interrupting, 3 Done, 4 Error
+    AddFunction(u"OperationState", u"СостояниеОперации",
+        Ret([this]() -> int { return static_cast<int>(driver_.OperationState()); }));
+
+    AddFunction(u"OperationResult", u"РезультатОперацииJSON",
+        Ret([this]() -> std::string {
+            ResultEnvelope out;
+            if (driver_.TryGetOperationResult(out))
+                return out.ToJson().dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+            return std::string("{}");
+        }));
+
+    // Онлайн-статус термінала, -1..11. Живий ЛИШЕ під час операції; читання дешеве
+    // (атомік), термінала не турбує — тож полінг розширенням безпечний.
+    AddFunction(u"LastStatus", u"СтатусТерминала",
+        Ret([this]() -> int { return driver_.LastStatus(); }));
+
+    AddProcedure(u"CancelOperation", u"ПрерватьОперацию",
+        MethFunction(std::function<void()>([this]() {
+            try { driver_.CancelOperation(); }
+            catch (const std::exception& e) {
+                REPORT_ERROR(std::string("Помилка ПрерватьОперацию: ") + e.what());
+            }
+        })));
 }

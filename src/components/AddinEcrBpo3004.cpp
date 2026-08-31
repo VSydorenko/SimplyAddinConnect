@@ -73,9 +73,8 @@ void AddinEcrBpo3004::RegisterPaymentMethods() {
     AddFunction(u"PayByPaymentCard", u"ОплатитьПлатежнойКартой",
         Ret([this, fillOut](VH deviceId, VH cardNo, VH amount, VH receiptNo,
                             VH rrn, VH authCode, VH slip) -> bool {
-            const std::string id = deviceId;
-            if (!CheckDeviceId(id)) return false;
-            const ResultEnvelope env = RunPurchase(static_cast<double>(amount));
+            if (!CheckDeviceId(VariantToString(deviceId))) return false;
+            const ResultEnvelope env = RunPurchase(VariantToDouble(amount));
             if (!MapEnvToBool(env)) return false;
             fillOut(env, cardNo, amount, receiptNo, rrn, authCode, slip);
             return true;
@@ -85,33 +84,36 @@ void AddinEcrBpo3004::RegisterPaymentMethods() {
     AddFunction(u"ReturnPaymentByPaymentCard", u"ВернутьПлатежПоПлатежнойКарте",
         Ret([this, fillOut](VH deviceId, VH cardNo, VH amount, VH receiptNo,
                             VH rrn, VH authCode, VH slip) -> bool {
-            const std::string id = deviceId;
-            if (!CheckDeviceId(id)) return false;
+            if (!CheckDeviceId(VariantToString(deviceId))) return false;
             // Повернення робиться за RRN вихідної операції — він приходить у
             // СсылочныйНомер і на цій позиції ж повертається новим значенням.
-            const std::string originalRrn = rrn;
-            const ResultEnvelope env = RunRefund(static_cast<double>(amount), originalRrn);
+            const std::string originalRrn = VariantToString(rrn);
+            const ResultEnvelope env = RunRefund(VariantToDouble(amount), originalRrn);
             if (!MapEnvToBool(env)) return false;
             fillOut(env, cardNo, amount, receiptNo, rrn, authCode, slip);
             return true;
         }),
         seven);
 
-    // Скасування драйвер не реалізує. Реєструємо метод і чесно відмовляємо —
-    // вимога ІТС §1.3; мовчазний успіх тут був би найгіршим варіантом.
-    // На 3004 прапорця ЧастичнаяОтмена перед викликом немає, тож ця гілка ДОСЯЖНА.
+    // Скасування (сторно) — сценарій «картку списано, а чек не пробився»; РМК кличе
+    // його з ВыполнитьСторноОплатыПоКарте. Власної операції void термінал не має,
+    // тож за параметром `VoidAsRefund` (дефолт увімкнено) воно виконується
+    // ПОВЕРНЕННЯМ за RRN; вимкнений параметр → чесна відмова (§2.3.1 доку).
+    // На 3004 прапорця перед викликом немає, тож обидві гілки досяжні.
     AddFunction(u"CancelPaymentByPaymentCard", u"ОтменитьПлатежПоПлатежнойКарте",
-        Ret([this](VH deviceId, VH, VH, VH, VH, VH, VH) -> bool {
-            const std::string id = deviceId;
-            if (!CheckDeviceId(id)) return false;
-            return MapEnvToBool(RunVoid());
+        Ret([this, fillOut](VH deviceId, VH cardNo, VH amount, VH receiptNo,
+                            VH rrn, VH authCode, VH slip) -> bool {
+            if (!CheckDeviceId(VariantToString(deviceId))) return false;
+            const ResultEnvelope env = RunVoid(VariantToDouble(amount), VariantToString(rrn));
+            if (!MapEnvToBool(env)) return false;
+            fillOut(env, cardNo, amount, receiptNo, rrn, authCode, slip);
+            return true;
         }),
         seven);
 
     AddFunction(u"CardDayTotals", u"ИтогиДняПоКартам",
         Ret([this](VH deviceId, VH slip) -> bool {
-            const std::string id = deviceId;
-            if (!CheckDeviceId(id)) return false;
+            if (!CheckDeviceId(VariantToString(deviceId))) return false;
             const ResultEnvelope env = RunDayTotals();
             if (!MapEnvToBool(env)) return false;
             slip = PayloadStr(env, "receipt");
@@ -122,8 +124,7 @@ void AddinEcrBpo3004::RegisterPaymentMethods() {
 
     AddFunction(u"EmergencyCancelOperation", u"АварийнаяОтменаОперации",
         Ret([this](VH deviceId) -> bool {
-            const std::string id = deviceId;
-            if (!CheckDeviceId(id)) return false;
+            if (!CheckDeviceId(VariantToString(deviceId))) return false;
             return MapEnvToBool(RunEmergencyVoid());
         }),
         std::vector<ParamSpec>{ ParamSpec{ u"DeviceID", u"ИДУстройства", false, {} } });
