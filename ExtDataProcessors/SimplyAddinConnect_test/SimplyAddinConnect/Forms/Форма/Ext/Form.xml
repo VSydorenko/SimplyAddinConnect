@@ -615,16 +615,6 @@
 							<CommandName>Form.Command.СверкаECR</CommandName>
 							<ExtendedTooltip name="КнопкаСверкаECRTooltip" id="255"/>
 						</Button>
-						<Button name="КнопкаЗондПотока" id="500">
-							<Type>UsualButton</Type>
-							<CommandName>Form.Command.ЗондПотока</CommandName>
-							<ExtendedTooltip name="КнопкаЗондПотокаTooltip" id="501"/>
-						</Button>
-						<Button name="КнопкаЗондВходВыход" id="502">
-							<Type>UsualButton</Type>
-							<CommandName>Form.Command.ЗондВходВыход</CommandName>
-							<ExtendedTooltip name="КнопкаЗондВходВыходTooltip" id="503"/>
-						</Button>
 					</ChildItems>
 				</UsualGroup>
 			</ChildItems>
@@ -1259,26 +1249,6 @@
 				</v8:item>
 			</Title>
 			<Action>СверкаECR</Action>
-			<CurrentRowUse>DontUse</CurrentRowUse>
-		</Command>
-		<Command name="ЗондПотока" id="504">
-			<Title>
-				<v8:item>
-					<v8:lang>ru</v8:lang>
-					<v8:content>Зонд 0.7: живість потоку</v8:content>
-				</v8:item>
-			</Title>
-			<Action>ЗондПотока</Action>
-			<CurrentRowUse>DontUse</CurrentRowUse>
-		</Command>
-		<Command name="ЗондВходВыход" id="505">
-			<Title>
-				<v8:item>
-					<v8:lang>ru</v8:lang>
-					<v8:content>Зонд 0.5: IN/OUT-параметри</v8:content>
-				</v8:item>
-			</Title>
-			<Action>ЗондВходВыход</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
 		</Command>
 		<Command name="НачатьОплатуECR" id="21">

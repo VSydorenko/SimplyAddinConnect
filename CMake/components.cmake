@@ -37,7 +37,6 @@ set(HEADER_FILES
     src/components/AddinEcrBpoBase.h
     src/components/AddinEcrBpo3004.h
     src/components/AddinEcrBpo4000.h
-    src/components/AddinProbeBPO.h          # ТИМЧАСОВО (гілка bpo-acquiring-prep)
 )
 
 ## @var SOURCE_FILES
@@ -65,7 +64,6 @@ set(SOURCE_FILES
     src/components/AddinEcrBpoBase.cpp
     src/components/AddinEcrBpo3004.cpp
     src/components/AddinEcrBpo4000.cpp
-    src/components/AddinProbeBPO.cpp        # ТИМЧАСОВО (гілка bpo-acquiring-prep)
 )
 
 ## @var RESOURCE_FILES
@@ -319,27 +317,6 @@ target_compile_definitions(ecr_bpo_facade_component PRIVATE _WINDOWS UNICODE _UN
 add_dependencies(ecr_bpo_facade_component base_component spdlog nlohmann_json helpers_component
     driver_ecr_privatjson_component platform_component)
 
-## @var probe_bpo_component
-## @brief ТИМЧАСОВА зонд-компонента ProbeBPO (гілка bpo-acquiring-prep) — прибрати перед merge.
-## @note Знімає дві невизначеності перед БПО-фасадом еквайрингу: поведінку IN/OUT-параметрів
-##       і живість клієнтського потоку 1С під час блокуючого `Ждать ...Асинх`. Деталі —
-##       у шапці src/components/AddinProbeBPO.h. Залежить лише від ядра й хелперів.
-add_library(probe_bpo_component OBJECT
-    src/components/AddinProbeBPO.h
-    src/components/AddinProbeBPO.cpp
-)
-set_target_properties(probe_bpo_component PROPERTIES
-    POSITION_INDEPENDENT_CODE ON
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-)
-target_include_directories(probe_bpo_component PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
-    ${SPDLOG_INCLUDE_DIR}
-)
-target_compile_definitions(probe_bpo_component PRIVATE _WINDOWS UNICODE _UNICODE)
-add_dependencies(probe_bpo_component base_component spdlog helpers_component)
 
 ## @var uapki_helper_component
 ## @brief Вспомогательный компонент для работы с библиотекой UAPKI
@@ -441,7 +418,6 @@ add_library(${TARGET} SHARED
     $<TARGET_OBJECTS:driver_label_printer_component>
     $<TARGET_OBJECTS:label_facade_component>
     $<TARGET_OBJECTS:ecr_bpo_facade_component>
-    $<TARGET_OBJECTS:probe_bpo_component>   # ТИМЧАСОВО (гілка bpo-acquiring-prep) — прибрати перед merge
     # $<TARGET_OBJECTS:ecrcommx_component>
     # $<TARGET_OBJECTS:posapi_component>
 
