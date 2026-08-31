@@ -169,8 +169,12 @@ int main() {
             return R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":"0"},"error":false})";
         return "";
     });
+    // Повний набір полів, як віддає реальний термінал: БПО-фасад розкладає їх
+    // по OUT-параметрах, і саме це перевіряє крок 7.
     emu.OnRequest("Purchase", [](const json&) {
-        return std::string(R"({"method":"Purchase","params":{"responseCode":"0000","invoiceNumber":"77"},"error":false})");
+        return std::string(R"({"method":"Purchase","params":{"responseCode":"0000","invoiceNumber":"77",)"
+                           R"("rrn":"555000111","approvalCode":"A12345","cardPAN":"444455**1234",)"
+                           R"("amount":"100.50","receiptText":"СЛІП\nрядок 2"},"error":false})");
     });
     CHECK(emu.Start(), "L3: емулятор стартував");
 
@@ -237,10 +241,167 @@ int main() {
         }
     }
 
-    // 6) Прибирання: знищити об'єкт компоненти й вивантажити DLL.
+    // 6) Відключити прямий клас — доступ до термінала монопольний, і БПО-фасад
+    //    нижче має підключитися сам.
     comp->FindMethod(L"Disconnect") >= 0
         ? (void)comp->CallAsProc(comp->FindMethod(L"Disconnect"), nullptr, 0)
         : (void)0;
+
+    // ================= 7) БПО-фасад ревізії 3004 через ту саму DLL =================
+    // Перевіряє найризикованіше: диспетчеризацію семи параметрів, IN/OUT-запис у
+    // слоти платформи, числову СуммаОперации (VTYPE_R8) і чесну відмову там, де
+    // драйвер операції не має. Контракт — docs/architecture/bpo-contract.md §2.4.
+    {
+        IComponentBase* bpo = nullptr;
+        pGetClassObject(L"ECRPrivatBPO3004", &bpo);
+        CHECK(bpo != nullptr, "L3-bpo: компонента ECRPrivatBPO3004 створена через DLL");
+
+        if (bpo) {
+            HostConnect bconn;
+            HostMemoryManager bmem;
+            CHECK(bpo->Init((void*)&bconn) && bpo->setMemManager((void*)&bmem),
+                  "L3-bpo: Init + setMemManager");
+
+            // Ревізія — рівно 3004, інакше 1С візьме іншу розкладку параметрів.
+            long idxRev = bpo->FindMethod(L"GetInterfaceRevision");
+            CHECK(idxRev >= 0, "L3-bpo: ПолучитьРевизиюИнтерфейса знайдено");
+            if (idxRev >= 0) {
+                tVariant ret; tVarInit(&ret);
+                bpo->CallAsFunc(idxRev, &ret, nullptr, 0);
+                long rev = (ret.vt == VTYPE_I4) ? ret.lVal : (long)ret.dblVal;
+                CHECK(rev == 3004, "L3-bpo: ревізія інтерфейсу == 3004");
+            }
+
+            // EquipmentType приходить ІМЕНЕМ ЗНАЧЕННЯ ПЕРЕЛІКУ, не англійським рядком.
+            long idxSetParam = bpo->FindMethod(L"SetParameter");
+            CHECK(idxSetParam >= 0, "L3-bpo: УстановитьПараметр знайдено");
+            auto setParam = [&](const char* name, const std::string& value) -> bool {
+                bool rb = false; std::string rs; bool gotStr = false;
+                callFunc(bpo, idxSetParam, { name, value }, rb, rs, gotStr);
+                return rb;
+            };
+            if (idxSetParam >= 0) {
+                CHECK(setParam("EquipmentType", "ЭквайринговыйТерминал"),
+                      "L3-bpo: УстановитьПараметр(EquipmentType) прийнято");
+                CHECK(!setParam("EquipmentType", "BarcodeScanner"),
+                      "L3-bpo: чужий тип обладнання відхилено");
+                setParam("EquipmentType", "ЭквайринговыйТерминал");
+                setParam("TransportKind", "tcp");
+                setParam("Host", "127.0.0.1");
+                setParam("Port", std::to_string(emu.Port()));
+            }
+
+            // Подключить: параметрів не приймає, ИДУстройства — OUT.
+            std::string deviceId;
+            long idxBpoConnect = bpo->FindMethod(L"Connect");
+            CHECK(idxBpoConnect >= 0, "L3-bpo: Подключить знайдено");
+            if (idxBpoConnect >= 0) {
+                tVariant p; tVarInit(&p);
+                tVariant ret; tVarInit(&ret);
+                bpo->CallAsFunc(idxBpoConnect, &ret, &p, 1);
+                bool rb = (ret.vt == VTYPE_BOOL) && ret.bVal;
+                if (p.vt == VTYPE_PWSTR && p.pwstrVal) {
+                    deviceId = u16to8(reinterpret_cast<const wchar_t*>(p.pwstrVal), p.wstrLen);
+                    free(p.pwstrVal);
+                }
+                CHECK(rb, "L3-bpo: Подключить → true");
+                CHECK(!deviceId.empty(), "L3-bpo: ИДУстройства повернуто в OUT");
+            }
+
+            // ОплатитьПлатежнойКартой: сімка, позиція 2 — ЧИСЛО, решта після
+            // ИДУстройства — IN/OUT. Перевіряємо саме запис назад у слоти.
+            long idxPay = bpo->FindMethod(L"PayByPaymentCard");
+            CHECK(idxPay >= 0, "L3-bpo: ОплатитьПлатежнойКартой знайдено");
+            if (idxPay >= 0 && !deviceId.empty()) {
+                std::wstring wDev = u8to16(deviceId);
+                tVariant p[7];
+                for (auto& v : p) tVarInit(&v);
+                p[0].vt = VTYPE_PWSTR; p[0].pwstrVal = (WCHAR_T*)wDev.c_str();
+                p[0].wstrLen = (uint32_t)wDev.size();
+                p[2].vt = VTYPE_R8;    p[2].dblVal = 100.50;
+                // 1,3..6 лишаються VTYPE_EMPTY — саме так 1С шле незаповнені IN/OUT.
+
+                tVariant ret; tVarInit(&ret);
+                bool ok = bpo->CallAsFunc(idxPay, &ret, p, 7);
+                bool rb = (ret.vt == VTYPE_BOOL) && ret.bVal;
+                CHECK(ok && rb, "L3-bpo: ОплатитьПлатежнойКартой → true");
+
+                auto outStr = [](const tVariant& v) -> std::string {
+                    return (v.vt == VTYPE_PWSTR && v.pwstrVal)
+                        ? u16to8(reinterpret_cast<const wchar_t*>(v.pwstrVal), v.wstrLen)
+                        : std::string{};
+                };
+                const std::string card = outStr(p[1]);
+                const std::string receipt = outStr(p[3]);
+                const std::string rrn = outStr(p[4]);
+                const std::string auth = outStr(p[5]);
+                const std::string slip = outStr(p[6]);
+                std::printf("  bpo OUT: card=%s amount=%.2f receipt=%s rrn=%s auth=%s slipLen=%zu\n",
+                            card.c_str(), p[2].dblVal, receipt.c_str(), rrn.c_str(),
+                            auth.c_str(), slip.size());
+
+                CHECK(card == "444455**1234", "L3-bpo: НомерКарты записано в OUT");
+                CHECK(receipt == "77",        "L3-bpo: НомерЧека записано в OUT");
+                CHECK(rrn == "555000111",     "L3-bpo: СсылочныйНомер записано в OUT");
+                CHECK(auth == "A12345",       "L3-bpo: КодАвторизации записано в OUT");
+                CHECK(!slip.empty() && slip.find('\n') != std::string::npos,
+                      "L3-bpo: ТекстСлипЧека багаторядковий, записано в OUT");
+                CHECK(p[2].vt == VTYPE_R8 && p[2].dblVal > 100.49 && p[2].dblVal < 100.51,
+                      "L3-bpo: СуммаОперации лишилась числом і не втратила дріб");
+
+                for (int i = 1; i < 7; ++i)
+                    if (p[i].vt == VTYPE_PWSTR && p[i].pwstrVal) free(p[i].pwstrVal);
+            }
+
+            // Скасування драйвер не реалізує — має бути ЧЕСНА ВІДМОВА, не мовчазний
+            // успіх, із текстом «не підтримується обладнанням» (вимога ІТС §1.3).
+            long idxVoid = bpo->FindMethod(L"CancelPaymentByPaymentCard");
+            CHECK(idxVoid >= 0, "L3-bpo: ОтменитьПлатежПоПлатежнойКарте зареєстровано");
+            if (idxVoid >= 0 && !deviceId.empty()) {
+                std::wstring wDev = u8to16(deviceId);
+                tVariant p[7];
+                for (auto& v : p) tVarInit(&v);
+                p[0].vt = VTYPE_PWSTR; p[0].pwstrVal = (WCHAR_T*)wDev.c_str();
+                p[0].wstrLen = (uint32_t)wDev.size();
+                p[2].vt = VTYPE_R8;    p[2].dblVal = 10.0;
+
+                tVariant ret; tVarInit(&ret);
+                bpo->CallAsFunc(idxVoid, &ret, p, 7);
+                bool refused = (ret.vt == VTYPE_BOOL) && !ret.bVal;
+                CHECK(refused, "L3-bpo: скасування чесно відмовило (Ложь)");
+
+                long idxErr = bpo->FindMethod(L"GetLastError");
+                if (idxErr >= 0) {
+                    tVariant ep; tVarInit(&ep);
+                    tVariant eret; tVarInit(&eret);
+                    bpo->CallAsFunc(idxErr, &eret, &ep, 1);
+                    long code = (eret.vt == VTYPE_I4) ? eret.lVal : (long)eret.dblVal;
+                    std::string desc;
+                    if (ep.vt == VTYPE_PWSTR && ep.pwstrVal) {
+                        desc = u16to8(reinterpret_cast<const wchar_t*>(ep.pwstrVal), ep.wstrLen);
+                        free(ep.pwstrVal);
+                    }
+                    std::printf("  bpo GetLastError: code=%ld desc=%s\n", code, desc.c_str());
+                    CHECK(code == 3, "L3-bpo: ПолучитьОшибку код UNSUPPORTED == 3");
+                    CHECK(desc.find("не підтримується") != std::string::npos,
+                          "L3-bpo: опис помилки каже, що операція не підтримується");
+                }
+
+                for (int i = 1; i < 7; ++i)
+                    if (p[i].vt == VTYPE_PWSTR && p[i].pwstrVal) free(p[i].pwstrVal);
+            }
+
+            long idxBpoDisc = bpo->FindMethod(L"Disconnect");
+            if (idxBpoDisc >= 0 && !deviceId.empty()) {
+                bool rb = false; std::string rs; bool gotStr = false;
+                callFunc(bpo, idxBpoDisc, { deviceId }, rb, rs, gotStr);
+                CHECK(rb, "L3-bpo: Отключить → true");
+            }
+            pDestroyObject(&bpo);
+        }
+    }
+
+    // 8) Прибирання: знищити об'єкт компоненти й вивантажити DLL.
     pDestroyObject(&comp);
     FreeLibrary(h);
     emu.Stop();
