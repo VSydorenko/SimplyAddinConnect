@@ -36,6 +36,7 @@ set(HEADER_FILES
     src/components/AddinLabelPrinter.h
     src/components/AddinEcrBpoBase.h
     src/components/AddinEcrBpo3004.h
+    src/components/AddinEcrBpo4000.h
     src/components/AddinProbeBPO.h          # ТИМЧАСОВО (гілка bpo-acquiring-prep)
 )
 
@@ -63,6 +64,7 @@ set(SOURCE_FILES
     src/components/AddinLabelPrinter.cpp
     src/components/AddinEcrBpoBase.cpp
     src/components/AddinEcrBpo3004.cpp
+    src/components/AddinEcrBpo4000.cpp
     src/components/AddinProbeBPO.cpp        # ТИМЧАСОВО (гілка bpo-acquiring-prep)
 )
 
@@ -298,7 +300,9 @@ add_library(ecr_bpo_facade_component OBJECT
     src/components/AddinEcrBpoBase.h
     src/components/AddinEcrBpoBase.cpp
     src/components/AddinEcrBpo3004.h
+    src/components/AddinEcrBpo4000.h
     src/components/AddinEcrBpo3004.cpp
+    src/components/AddinEcrBpo4000.cpp
 )
 set_target_properties(ecr_bpo_facade_component PROPERTIES
     POSITION_INDEPENDENT_CODE ON

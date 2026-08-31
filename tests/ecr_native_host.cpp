@@ -477,7 +477,162 @@ int main() {
         }
     }
 
-    // 8) Прибирання: знищити об'єкт компоненти й вивантажити DLL.
+    // ================= 8) БПО-фасад ревізії 4000 =================
+    // Інше сімейство сигнатур: попереду з'являються НомерМерчанта і РеквизитыКартыQR,
+    // тож хвіст зсунутий. Перевіряємо саме РОЗКЛАДКУ — помилка на позицію тут була б
+    // тихою: жодного винятку, просто не ті дані в чеку. Контракт — bpo-contract.md §2.5.
+    {
+        IComponentBase* bpo = nullptr;
+        pGetClassObject(L"ECRPrivatBPO4000", &bpo);
+        CHECK(bpo != nullptr, "L3-bpo4000: компонента ECRPrivatBPO4000 створена через DLL");
+
+        if (bpo) {
+            HostConnect bconn;
+            HostMemoryManager bmem;
+            bpo->Init((void*)&bconn);
+            bpo->setMemManager((void*)&bmem);
+
+            long idxRev = bpo->FindMethod(L"GetInterfaceRevision");
+            if (idxRev >= 0) {
+                tVariant ret; tVarInit(&ret);
+                bpo->CallAsFunc(idxRev, &ret, nullptr, 0);
+                long rev = (ret.vt == VTYPE_I4) ? ret.lVal : (long)ret.dblVal;
+                CHECK(rev == 4000, "L3-bpo4000: ревізія інтерфейсу == 4000");
+            }
+
+            auto setInStr = [](tVariant& v, const std::wstring& s) {
+                tVarInit(&v);
+                const size_t bytes = (s.size() + 1) * sizeof(wchar_t);
+                v.vt = VTYPE_PWSTR;
+                v.pwstrVal = (WCHAR_T*)malloc(bytes);
+                memcpy(v.pwstrVal, s.c_str(), bytes);
+                v.wstrLen = (uint32_t)s.size();
+            };
+            auto outStr = [](const tVariant& v) -> std::string {
+                return (v.vt == VTYPE_PWSTR && v.pwstrVal)
+                    ? u16to8(reinterpret_cast<const wchar_t*>(v.pwstrVal), v.wstrLen)
+                    : std::string{};
+            };
+
+            long idxSetParam = bpo->FindMethod(L"SetParameter");
+            std::string deviceId;
+            if (idxSetParam >= 0) {
+                bool rb = false; std::string rs; bool gs = false;
+                callFunc(bpo, idxSetParam, { "EquipmentType", "ЭквайринговыйТерминал" }, rb, rs, gs);
+                callFunc(bpo, idxSetParam, { "TransportKind", "tcp" }, rb, rs, gs);
+                callFunc(bpo, idxSetParam, { "Host", "127.0.0.1" }, rb, rs, gs);
+                callFunc(bpo, idxSetParam, { "Port", std::to_string(emu.Port()) }, rb, rs, gs);
+            }
+            long idxConn = bpo->FindMethod(L"Connect");
+            if (idxConn >= 0) {
+                tVariant p; tVarInit(&p);
+                tVariant ret; tVarInit(&ret);
+                bpo->CallAsFunc(idxConn, &ret, &p, 1);
+                if (p.vt == VTYPE_PWSTR && p.pwstrVal) {
+                    deviceId = u16to8(reinterpret_cast<const wchar_t*>(p.pwstrVal), p.wstrLen);
+                    free(p.pwstrVal);
+                }
+                CHECK(ret.vt == VTYPE_BOOL && ret.bVal, "L3-bpo4000: Подключить → true");
+            }
+
+            // Дев'ятка оплати: хвіст із позиції 4, а не 1 як на 3004.
+            long idxPay = bpo->FindMethod(L"PayByPaymentCard");
+            CHECK(idxPay >= 0, "L3-bpo4000: ОплатитьПлатежнойКартой знайдено");
+            if (idxPay >= 0 && !deviceId.empty()) {
+                tVariant p[9];
+                for (auto& v : p) tVarInit(&v);
+                setInStr(p[0], u8to16(deviceId));
+                p[3].vt = VTYPE_R8; p[3].dblVal = 100.50;
+
+                tVariant ret; tVarInit(&ret);
+                bpo->CallAsFunc(idxPay, &ret, p, 9);
+                CHECK(ret.vt == VTYPE_BOOL && ret.bVal, "L3-bpo4000: ОплатитьПлатежнойКартой → true");
+                CHECK(outStr(p[4]) == "444455**1234", "L3-bpo4000: НомерКарты на позиції 4");
+                CHECK(outStr(p[5]) == "77",           "L3-bpo4000: НомерЧека на позиції 5");
+                CHECK(outStr(p[6]) == "555000111",    "L3-bpo4000: СсылочныйНомер на позиції 6");
+                CHECK(outStr(p[7]) == "A12345",       "L3-bpo4000: КодАвторизации на позиції 7");
+                CHECK(!outStr(p[8]).empty(),          "L3-bpo4000: ТекстСлипЧека на позиції 8");
+                CHECK(p[3].vt == VTYPE_R8 && p[3].dblVal > 100.49 && p[3].dblVal < 100.51,
+                      "L3-bpo4000: СуммаОперации на позиції 3, дріб уцілів");
+                for (auto& v : p)
+                    if (v.vt == VTYPE_PWSTR && v.pwstrVal) free(v.pwstrVal);
+            }
+
+            // Скасування — десятка. ГОЛОВНЕ: позиція 4 (СуммаОригинальнойОперации)
+            // конфігурацією назад НЕ читається, тож фасад не має в неї писати.
+            long idxVoid = bpo->FindMethod(L"CancelPaymentByPaymentCard");
+            CHECK(idxVoid >= 0, "L3-bpo4000: ОтменитьПлатежПоПлатежнойКарте знайдено");
+            if (idxVoid >= 0 && !deviceId.empty()) {
+                tVariant p[10];
+                for (auto& v : p) tVarInit(&v);
+                setInStr(p[0], u8to16(deviceId));
+                p[3].vt = VTYPE_R8; p[3].dblVal = 100.50;
+                p[4].vt = VTYPE_R8; p[4].dblVal = 0.0;      // повне скасування
+                setInStr(p[7], u8to16("555000111"));        // СсылочныйНомер
+
+                tVariant ret; tVarInit(&ret);
+                bpo->CallAsFunc(idxVoid, &ret, p, 10);
+                CHECK(ret.vt == VTYPE_BOOL && ret.bVal,
+                      "L3-bpo4000: скасування виконано (поверненням за RRN)");
+                CHECK(p[4].vt == VTYPE_R8 && p[4].dblVal == 0.0,
+                      "L3-bpo4000: СуммаОригинальнойОперации НЕ перезаписана (IN-only)");
+                CHECK(outStr(p[5]) == "444455**1234", "L3-bpo4000: НомерКарты на позиції 5");
+                CHECK(outStr(p[6]) == "78",           "L3-bpo4000: НомерЧека на позиції 6");
+                CHECK(outStr(p[8]) == "B67890",       "L3-bpo4000: КодАвторизации на позиції 8");
+                CHECK(!outStr(p[9]).empty(),          "L3-bpo4000: ТекстСлипЧека на позиції 9");
+                for (auto& v : p)
+                    if (v.vt == VTYPE_PWSTR && v.pwstrVal) free(v.pwstrVal);
+            }
+
+            // Часткове скасування не вміємо: ненульова СуммаОригинальнойОперации
+            // має дати явну відмову, а не скасування на іншу суму.
+            if (idxVoid >= 0 && !deviceId.empty()) {
+                tVariant p[10];
+                for (auto& v : p) tVarInit(&v);
+                setInStr(p[0], u8to16(deviceId));
+                p[3].vt = VTYPE_R8; p[3].dblVal = 50.0;
+                p[4].vt = VTYPE_R8; p[4].dblVal = 100.50;   // часткове
+                setInStr(p[7], u8to16("555000111"));
+
+                tVariant ret; tVarInit(&ret);
+                bpo->CallAsFunc(idxVoid, &ret, p, 10);
+                CHECK(ret.vt == VTYPE_BOOL && !ret.bVal,
+                      "L3-bpo4000: часткове скасування явно відхилено");
+                for (auto& v : p)
+                    if (v.vt == VTYPE_PWSTR && v.pwstrVal) free(v.pwstrVal);
+            }
+
+            // Методи, яких термінал не вміє, зареєстровані й чесно відмовляють.
+            long idxCash = bpo->FindMethod(L"PayByPaymentCardWithCashWithdrawal");
+            CHECK(idxCash >= 0, "L3-bpo4000: ОплатитьПлатежнойКартойCВыдачейНаличных зареєстровано");
+            if (idxCash >= 0 && !deviceId.empty()) {
+                tVariant p[10];
+                for (auto& v : p) tVarInit(&v);
+                setInStr(p[0], u8to16(deviceId));
+                p[3].vt = VTYPE_R8; p[3].dblVal = 100.0;
+                p[4].vt = VTYPE_R8; p[4].dblVal = 50.0;
+                tVariant ret; tVarInit(&ret);
+                bpo->CallAsFunc(idxCash, &ret, p, 10);
+                CHECK(ret.vt == VTYPE_BOOL && !ret.bVal,
+                      "L3-bpo4000: видача готівки чесно відмовила");
+                for (auto& v : p)
+                    if (v.vt == VTYPE_PWSTR && v.pwstrVal) free(v.pwstrVal);
+            }
+
+            long idxList = bpo->FindMethod(L"GetCardTransactions");
+            CHECK(idxList >= 0, "L3-bpo4000: ПолучитьОперацииПоКартам зареєстровано");
+
+            long idxDisc = bpo->FindMethod(L"Disconnect");
+            if (idxDisc >= 0 && !deviceId.empty()) {
+                bool rb = false; std::string rs; bool gs = false;
+                callFunc(bpo, idxDisc, { deviceId }, rb, rs, gs);
+                CHECK(rb, "L3-bpo4000: Отключить → true");
+            }
+            pDestroyObject(&bpo);
+        }
+    }
+
+    // 9) Прибирання: знищити об'єкт компоненти й вивантажити DLL.
     pDestroyObject(&comp);
     FreeLibrary(h);
     emu.Stop();

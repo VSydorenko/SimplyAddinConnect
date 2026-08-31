@@ -111,23 +111,8 @@ void AddinEcrBpo3004::RegisterPaymentMethods() {
         }),
         seven);
 
-    AddFunction(u"CardDayTotals", u"ИтогиДняПоКартам",
-        Ret([this](VH deviceId, VH slip) -> bool {
-            if (!CheckDeviceId(VariantToString(deviceId))) return false;
-            const ResultEnvelope env = RunDayTotals();
-            if (!MapEnvToBool(env)) return false;
-            slip = PayloadStr(env, "receipt");
-            return true;
-        }),
-        std::vector<ParamSpec>{ ParamSpec{ u"DeviceID", u"ИДУстройства",  false, {} },
-                                ParamSpec{ u"SlipText", u"ТекстСлипЧека", false, {} } });
-
-    AddFunction(u"EmergencyCancelOperation", u"АварийнаяОтменаОперации",
-        Ret([this](VH deviceId) -> bool {
-            if (!CheckDeviceId(VariantToString(deviceId))) return false;
-            return MapEnvToBool(RunEmergencyVoid());
-        }),
-        std::vector<ParamSpec>{ ParamSpec{ u"DeviceID", u"ИДУстройства", false, {} } });
+    // ИтогиДняПоКартам і АварийнаяОтменаОперации гілок за ревізією не мають —
+    // вони зареєстровані в базі й однакові для всіх фасадів.
 
     REPORT_INFO("Реєстрація платіжних методів ревізії 3004 завершена");
 }

@@ -514,6 +514,26 @@ void AddinEcrBpoBase::RegisterSystemMethods() {
     AddFunction(u"PrintSlipOnTerminal", u"ПечатьКвитанцийНаТерминале",
         Ret([this]() -> bool { ClearError(); return true; }));
 
+    // ---- Еквайрингові методи БЕЗ гілок за ревізією (звірено: 3004 і 4000 однакові) ----
+
+    AddFunction(u"CardDayTotals", u"ИтогиДняПоКартам",
+        Ret([this](VH deviceId, VH slip) -> bool {
+            if (!CheckDeviceId(VariantToString(deviceId))) return false;
+            const ResultEnvelope env = RunDayTotals();
+            if (!MapEnvToBool(env)) return false;
+            slip = PayloadStr(env, "receipt");
+            return true;
+        }),
+        std::vector<ParamSpec>{ ParamSpec{ u"DeviceID", u"ИДУстройства",  false, {} },
+                                ParamSpec{ u"SlipText", u"ТекстСлипЧека", false, {} } });
+
+    AddFunction(u"EmergencyCancelOperation", u"АварийнаяОтменаОперации",
+        Ret([this](VH deviceId) -> bool {
+            if (!CheckDeviceId(VariantToString(deviceId))) return false;
+            return MapEnvToBool(RunEmergencyVoid());
+        }),
+        std::vector<ParamSpec>{ ParamSpec{ u"DeviceID", u"ИДУстройства", false, {} } });
+
     RegisterAsyncExtensions();
 
     REPORT_INFO("Реєстрація системних методів БПО-фасаду еквайрингу завершена");
