@@ -819,8 +819,9 @@ git commit -m "refactor(bpo): виділено BpoFacadeBase — контрак�
 - Delete: `src/components/AddinEcrBpoBase.h`, `src/components/AddinEcrBpoBase.cpp`
 - Modify: `src/components/AddinEcrBpo3004.{h,cpp}`, `src/components/AddinEcrBpo4000.{h,cpp}`
   (тільки базовий клас в `#include`/оголошенні + одна перевірка можливостей у 4000)
-- Modify: `CMake/components.cmake`, `CMake/compiler_settings.cmake`
-- Test: `tests/ecr_native_host.cpp` (**не редагувати**)
+- Modify: `CMake/components.cmake`, `CMake/compiler_settings.cmake`, `tests/CMakeLists.txt`
+- Test: `tests/ecr_privatjson_selftest.cpp` (**новий** тест гілки відкату скасування)
+- Test: `tests/ecr_native_host.cpp` (**не редагувати** — регресійний гейт)
 
 **Interfaces:**
 - Consumes: `BpoFacadeBase` (Задача 1), `MoneyToString`, `EcrPrivatJsonDriver`, `ResultEnvelope`.
@@ -1223,6 +1224,12 @@ ResultEnvelope AcquiringFacadeBase::RunRefund(double amount, const std::string& 
 ResultEnvelope AcquiringFacadeBase::RunVoid(double amount, const std::string& rrn) {
     // Є власна операція скасування — вона й правильна.
     ResultEnvelope env = Driver().Void(amount, rrn);
+    // ⚠️⚠️ ВІДКАТ НА ПОВЕРНЕННЯ — ТІЛЬКИ при UNSUPPORTED. Це про гроші.
+    // TIMEOUT/DISCONNECTED/DESYNC/SEND_FAILED означають «НЕВІДОМО, чи виконалось»:
+    // термінал МІГ скасувати операцію, а ми просто не отримали відповіді. Відкат на
+    // Refund після такого зрушив би гроші ДВІЧІ. UNSUPPORTED — єдина відповідь, що
+    // гарантує: команда термінала не досягла й нічого не сталося.
+    // Під тестом: TestVoidFallbackOnlyOnUnsupported у ecr_privatjson_selftest.
     if (env.code != "UNSUPPORTED") return env;
 
     if (!VoidAsRefundEnabled())
@@ -1384,7 +1391,115 @@ void AcquiringFacadeBase::RegisterAcquiringMethods() {
 }
 ```
 
-- [ ] **Крок 6: Перевести `AddinEcrBpo3004`/`AddinEcrBpo4000` на нову базу, видалити `AddinEcrBpoBase`**
+- [ ] **Крок 6: ⚠️ Тест на гілку відкату скасування — це про гроші**
+
+`RunVoid` відкочується на повернення **ТІЛЬКИ** при `UNSUPPORTED`. Будь-яка інша невдача
+`Void()` — відмова, і крапка. `TIMEOUT`/`DISCONNECTED`/`DESYNC`/`SEND_FAILED`/`BAD_RESPONSE`
+означають «**невідомо, чи виконалось**»: термінал МІГ скасувати операцію, а ми просто не
+отримали відповіді. Відкат на `Refund` після такого зрушив би гроші **двічі** — спершу
+скасування на терміналі, потім зворотна транзакція. `UNSUPPORTED` унікальний тим, що це
+єдина відповідь, яка гарантує: команда термінала не досягла й нічого не сталося.
+
+З результату методу цього не видно, тож тест перевіряє саме **факт невиклику** `Refund`.
+Без нього регресія «додамо відкат на будь-яку помилку, буде надійніше» пройде зеленою.
+
+У `tests/ecr_privatjson_selftest.cpp` додати перед `int main()`:
+
+```cpp
+#include "../src/components/AcquiringFacadeBase.h"   // до блоку include файлу
+#include <map>
+#include <memory>
+
+namespace {
+
+/// Лічильники викликів фейкового драйвера — саме їх перевіряє тест.
+struct FakeAcquiringState {
+    ResultEnvelope voidResult = AcquiringUnsupported("Скасування");
+    int voidCalls = 0;
+    int refundCalls = 0;
+};
+
+class FakeAcquiring : public IAcquiringDriver {
+public:
+    explicit FakeAcquiring(FakeAcquiringState* s) : s_(s) {}
+    ResultEnvelope Open(const std::map<std::string, std::string>&) override { return ResultEnvelope::Ok(); }
+    void Close() override {}
+    bool IsConnected() const override { return true; }
+    std::string Vendor() const override { return "FAKE"; }
+    std::string Model() const override { return "FAKE-1"; }
+    std::string DriverName() const override { return "Фейковий драйвер"; }
+    std::string DriverDescription() const override { return "Лише для тесту"; }
+    std::string SettingsXml() const override { return "<Settings/>"; }
+    AcquiringCapabilities Capabilities() const override { return {}; }
+    ResultEnvelope Probe() override { return ResultEnvelope::Ok(); }
+    ResultEnvelope Void(double, const std::string&) override {
+        ++s_->voidCalls;
+        return s_->voidResult;
+    }
+    ResultEnvelope Refund(double, const std::string&) override {
+        ++s_->refundCalls;
+        return ResultEnvelope::Ok({ { "rrn", "R-1" } });
+    }
+private:
+    FakeAcquiringState* s_;
+};
+
+/// Мінімальний конкретний фасад: методів у 1С не реєструє (RegisterSystemMethods не
+/// кличеться), потрібен лише щоб дістати RunVoid із фейковим драйвером під ним.
+class VoidProbeFacade : public AcquiringFacadeBase {
+public:
+    explicit VoidProbeFacade(FakeAcquiringState* s) : s_(s) {}
+    using AcquiringFacadeBase::RunVoid;   // відкриваємо protected-метод для тесту
+protected:
+    int InterfaceRevision() const override { return 3004; }
+    std::unique_ptr<IAcquiringDriver> MakeDriver() const override {
+        return std::make_unique<FakeAcquiring>(s_);
+    }
+private:
+    FakeAcquiringState* s_;
+};
+
+} // namespace
+
+static void TestVoidFallbackOnlyOnUnsupported() {
+    // 1) Власної операції void протокол не має -> штатний шлях: повернення за RRN.
+    {
+        FakeAcquiringState st;
+        st.voidResult = AcquiringUnsupported("Скасування");
+        VoidProbeFacade f(&st);
+        ResultEnvelope r = f.RunVoid(100.50, "555000111");
+        CHECK(r.ok, "Void=UNSUPPORTED + VoidAsRefund -> скасування виконано поверненням");
+        CHECK(st.voidCalls == 1 && st.refundCalls == 1,
+              "Void=UNSUPPORTED -> Void спитано, Refund викликано рівно раз");
+    }
+    // 2) TIMEOUT: термінал МІГ скасувати. Відкату бути НЕ МОЖЕ — інакше подвійний рух грошей.
+    {
+        FakeAcquiringState st;
+        st.voidResult = ResultEnvelope::Fail("TIMEOUT", "Термінал не відповів");
+        VoidProbeFacade f(&st);
+        ResultEnvelope r = f.RunVoid(100.50, "555000111");
+        CHECK(!r.ok && r.code == "TIMEOUT", "Void=TIMEOUT -> відмова з тим самим кодом");
+        CHECK(st.refundCalls == 0, "Void=TIMEOUT -> Refund НЕ викликано (подвійний рух грошей)");
+    }
+    // 3) Решта «невідомо, чи виконалось» — так само без відкату.
+    for (const char* code : { "DISCONNECTED", "DESYNC", "SEND_FAILED", "BAD_RESPONSE" }) {
+        FakeAcquiringState st;
+        st.voidResult = ResultEnvelope::Fail(code, "Збій зв'язку");
+        VoidProbeFacade f(&st);
+        ResultEnvelope r = f.RunVoid(100.50, "555000111");
+        const std::string name =
+            std::string("Void=") + code + " -> відмова без відкату на повернення";
+        CHECK(!r.ok && r.code == code && st.refundCalls == 0, name.c_str());
+    }
+}
+```
+
+Зареєструвати в `main()` поруч із `TestFacadeSmoke();`:
+```cpp
+    TestVoidFallbackOnlyOnUnsupported();
+```
+
+- [ ] **Крок 7: Перевести `AddinEcrBpo3004`/`AddinEcrBpo4000` на нову базу, видалити `AddinEcrBpoBase`**
 
 В обох `.h`: `#include "AddinEcrBpoBase.h"` → `#include "AcquiringFacadeBase.h"`,
 `: public AddinEcrBpoBase` → `: public AcquiringFacadeBase`. `.cpp` не міняються, окрім
@@ -1407,7 +1522,7 @@ void AcquiringFacadeBase::RegisterAcquiringMethods() {
 відмовами через `Unsupported(...)`: відповідних операцій в `IAcquiringDriver` немає навмисно —
 їх додасть другий протокол, коли справді вмітиме (спека, «не вгадуємо наперед»).
 
-- [ ] **Крок 7: CMake — ціль `acquiring_facade_component`, новий склад `ecr_bpo_facade_component`**
+- [ ] **Крок 8: CMake — ціль `acquiring_facade_component`, новий склад `ecr_bpo_facade_component`**
 
 У `CMake/components.cmake`:
 
@@ -1435,17 +1550,25 @@ add_dependencies(acquiring_facade_component base_component spdlog nlohmann_json
 (файли видалено), лишити `AddinEcrBpo3004.*` і `AddinEcrBpo4000.*`; у `add_dependencies`
 дописати `acquiring_facade_component`.
 `driver_ecr_privatjson_component`: додати `EcrPrivatJsonAcquiring.h`/`.cpp` до джерел.
+
+У `tests/CMakeLists.txt`, ціль `ecr_privatjson_selftest` — додати до списку джерел
+(потрібні для `TestVoidFallbackOnlyOnUnsupported` із кроку 6):
+```cmake
+    $<TARGET_OBJECTS:bpo_facade_component>          # BpoFacadeBase
+    $<TARGET_OBJECTS:acquiring_facade_component>    # AcquiringFacadeBase (RunVoid під тестом)
+```
+
 `HEADER_FILES`/`SOURCE_FILES`: замінити `AddinEcrBpoBase.*` на `AcquiringFacadeBase.*`,
 додати `src/drivers/IAcquiringDriver.h`, `src/drivers/ecr_privatjson/EcrPrivatJsonAcquiring.*`.
 `add_library(${TARGET} SHARED …)`: додати `$<TARGET_OBJECTS:acquiring_facade_component>`.
 
-- [ ] **Крок 8: ⚠️ `/utf-8` для `acquiring_facade_component`**
+- [ ] **Крок 9: ⚠️ `/utf-8` для `acquiring_facade_component`**
 
 ```cmake
     target_compile_options(acquiring_facade_component PRIVATE /utf-8)
 ```
 
-- [ ] **Крок 9: Гейт на обох архітектурах**
+- [ ] **Крок 10: Гейт на обох архітектурах**
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File run_tests.ps1 -NoUapki x64
@@ -1454,12 +1577,14 @@ powershell -ExecutionPolicy Bypass -File run_tests.ps1 -NoUapki x86
 Особливо: `L3-bpo: скасування виконано поверненням за RRN (VoidAsRefund)`,
 `L3-bpo: ПолучитьОшибку код UNSUPPORTED == 3`,
 `L3-bpo4000: часткове скасування явно відхилено` — саме їх зачіпає нова логіка.
-`git status` не має показувати змін у `tests/`.
+Плюс нові в `L0.7`: `Void=TIMEOUT -> Refund НЕ викликано (подвійний рух грошей)` і чотири
+`Void=<код> -> відмова без відкату на повернення`.
+`git status` не має показувати змін у `tests/ecr_native_host.cpp`.
 
-- [ ] **Крок 10: Коміт**
+- [ ] **Крок 11: Коміт**
 
 ```bash
-git add -A src/drivers src/components CMake
+git add -A src/drivers src/components CMake tests
 git commit -m "refactor(bpo): IAcquiringDriver + адаптер ПриватБанку, семантика еквайрингу без протоколу"
 ```
 
