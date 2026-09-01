@@ -20,7 +20,14 @@ ResultEnvelope AcquiringFacadeBase::Unsupported(const std::string& method) {
 // ---------------------------- операції ----------------------------
 
 ResultEnvelope AcquiringFacadeBase::RunPurchase(double amount) {
-    try { return Driver().Purchase(amount); }
+    try {
+        ResultEnvelope env = Driver().Purchase(amount);
+        // Адаптер ловить власні винятки в EXCEPTION-конверт (щоб не впасти повз
+        // ResultEnvelope), але сам не реєструє помилку для 1С — це робимо тут,
+        // так само, як робив REPORT_ERROR до рефакторингу на IAcquiringDriver.
+        if (env.code == "EXCEPTION") REPORT_ERROR(env.description);
+        return env;
+    }
     catch (const std::exception& e) {
         REPORT_ERROR(std::string("Помилка ОплатитьПлатежнойКартой: ") + e.what());
         return ResultEnvelope::Fail("EXCEPTION", e.what());
@@ -28,7 +35,11 @@ ResultEnvelope AcquiringFacadeBase::RunPurchase(double amount) {
 }
 
 ResultEnvelope AcquiringFacadeBase::RunRefund(double amount, const std::string& rrn) {
-    try { return Driver().Refund(amount, rrn); }
+    try {
+        ResultEnvelope env = Driver().Refund(amount, rrn);
+        if (env.code == "EXCEPTION") REPORT_ERROR(env.description);
+        return env;
+    }
     catch (const std::exception& e) {
         REPORT_ERROR(std::string("Помилка ВернутьПлатежПоПлатежнойКарте: ") + e.what());
         return ResultEnvelope::Fail("EXCEPTION", e.what());
@@ -56,7 +67,15 @@ ResultEnvelope AcquiringFacadeBase::RunVoid(double amount, const std::string& rr
 }
 
 ResultEnvelope AcquiringFacadeBase::RunEmergencyVoid() {
-    try { return Driver().EmergencyVoid(); }
+    try {
+        ResultEnvelope env = Driver().EmergencyVoid();
+        // Дефолт IAcquiringDriver::EmergencyVoid() не знає імен методів 1С —
+        // підміняємо опис на те ім'я, яке справді викликав користувач, щоб
+        // повідомлення лишилось таким самим інформативним, як до рефакторингу.
+        if (env.code == "UNSUPPORTED") return Unsupported("АварийнаяОтменаОперации");
+        if (env.code == "EXCEPTION") REPORT_ERROR(env.description);
+        return env;
+    }
     catch (const std::exception& e) {
         REPORT_ERROR(std::string("Помилка АварийнаяОтменаОперации: ") + e.what());
         return ResultEnvelope::Fail("EXCEPTION", e.what());
@@ -64,7 +83,11 @@ ResultEnvelope AcquiringFacadeBase::RunEmergencyVoid() {
 }
 
 ResultEnvelope AcquiringFacadeBase::RunDayTotals() {
-    try { return Driver().DayTotals(); }
+    try {
+        ResultEnvelope env = Driver().DayTotals();
+        if (env.code == "EXCEPTION") REPORT_ERROR(env.description);
+        return env;
+    }
     catch (const std::exception& e) {
         REPORT_ERROR(std::string("Помилка ИтогиДняПоКартам: ") + e.what());
         return ResultEnvelope::Fail("EXCEPTION", e.what());
@@ -117,6 +140,9 @@ bool AcquiringFacadeBase::ProbeDevice(std::string& resultOut, bool& demoOut) {
         resultOut = opened.description;
         return false;
     }
+    // Адреса, за якою відповів термінал, — головне, що адміністратор перевіряє
+    // в результаті ТестУстройства. Open() кладе рядок підключення в payload.
+    const std::string conn = PayloadStr(opened, "connection");
     const ResultEnvelope env = Driver().Probe();
     const std::string vendor = Driver().Vendor();
     const std::string model = Driver().Model();
@@ -127,7 +153,7 @@ bool AcquiringFacadeBase::ProbeDevice(std::string& resultOut, bool& demoOut) {
         resultOut = "Підключення є, але термінал відповів помилкою: " + env.code;
         return false;
     }
-    resultOut = "Термінал на зв'язку: " + vendor + " " + model;
+    resultOut = "Термінал на зв'язку: " + vendor + " " + model + " (" + conn + ")";
     ClearError();
     return true;
 }
