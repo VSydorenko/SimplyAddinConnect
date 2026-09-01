@@ -382,6 +382,47 @@ int main() {
                     if (v.vt == VTYPE_PWSTR && v.pwstrVal) free(v.pwstrVal);
             }
 
+            // ⚠️ ДРУГА ПОЛОВИНА ТІЄЇ САМОЇ ВИМОГИ: перевикористання живого каналу
+            // дозволене, тільки поки параметри ведуть НА ТУ САМУ ЦІЛЬ. Сценарій
+            // адміністратора: термінал підключений на робочій адресі, у формі
+            // налаштувань міняють адресу (тут — порт) і тиснуть «Тест устройства».
+            // Перевірка старого каналу відрапортувала б «Термінал на зв'язку» про
+            // адресу, якої ніхто не чіпав. Сусідній фасад AddinLabelPrinter цей
+            // сценарій ловить — еквайринговий зобов'язаний ловити так само.
+            if (idxTest >= 0 && idxSetParam >= 0 && !deviceId.empty()) {
+                // Port оголошено Number — шлемо ЧИСЛОМ, як платформа (див. вище).
+                auto setPortNumber = [&](double port) {
+                    std::wstring wn = u8to16("Port");
+                    tVariant pp[2];
+                    for (auto& v : pp) tVarInit(&v);
+                    pp[0].vt = VTYPE_PWSTR; pp[0].pwstrVal = (WCHAR_T*)wn.c_str();
+                    pp[0].wstrLen = (uint32_t)wn.size();
+                    pp[1].vt = VTYPE_R8;    pp[1].dblVal = port;
+                    tVariant r; tVarInit(&r);
+                    bpo->CallAsFunc(idxSetParam, &r, pp, 2);
+                };
+                // Порт 1: на ньому свідомо ніхто не слухає, з'єднання відхиляється
+                // одразу — нова ціль недосяжна, і чесна відповідь тесту тільки одна.
+                setPortNumber(1.0);
+
+                tVariant t[2];
+                for (auto& v : t) tVarInit(&v);
+                tVariant tret; tVarInit(&tret);
+                bpo->CallAsFunc(idxTest, &tret, t, 2);
+                const std::string movedText = (t[0].vt == VTYPE_PWSTR && t[0].pwstrVal)
+                    ? u16to8(reinterpret_cast<const wchar_t*>(t[0].pwstrVal), t[0].wstrLen)
+                    : std::string{};
+                std::printf("  РезультатТеста (ціль змінено): %s\n", movedText.c_str());
+                CHECK(!(tret.vt == VTYPE_BOOL && tret.bVal),
+                      "L3-bpo: ТестУстройства перевіряє НОВУ ціль, а не старий канал");
+                for (auto& v : t)
+                    if (v.vt == VTYPE_PWSTR && v.pwstrVal) free(v.pwstrVal);
+
+                // Повертаємо робочу ціль. Живий канал перевірка чужої адреси чіпати
+                // не мала права — це доводять перевірки нижче, які йдуть по ньому ж.
+                setPortNumber((double)emu.Port());
+            }
+
             // ПараметрыТерминала: за цими прапорцями конфігурація вирішує, які операції
             // показати касиру. Після переїзду прапорців у Capabilities() драйвера цей
             // рядок не мав змінитись — для ПриватБанку друк сліпа на терміналі увімкнено,

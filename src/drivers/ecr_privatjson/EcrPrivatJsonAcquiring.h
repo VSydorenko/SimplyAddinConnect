@@ -17,6 +17,7 @@ public:
     std::string DriverDescription() const override;
     std::string SettingsXml() const override;
     AcquiringCapabilities Capabilities() const override;
+    std::string TargetKey(const std::map<std::string, std::string>& params) const override;
     ResultEnvelope Probe() override;
 
     ResultEnvelope Purchase(double amount) override;

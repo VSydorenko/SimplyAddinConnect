@@ -124,6 +124,7 @@ bool AcquiringFacadeBase::OpenDevice(std::string& deviceIdOut) {
         SetError(CodeToInt(env.code), env.description);
         return false;
     }
+    activeTarget_ = Driver().TargetKey(Params());   // ціль живого каналу — її ж перевіряє ТестУстройства
     deviceIdOut = "ECR-1";   // поняття власного id протокол не має — синтезуємо стабільний
     return true;
 }
@@ -144,30 +145,52 @@ bool AcquiringFacadeBase::ProbeDevice(std::string& resultOut, bool& demoOut) {
     // Окрема короткоживуча сесія лишається шляхом для випадку, коли підключення
     // ще немає (форма налаштувань кличе ТестУстройства одразу після
     // УстановитьПараметр) — тоді закривати за собою правильно.
-    // Умова та сама, що на сусідньому фасаді AddinLabelPrinter::ProbeDevice.
-    const bool reuseActive = !DeviceId().empty();
+    //
+    // ⚠️ Але ЛИШЕ поки параметри форми ведуть на ТУ САМУ ціль. ТестУстройства читає
+    // параметри заново, і типовий сценарій діагностики — «термінал не відповідає,
+    // міняю адресу й тисну тест» — перепідключення НЕ робить. Перевіряти при цьому
+    // старий канал означає сказати «на зв'язку» про адресу, якої ніхто не чіпав.
+    // Ціль знає лише драйвер (у нього ж і форма налаштувань), тому фасад питає її
+    // ключем: сам він про tcp/COM не знає й знати не повинен.
+    // Умова та сама, що на сусідньому фасаді AddinLabelPrinter::ProbeDevice
+    // (там ключем цілі служить SameTarget(profile, activeProfile_)).
+    const std::string target = Driver().TargetKey(Params());
+    const bool reuseActive = !DeviceId().empty() && target == activeTarget_;
 
-    std::string conn;
+    // Ціль інша (або підключення ще немає) — перевіряємо ОКРЕМИМ короткоживучим
+    // драйвером, активного не чіпаємо взагалі.
+    //
+    // ⚠️ Тимчасовий драйвер тут ОБОВ'ЯЗКОВИЙ, а не косметика: сесія протоколу
+    // еквайрингу ОДНА на драйвер, і Open() на активному драйвері спершу зробив би
+    // Disconnect. Живий канал загинув би через саму лише спробу перевірити іншу
+    // адресу, а фінальний Close() лишив би драйвер роз'єднаним при заповненому
+    // ИДУстройства — рівно та регресія, яку закрито в a9436c3. Сусідній фасад тієї
+    // самої пастки не має задарма: його драйвер мультипристроєвий, і тимчасова
+    // перевірка йде ОКРЕМИМ пристроєм. Тут ту саму ізоляцію дає окремий екземпляр.
+    // Двох сесій до ОДНОГО термінала це не створює: гілка працює лише коли ціль інша.
+    std::unique_ptr<IAcquiringDriver> temporary;
+    if (!reuseActive) temporary = MakeDriver();
+    IAcquiringDriver& probeDriver = reuseActive ? Driver() : *temporary;
+
     if (!reuseActive) {
-        const ResultEnvelope opened = Driver().Open(Params());
+        const ResultEnvelope opened = probeDriver.Open(Params());
         if (!opened.ok) {
             SetError(CodeToInt(opened.code), opened.description);
             resultOut = opened.description;
             return false;
         }
-        // Адреса, за якою відповів термінал, — головне, що адміністратор перевіряє
-        // в результаті ТестУстройства. Open() кладе рядок підключення в payload.
-        conn = PayloadStr(opened, "connection");
     }
 
-    const ResultEnvelope env = Driver().Probe();
-    const std::string vendor = Driver().Vendor();
-    const std::string model = Driver().Model();
-    if (!reuseActive) Driver().Close();   // закриваємо ЛИШЕ власну тимчасову сесію
+    const ResultEnvelope env = probeDriver.Probe();
+    const std::string vendor = probeDriver.Vendor();
+    const std::string model = probeDriver.Model();
+    if (!reuseActive) probeDriver.Close();   // закриваємо ЛИШЕ власну тимчасову сесію
 
-    // Адреса відома тільки коли підключалися самі; при перевикористанні живого
-    // з'єднання її взяти нізвідки — тоді порожніх дужок не лишаємо.
-    const std::string where = conn.empty() ? std::string() : (" (" + conn + ")");
+    // Адреса, за якою перевірявся термінал, — головне, що адміністратор бачить у
+    // результаті ТестУстройства, і тепер вона відома в ОБОХ гілках: ключ цілі
+    // складається з параметрів, а не з відповіді Open. Порожній лишається хіба що
+    // при незаповнених параметрах — тоді порожніх дужок не малюємо.
+    const std::string where = target.empty() ? std::string() : (" (" + target + ")");
     if (!env.ok) {
         SetError(CodeToInt(env.code), env.description);
         resultOut = "Підключення є, але термінал відповів помилкою: " + env.code + where;

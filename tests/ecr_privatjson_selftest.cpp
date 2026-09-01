@@ -560,6 +560,9 @@ public:
     std::string DriverDescription() const override { return "Лише для тесту"; }
     std::string SettingsXml() const override { return "<Settings/>"; }
     AcquiringCapabilities Capabilities() const override { return {}; }
+    std::string TargetKey(const std::map<std::string, std::string>&) const override {
+        return "fake://void-probe";   // ціль фіксована: тест перевіряє RunVoid, не ProbeDevice
+    }
     ResultEnvelope Probe() override { return ResultEnvelope::Ok(); }
     ResultEnvelope Void(double, const std::string&) override {
         ++s_->voidCalls;

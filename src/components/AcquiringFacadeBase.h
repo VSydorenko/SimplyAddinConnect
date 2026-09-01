@@ -60,4 +60,9 @@ private:
     bool VoidAsRefundEnabled() const { return ParamBool("VoidAsRefund", true); }
 
     mutable std::unique_ptr<IAcquiringDriver> driver_;   ///< лінива ініціалізація, див. Driver()
+    /// Ключ ЦІЛІ активного з'єднання (IAcquiringDriver::TargetKey на момент вдалого
+    /// OpenDevice). Аналог activeProfile_ сусіднього фасаду AddinLabelPrinter: за ним
+    /// ProbeDevice розрізняє «перевіряю живий канал» і «параметри вже вказують на інше
+    /// обладнання». Порожній = підключення не було.
+    std::string activeTarget_;
 };

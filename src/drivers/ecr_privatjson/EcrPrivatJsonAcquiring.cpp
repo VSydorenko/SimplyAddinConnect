@@ -113,6 +113,18 @@ AcquiringCapabilities EcrPrivatJsonAcquiring::Capabilities() const {
     return c;
 }
 
+// Ключ цілі — ТОЙ САМИЙ рядок підключення, який піде в Open: він і є повний набір
+// того, зміна чого робить наявний канал непридатним (TransportKind + Host/Port або
+// ComPort/Baud). Baud тут не зайвий: порт лишається тим самим, але на іншій швидкості
+// канал доведеться перевідкрити. Решта параметрів форми — VoidAsRefund, журналювання —
+// у ключ НЕ входить: їх зміна не робить перевірене підключення неперевіреним.
+// Облікових даних протокол у параметрах не має, тож показувати ключ адміністратору
+// безпечно (див. вимогу видимості в IAcquiringDriver::TargetKey).
+std::string EcrPrivatJsonAcquiring::TargetKey(
+        const std::map<std::string, std::string>& params) const {
+    return BuildConnectionString(params);
+}
+
 ResultEnvelope EcrPrivatJsonAcquiring::Probe() {
     return drv_.Execute("GetTerminalInfo", nlohmann::json::object(), kProbeTimeoutMs);
 }
