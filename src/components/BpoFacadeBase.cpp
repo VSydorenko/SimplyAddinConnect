@@ -158,7 +158,7 @@ std::string BpoFacadeBase::BuildActionsXml() const {
 }
 
 bool BpoFacadeBase::RunAction(const std::string& name) {
-    SetError(2, "Невідома додаткова дія: " + name);
+    SetError(CodeToInt("BAD_INPUT"), "Невідома додаткова дія: " + name);
     return false;
 }
 
@@ -226,7 +226,7 @@ void BpoFacadeBase::RegisterSystemMethods() {
                 const std::string n = VariantToString(name);
                 const std::string v = VariantToString(value);
                 if (n == "EquipmentType" && !AcceptEquipmentType(v)) {
-                    SetError(2, "Непідтримуваний тип обладнання: " + v);
+                    SetError(CodeToInt("BAD_INPUT"), "Непідтримуваний тип обладнання: " + v);
                     return false;
                 }
                 params_[n] = v;
