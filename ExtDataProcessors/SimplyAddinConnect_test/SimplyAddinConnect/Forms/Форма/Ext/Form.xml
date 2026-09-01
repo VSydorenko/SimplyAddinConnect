@@ -697,6 +697,11 @@
 							<CommandName>Form.Command.ПодключитьПринтерLP</CommandName>
 							<ExtendedTooltip name="КнопкаПодключитьLPTooltip" id="315"/>
 						</Button>
+						<Button name="КнопкаТестLP" id="414">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.ТестУстройстваLP</CommandName>
+							<ExtendedTooltip name="КнопкаТестLPTooltip" id="415"/>
+						</Button>
 						<Button name="КнопкаИнициализироватьLP" id="316">
 							<Type>UsualButton</Type>
 							<CommandName>Form.Command.ИнициализироватьПринтерLP</CommandName>
@@ -1569,6 +1574,16 @@
 				</v8:item>
 			</Title>
 			<Action>ОтключитьПринтерLP</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ТестУстройстваLP" id="416">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Тест устройства LP</v8:content>
+				</v8:item>
+			</Title>
+			<Action>ТестУстройстваLP</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
 		</Command>
 		<Command name="СоздатьОбъектUAPKI" id="340">
