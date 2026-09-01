@@ -39,8 +39,10 @@ set(HEADER_FILES
     src/drivers/IAcquiringDriver.h
     src/drivers/ecr_privatjson/EcrPrivatJsonAcquiring.h
     src/components/AcquiringFacadeBase.h
-    src/components/AddinEcrBpo3004.h
-    src/components/AddinEcrBpo4000.h
+    src/components/AcquiringBpo3004.h
+    src/components/AcquiringBpo4000.h
+    src/components/EcrPrivatBpo3004.h
+    src/components/EcrPrivatBpo4000.h
 )
 
 ## @var SOURCE_FILES
@@ -68,8 +70,10 @@ set(SOURCE_FILES
     src/components/BpoFacadeBase.cpp
     src/drivers/ecr_privatjson/EcrPrivatJsonAcquiring.cpp
     src/components/AcquiringFacadeBase.cpp
-    src/components/AddinEcrBpo3004.cpp
-    src/components/AddinEcrBpo4000.cpp
+    src/components/AcquiringBpo3004.cpp
+    src/components/AcquiringBpo4000.cpp
+    src/components/EcrPrivatBpo3004.cpp
+    src/components/EcrPrivatBpo4000.cpp
 )
 
 ## @var RESOURCE_FILES
@@ -325,12 +329,17 @@ add_dependencies(bpo_facade_component base_component spdlog nlohmann_json helper
 
 ## @var acquiring_facade_component
 ## @brief Семантика еквайрингу поверх IAcquiringDriver (AcquiringFacadeBase) + ревізійні
-##        шари. ПРОТОКОЛУ НЕ ЗНАЄ — новий протокол реалізує IAcquiringDriver і додає два
-##        тонкі класи, не чіпаючи цю ціль.
+##        шари (AcquiringBpo3004/4000 — рівно розкладка параметрів платіжних методів).
+##        ПРОТОКОЛУ НЕ ЗНАЄ — новий протокол реалізує IAcquiringDriver і додає два
+##        тонкі класи (конкретний фасад), не чіпаючи цю ціль.
 add_library(acquiring_facade_component OBJECT
     src/drivers/IAcquiringDriver.h
     src/components/AcquiringFacadeBase.h
     src/components/AcquiringFacadeBase.cpp
+    src/components/AcquiringBpo3004.h
+    src/components/AcquiringBpo3004.cpp
+    src/components/AcquiringBpo4000.h
+    src/components/AcquiringBpo4000.cpp
 )
 set_target_properties(acquiring_facade_component PROPERTIES
     POSITION_INDEPENDENT_CODE ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
@@ -342,17 +351,18 @@ add_dependencies(acquiring_facade_component base_component spdlog nlohmann_json
     helpers_component platform_component bpo_facade_component)
 
 ## @var ecr_bpo_facade_component
-## @brief БПО-фасади еквайрингу над драйвером ECRPrivatJSON (контракт «Подключаемое оборудование»).
-## @details Семантику еквайрингу (методи можливостей, VoidAsRefund, асинхронне розширення)
-##          дає AcquiringFacadeBase поверх IAcquiringDriver; тут — лише ревізійний шар, на
-##          кожне СІМЕЙСТВО СИГНАТУР свій похідний клас (3004 — сімка; 4000 — дев'ятка).
-##          Одним класом не обійтися: одне ім'я методу = одна арність.
+## @brief Конкретні БПО-фасади еквайрингу ПриватБанк (контракт «Подключаемое оборудование»).
+## @details Розкладку параметрів платіжних методів і число ревізії дає ревізійний шар
+##          (AcquiringBpo3004/4000, ціль acquiring_facade_component); тут — рівно вибір
+##          протоколу (MakeDriver() -> EcrPrivatJsonAcquiring) і реєстрація компоненти
+##          в 1С (REGISTER_COMPONENT). Новий протокол додає такий самий тонкий клас,
+##          не чіпаючи цю ціль і ревізійний шар.
 ##          Контракт — docs/architecture/bpo-contract.md.
 add_library(ecr_bpo_facade_component OBJECT
-    src/components/AddinEcrBpo3004.h
-    src/components/AddinEcrBpo4000.h
-    src/components/AddinEcrBpo3004.cpp
-    src/components/AddinEcrBpo4000.cpp
+    src/components/EcrPrivatBpo3004.h
+    src/components/EcrPrivatBpo4000.h
+    src/components/EcrPrivatBpo3004.cpp
+    src/components/EcrPrivatBpo4000.cpp
 )
 set_target_properties(ecr_bpo_facade_component PROPERTIES
     POSITION_INDEPENDENT_CODE ON

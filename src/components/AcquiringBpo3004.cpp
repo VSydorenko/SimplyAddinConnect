@@ -1,11 +1,7 @@
 #include "../core/pch.h"
-#include "AddinEcrBpo3004.h"
+#include "AcquiringBpo3004.h"
 #include "../helpers/ServiceTools.h"
 #include <cstdlib>
-
-// Клас у 1С: "AddIn.<символьне ім'я>.ECRPrivatBPO3004". Адміністратор обирає його
-// записом довідника драйверів — автовизначення ревізії в БПО немає (§2.3 доку).
-REGISTER_COMPONENT(u"ECRPrivatBPO3004", AddinEcrBpo3004)
 
 namespace {
 
@@ -22,14 +18,13 @@ bool TryParseAmount(const std::string& s, double& out) {
 
 } // namespace
 
-AddinEcrBpo3004::AddinEcrBpo3004() {
-    REPORT_INFO("Ініціалізація БПО-фасаду еквайрингу, ревізія 3004");
+AcquiringBpo3004::AcquiringBpo3004() {
     RegisterSystemMethods();
     RegisterAcquiringMethods();
     RegisterPaymentMethods();
 }
 
-void AddinEcrBpo3004::RegisterPaymentMethods() {
+void AcquiringBpo3004::RegisterPaymentMethods() {
 
     // Спільна сімка ревізії 3004 для оплати/повернення/скасування:
     //   (ИДУстройства, НомерКарты, СуммаОперации, НомерЧека, СсылочныйНомер,

@@ -341,6 +341,41 @@ int main() {
                 v.wstrLen = (uint32_t)s.size();
             };
 
+            // ПараметрыТерминала: за цими прапорцями конфігурація вирішує, які операції
+            // показати касиру. Після переїзду прапорців у Capabilities() драйвера цей
+            // рядок не мав змінитись — для ПриватБанку друк сліпа на терміналі увімкнено,
+            // решта шість можливостей вимкнені.
+            long idxTermParams = bpo->FindMethod(L"TerminalParameters");
+            CHECK(idxTermParams >= 0, "L3-bpo: ПараметрыТерминала знайдено");
+            if (idxTermParams >= 0 && !deviceId.empty()) {
+                tVariant p[2];
+                for (auto& v : p) tVarInit(&v);
+                setInStr(p[0], u8to16(deviceId));
+                tVariant ret; tVarInit(&ret);
+                bpo->CallAsFunc(idxTermParams, &ret, p, 2);
+                const std::string xml = (p[1].vt == VTYPE_PWSTR && p[1].pwstrVal)
+                    ? u16to8(reinterpret_cast<const wchar_t*>(p[1].pwstrVal), p[1].wstrLen)
+                    : std::string{};
+                std::printf("  ПараметрыТерминала: %s\n", xml.c_str());
+                CHECK(ret.vt == VTYPE_BOOL && ret.bVal, "L3-bpo: ПараметрыТерминала -> true");
+                CHECK(xml.find("PrintSlipOnTerminal=\"true\"") != std::string::npos,
+                      "L3-bpo: PrintSlipOnTerminal=true (термінал друкує квитанції сам)");
+                CHECK(xml.find("PartialCancellation=\"false\"") != std::string::npos,
+                      "L3-bpo: PartialCancellation=false");
+                CHECK(xml.find("CashWithdrawal=\"false\"") != std::string::npos,
+                      "L3-bpo: CashWithdrawal=false");
+                CHECK(xml.find("ConsumerPresentedQR=\"false\"") != std::string::npos,
+                      "L3-bpo: ConsumerPresentedQR=false");
+                CHECK(xml.find("ElectronicCertificates=\"false\"") != std::string::npos,
+                      "L3-bpo: ElectronicCertificates=false");
+                CHECK(xml.find("ListCardTransactions=\"false\"") != std::string::npos,
+                      "L3-bpo: ListCardTransactions=false");
+                CHECK(xml.find("ShortSlip=\"false\"") != std::string::npos,
+                      "L3-bpo: ShortSlip=false");
+                for (auto& v : p)
+                    if (v.vt == VTYPE_PWSTR && v.pwstrVal) free(v.pwstrVal);
+            }
+
             // ОплатитьПлатежнойКартой: сімка, позиція 2 — ЧИСЛО, решта після
             // ИДУстройства — IN/OUT. Перевіряємо саме запис назад у слоти.
             long idxPay = bpo->FindMethod(L"PayByPaymentCard");

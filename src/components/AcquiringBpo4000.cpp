@@ -1,10 +1,7 @@
 #include "../core/pch.h"
-#include "AddinEcrBpo4000.h"
+#include "AcquiringBpo4000.h"
 #include "../helpers/ServiceTools.h"
 #include <cstdlib>
-
-// Клас у 1С: "AddIn.<символьне ім'я>.ECRPrivatBPO4000".
-REGISTER_COMPONENT(u"ECRPrivatBPO4000", AddinEcrBpo4000)
 
 namespace {
 
@@ -20,14 +17,13 @@ bool TryParseAmount(const std::string& s, double& out) {
 
 } // namespace
 
-AddinEcrBpo4000::AddinEcrBpo4000() {
-    REPORT_INFO("Ініціалізація БПО-фасаду еквайрингу, ревізія 4000");
+AcquiringBpo4000::AcquiringBpo4000() {
     RegisterSystemMethods();
     RegisterAcquiringMethods();
     RegisterPaymentMethods();
 }
 
-void AddinEcrBpo4000::RegisterPaymentMethods() {
+void AcquiringBpo4000::RegisterPaymentMethods() {
 
     // Дев'ятка оплати/повернення:
     //   (ИДУстройства, НомерМерчанта, РеквизитыКартыQR, СуммаОперации,
