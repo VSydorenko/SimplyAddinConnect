@@ -50,6 +50,13 @@ public:
     // true, якщо DeviceID зареєстровано.
     bool IsConnected(const std::string& deviceId) const;
 
+    // Форсує ліниву Open і одразу закриває — для ТестУстройства БПО. Доводить
+    // ДОСЯЖНІСТЬ (TCP: конект на host:port; spooler: OpenPrinter на черзі) і
+    // НІЧОГО НЕ ДРУКУЄ: ініт-пакет змінив би стан принтера (темність/швидкість/
+    // розмір), а адміністратор, який тисне «тест», на це не підписувався.
+    // Уже відкритий транспорт лишається відкритим.
+    ResultEnvelope Probe(const std::string& deviceId);
+
     // Тест-хук: підмінити фабрику транспорту (напр. фейковий ITransport-захоплювач).
     // Задавати ДО Connect. Порожня фабрика → реальний MakeTransport (spooler/tcp).
     using TransportFactory = std::function<std::unique_ptr<ITransport>(const DeviceProfile&)>;

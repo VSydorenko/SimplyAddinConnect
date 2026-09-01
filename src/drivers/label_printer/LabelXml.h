@@ -1,4 +1,5 @@
 #pragma once
+#include <map>
 #include <string>
 #include "LabelModel.h"
 
@@ -14,6 +15,13 @@ class LabelXml {
 public:
     static bool ParseLabelsTable(const std::string& xml, LabelBatch& out, std::string& err);
     static bool ParseConnectionParameters(const std::string& xml, DeviceProfile& out, std::string& err);
+
+    /// Ті самі параметри, але вже розібрані підсистемою БПО в мапу: контракт кличе
+    /// УстановитьПараметр по одному, а не подає XML-пакет. ParseConnectionParameters
+    /// зводиться до XML→мапа + цей виклик, тож семантика параметрів — в ОДНОМУ місці.
+    /// Невідомі параметри ігноруються (вимога БПО); порожня мапа -> дефолти профілю.
+    static bool ProfileFromParameters(const std::map<std::string, std::string>& params,
+                                      DeviceProfile& out, std::string& err);
 };
 
 } // namespace labelprinter

@@ -3,6 +3,7 @@
 #include <optional>
 #include <memory>
 #include <vector>
+#include <map>
 #include <thread>
 #include <chrono>
 #include <atomic>
@@ -568,6 +569,61 @@ static void TestPartialPrintAccounting() {
     drv.Disconnect(id);
 }
 
+// Профіль підключення з МАПИ параметрів: контракт БПО подає їх по одному через
+// УстановитьПараметр, а не XML-пакетом. Семантика має збігатися з XML-шляхом.
+static void TestProfileFromParameters() {
+    std::map<std::string, std::string> p{
+        {"TransportKind", "tcp"}, {"Host", "192.168.0.50"}, {"Port", "9100"},
+        {"DotsPerMm", "12"}, {"Darkness", "20"}, {"UnknownParam", "ignore-me"},
+    };
+    DeviceProfile dp; std::string err;
+    CHECK(LabelXml::ProfileFromParameters(p, dp, err), "ProfileFromParameters ok");
+    CHECK(dp.transport == DeviceProfile::Transport::Tcp, "map: TransportKind=tcp");
+    CHECK(dp.host == "192.168.0.50" && dp.port == 9100, "map: host+port");
+    CHECK(dp.dotsPerMm == 12 && dp.darkness == 20, "map: dotsPerMm+darkness, unknown ignored");
+
+    // Порожня мапа -> дефолти профілю (spooler), не помилка: 1С може не заповнити нічого,
+    // і відмова має прийти від транспорту з конкретикою, а не від розбору.
+    std::map<std::string, std::string> empty;
+    DeviceProfile dp2; std::string err2;
+    CHECK(LabelXml::ProfileFromParameters(empty, dp2, err2), "empty map -> defaults, not error");
+    CHECK(dp2.transport == DeviceProfile::Transport::Spooler && dp2.port == 9100,
+          "empty map keeps DeviceProfile defaults");
+}
+
+// Probe форсує ліниву Open і повертає транспорт у попередній стан. Саме на цьому
+// стоїть ТестУстройства: Connect сам по собі досяжності НЕ доводить.
+static void TestDriverProbe() {
+    LabelPrinterDriver drv;
+    int opens = 0, closes = 0, sends = 0;
+    drv.SetTransportFactoryForTest([&](const DeviceProfile&) -> std::unique_ptr<ITransport> {
+        struct Fake : ITransport {
+            int *o, *c, *s; bool open = false;
+            bool Open() override { ++(*o); open = true; return true; }
+            bool Close() override { ++(*c); open = false; return true; }
+            bool IsOpen() const override { return open; }
+            int Send(const std::vector<uint8_t>& d) override { ++(*s); return (int)d.size(); }
+            void SetDataReceivedCallback(DataReceivedCallback) override {}
+            void SetErrorCallback(ErrorCallback) override {}
+            void SetConnectionStateCallback(ConnectionStateCallback) override {}
+        };
+        auto f = std::make_unique<Fake>(); f->o = &opens; f->c = &closes; f->s = &sends;
+        return f;
+    });
+    DeviceProfile dp; dp.dotsPerMm = 8;
+    std::string id = drv.Connect(dp);
+    CHECK(opens == 0, "Connect does not open transport (lazy)");
+
+    ResultEnvelope r = drv.Probe(id);
+    CHECK(r.ok, "Probe on reachable transport -> ok");
+    CHECK(opens == 1 && closes == 1, "Probe opens and closes exactly once");
+    CHECK(sends == 0, "Probe sends NOTHING (no init packet, printer state untouched)");
+
+    ResultEnvelope bad = drv.Probe("no-such-device");
+    CHECK(!bad.ok && bad.code == "NOT_CONNECTED", "Probe on unknown DeviceID -> NOT_CONNECTED");
+    drv.Disconnect(id);
+}
+
 int main() {
     TestUnits();
     TestGfEncoder();
@@ -588,6 +644,8 @@ int main() {
     TestTransportErrorTaxonomy();
     TestDriverConcurrentDisconnect();
     TestXml();
+    TestProfileFromParameters();
+    TestDriverProbe();
     TestFacadeSmoke();
     TestTransportE2E();
     TestRasterFontStyle();
