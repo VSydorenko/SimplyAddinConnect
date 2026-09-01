@@ -1630,6 +1630,12 @@ git commit -m "refactor(bpo): IAcquiringDriver + адаптер ПриватБа
 * клас `AddinEcrBpo3004` → `AcquiringBpo3004`, база `AcquiringFacadeBase`;
 * **прибрати** `static std::vector<std::u16string> names;` і рядок `REGISTER_COMPONENT(...)` —
   клас абстрактний (`MakeDriver()` лишається чистим), реєструє його нащадок;
+* **⚠️ прибрати `MakeDriver()` override І `#include "../drivers/ecr_privatjson/EcrPrivatJsonAcquiring.h"`**
+  — Задача 2 додала їх сюди вимушено (після видалення `AddinEcrBpoBase` ці класи лишились
+  єдиними конкретними, а `REGISTER_COMPONENT` робить `new CLASS`). Тепер обидва переїжджають
+  у `EcrPrivatBpo3004`. **Це не косметика:** лишивши їх, ти отримаєш зелену збірку й зелені
+  тести, але ревізійний шар лишиться прив'язаним до ПриватБанку — тобто головна мета
+  шарування (новий протокол = два тонкі класи) не досягається, і жоден тест цього не спіймає;
 * конструктор стає `protected`, тіло:
   ```cpp
   AcquiringBpo3004::AcquiringBpo3004() {
@@ -1719,10 +1725,66 @@ powershell -ExecutionPolicy Bypass -File run_tests.ps1 -NoUapki x86
 `L3-bpo4000: компонента ECRPrivatBPO4000 створена через DLL` — якщо вони червоні,
 `REGISTER_COMPONENT` не спрацював (класи лишились абстрактними або зникла анти-стрип reference).
 
-- [ ] **Крок 8: Коміт**
+- [ ] **Крок 8: Покрити тестом `ПараметрыТерминала` — критерій «без правок» уже відпрацював**
+
+До цього моменту `tests/ecr_native_host.cpp` було заборонено чіпати: незмінний тест доводив,
+що Задачі 1-3 не змінили зовнішньої поведінки. Він це довів — **тепер заборона знята**, і
+прогалину, яку рев'ю Задачі 2 назвало прямо, треба закрити.
+
+Прогалина: **на XML `ПараметрыТерминала` немає жодного тесту** — ні в `ecr_privatjson_selftest`,
+ні в `ecr_native_host`. А саме за цими прапорцями конфігурація вирішує, які операції показати
+касиру: мовчазна помилка тут означає, що касир не бачить доступної дії або бачить недоступну.
+Після переїзду прапорців у `Capabilities()` гарантія трималась лише на код-рев'ю.
+
+У `tests/ecr_native_host.cpp`, у блоці фасаду 3004, **після** успішного `Подключить` і **до**
+`ОплатитьПлатежнойКартой` додати:
+
+```cpp
+            // ПараметрыТерминала: за цими прапорцями конфігурація вирішує, які операції
+            // показати касиру. Після переїзду прапорців у Capabilities() драйвера цей
+            // рядок не мав змінитись — для ПриватБанку друк сліпа на терміналі увімкнено,
+            // решта шість можливостей вимкнені.
+            long idxTermParams = bpo->FindMethod(L"TerminalParameters");
+            CHECK(idxTermParams >= 0, "L3-bpo: ПараметрыТерминала знайдено");
+            if (idxTermParams >= 0 && !deviceId.empty()) {
+                tVariant p[2];
+                for (auto& v : p) tVarInit(&v);
+                setInStr(p[0], u8to16(deviceId));
+                tVariant ret; tVarInit(&ret);
+                bpo->CallAsFunc(idxTermParams, &ret, p, 2);
+                const std::string xml = (p[1].vt == VTYPE_PWSTR && p[1].pwstrVal)
+                    ? u16to8(reinterpret_cast<const wchar_t*>(p[1].pwstrVal), p[1].wstrLen)
+                    : std::string{};
+                std::printf("  ПараметрыТерминала: %s\n", xml.c_str());
+                CHECK(ret.vt == VTYPE_BOOL && ret.bVal, "L3-bpo: ПараметрыТерминала -> true");
+                CHECK(xml.find("PrintSlipOnTerminal=\"true\"") != std::string::npos,
+                      "L3-bpo: PrintSlipOnTerminal=true (термінал друкує квитанції сам)");
+                CHECK(xml.find("PartialCancellation=\"false\"") != std::string::npos,
+                      "L3-bpo: PartialCancellation=false");
+                CHECK(xml.find("CashWithdrawal=\"false\"") != std::string::npos,
+                      "L3-bpo: CashWithdrawal=false");
+                CHECK(xml.find("ConsumerPresentedQR=\"false\"") != std::string::npos,
+                      "L3-bpo: ConsumerPresentedQR=false");
+                CHECK(xml.find("ElectronicCertificates=\"false\"") != std::string::npos,
+                      "L3-bpo: ElectronicCertificates=false");
+                CHECK(xml.find("ListCardTransactions=\"false\"") != std::string::npos,
+                      "L3-bpo: ListCardTransactions=false");
+                CHECK(xml.find("ShortSlip=\"false\"") != std::string::npos,
+                      "L3-bpo: ShortSlip=false");
+                for (auto& v : p)
+                    if (v.vt == VTYPE_PWSTR && v.pwstrVal) free(v.pwstrVal);
+            }
+```
+
+Прогнати гейт ще раз (`build_project.ps1 -WithTests`, далі обидві архітектури). Усі сім нових
+`CHECK` мають бути `PASS` — якщо якийсь червоний, значить переїзд прапорців у `Capabilities()`
+таки змінив поведінку, і це знахідка, а не привід правити очікування тесту.
+
+- [ ] **Крок 9: Коміт**
 
 ```bash
 git add -A src/components CMake
+git add tests/ecr_native_host.cpp
 git commit -m "refactor(bpo): ревізійні шари 3004/4000 окремо від конкретних фасадів ПриватБанку"
 ```
 
