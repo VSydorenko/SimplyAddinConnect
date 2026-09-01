@@ -5,6 +5,7 @@
 // а протокол термінала й payload драйвера чекають саме крапку. Помилки при цьому
 // немає — термінал просто відхиляє суму, тож баг знайшовся б аж на живому обладнанні.
 #include <cmath>
+#include <cstdlib>
 #include <string>
 
 inline std::string MoneyToString(double amount) {
@@ -15,4 +16,19 @@ inline std::string MoneyToString(double amount) {
     if (frac < 10) s += '0';
     s += std::to_string(frac);
     return s;
+}
+
+// Зворотний розбір: сума з payload драйвера в double. Пара до MoneyToString і
+// живе поруч саме тому — обидві сторони мають однаково розуміти роздільник.
+//
+// Локаль процесу — "C", тож strtod чекає КРАПКУ: рівно те, що пише MoneyToString.
+// Не вдалося розібрати (порожньо, сміття, хвіст після числа) → false, і вхідне
+// значення НЕ перетирається: краще лишити суму, яку 1С запитала, ніж занулити її.
+inline bool TryMoneyFromString(const std::string& s, double& out) {
+    if (s.empty()) return false;
+    char* end = nullptr;
+    const double v = std::strtod(s.c_str(), &end);
+    if (end == s.c_str() || (end && *end != '\0')) return false;
+    out = v;
+    return true;
 }

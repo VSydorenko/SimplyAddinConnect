@@ -37,4 +37,8 @@ private:
     void RegisterPrinterMethods();
 
     labelprinter::LabelPrinterDriver driver_;
+    /// Профіль, на якому НАСПРАВДІ підключились. Потрібен ТестУстройства: воно
+    /// розбирає параметри форми заново, і якщо адміністратор устиг змінити адресу
+    /// без перепідключення, живий канал веде вже не туди, куди показує вердикт.
+    labelprinter::DeviceProfile activeProfile_;
 };

@@ -38,6 +38,17 @@ bool ValidateProfile(const DeviceProfile& p, std::string& err) {
     return true;
 }
 
+/// Чи ведуть два профілі до ОДНОГО фізичного приймача. Порівнюються лише поля
+/// ЦІЛІ — саме те, що описує DescribeTarget і що доводить Probe. Параметри друку
+/// (DotsPerMm/Darkness/Speed/розмір етикетки) свідомо поза порівнянням: їх зміна
+/// не робить перевірене підключення неперевіреним.
+bool SameTarget(const DeviceProfile& a, const DeviceProfile& b) {
+    if (a.transport != b.transport) return false;
+    if (a.transport == DeviceProfile::Transport::Tcp)
+        return a.host == b.host && a.port == b.port;
+    return a.printerName == b.printerName;
+}
+
 } // namespace
 
 AddinLabelPrinter::AddinLabelPrinter() {
@@ -148,6 +159,7 @@ bool AddinLabelPrinter::OpenDevice(std::string& deviceIdOut) {
     // тоді невдале перепідключення не лишає deviceId_ на вже знятому пристрої.
     // Двох живих сокетів це не дає — Connect транспорт не відкриває (лінива Open).
     if (!DeviceId().empty() && DeviceId() != id) driver_.Disconnect(DeviceId());
+    activeProfile_ = profile;   // ціль живого каналу — її ж перевіряє ТестУстройства
     deviceIdOut = id;   // прокидуємо СПРАВЖНІЙ id драйвера — лог фасаду й драйвера збігається
     return true;
 }
@@ -178,7 +190,14 @@ bool AddinLabelPrinter::ProbeDevice(std::string& resultOut, bool& demoOut) {
     // TRANSPORT_ERROR на справному пристрої. Драйвер коректно розрізняє «канал уже
     // відкритий» -> Ok. Окрема короткоживуча сесія лишається шляхом для випадку,
     // коли підключення ще немає, — тоді чіпати нічого.
-    const bool reuseActive = !DeviceId().empty();
+    //
+    // ⚠️ Але ЛИШЕ поки параметри форми ведуть на ТУ САМУ ціль. ТестУстройства
+    // розбирає параметри заново, і типовий сценарій діагностики — «друк не пішов,
+    // міняю адресу принтера й тисну тест» — перепідключення НЕ робить. Перевіряти
+    // при цьому старий канал і звітувати НОВУ адресу означає сказати «доступно»
+    // про адресу, якої ніхто не чіпав. Ціль змінилась — ідемо окремою
+    // короткоживучою сесією: вона перевіряє саме те, що показано у вердикті.
+    const bool reuseActive = !DeviceId().empty() && SameTarget(profile, activeProfile_);
     const std::string probeId = reuseActive ? DeviceId() : driver_.Connect(profile);
     if (probeId.empty()) {
         SetError(CodeToInt("TRANSPORT_ERROR"), "Не вдалося створити канал до принтера");

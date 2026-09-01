@@ -134,26 +134,46 @@ void AcquiringFacadeBase::CloseDevice() {
 
 bool AcquiringFacadeBase::ProbeDevice(std::string& resultOut, bool& demoOut) {
     demoOut = false;                       // демо-режиму драйвер не має
-    const ResultEnvelope opened = Driver().Open(Params());
-    if (!opened.ok) {
-        SetError(CodeToInt(opened.code), opened.description);
-        resultOut = opened.description;
-        return false;
+
+    // ⚠️ Уже підключений термінал перевіряємо НА ЖИВОМУ З'ЄДНАННІ. Безумовний
+    // Open() ПЕРЕПІДКЛЮЧИВ би драйвер, а фінальний Close() лишив би його
+    // роз'єднаним — при заповненому ИДУстройства на фасаді. Наступна
+    // ОплатитьПлатежнойКартой пройшла б CheckDeviceId, дійшла до драйвера й
+    // упала з NOT_CONNECTED, доки обладнання не перепідключать вручну. Каса при
+    // цьому вважає термінал підключеним, бо тест щойно сказав «на зв'язку».
+    // Окрема короткоживуча сесія лишається шляхом для випадку, коли підключення
+    // ще немає (форма налаштувань кличе ТестУстройства одразу після
+    // УстановитьПараметр) — тоді закривати за собою правильно.
+    // Умова та сама, що на сусідньому фасаді AddinLabelPrinter::ProbeDevice.
+    const bool reuseActive = !DeviceId().empty();
+
+    std::string conn;
+    if (!reuseActive) {
+        const ResultEnvelope opened = Driver().Open(Params());
+        if (!opened.ok) {
+            SetError(CodeToInt(opened.code), opened.description);
+            resultOut = opened.description;
+            return false;
+        }
+        // Адреса, за якою відповів термінал, — головне, що адміністратор перевіряє
+        // в результаті ТестУстройства. Open() кладе рядок підключення в payload.
+        conn = PayloadStr(opened, "connection");
     }
-    // Адреса, за якою відповів термінал, — головне, що адміністратор перевіряє
-    // в результаті ТестУстройства. Open() кладе рядок підключення в payload.
-    const std::string conn = PayloadStr(opened, "connection");
+
     const ResultEnvelope env = Driver().Probe();
     const std::string vendor = Driver().Vendor();
     const std::string model = Driver().Model();
-    Driver().Close();
+    if (!reuseActive) Driver().Close();   // закриваємо ЛИШЕ власну тимчасову сесію
 
+    // Адреса відома тільки коли підключалися самі; при перевикористанні живого
+    // з'єднання її взяти нізвідки — тоді порожніх дужок не лишаємо.
+    const std::string where = conn.empty() ? std::string() : (" (" + conn + ")");
     if (!env.ok) {
         SetError(CodeToInt(env.code), env.description);
-        resultOut = "Підключення є, але термінал відповів помилкою: " + env.code;
+        resultOut = "Підключення є, але термінал відповів помилкою: " + env.code + where;
         return false;
     }
-    resultOut = "Термінал на зв'язку: " + vendor + " " + model + " (" + conn + ")";
+    resultOut = "Термінал на зв'язку: " + vendor + " " + model + where;
     ClearError();
     return true;
 }

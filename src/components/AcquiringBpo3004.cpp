@@ -1,22 +1,7 @@
 #include "../core/pch.h"
 #include "AcquiringBpo3004.h"
+#include "../platform/MoneyFormat.h"   // TryMoneyFromString — пара до MoneyToString
 #include "../helpers/ServiceTools.h"
-#include <cstdlib>
-
-namespace {
-
-/// Розбір суми з payload термінала. Локаль у процесі — "C", тож strtod чекає крапку.
-/// Не вдалося розібрати → false, і тоді вхідне значення НЕ перетирається.
-bool TryParseAmount(const std::string& s, double& out) {
-    if (s.empty()) return false;
-    char* end = nullptr;
-    const double v = std::strtod(s.c_str(), &end);
-    if (end == s.c_str() || (end && *end != '\0')) return false;
-    out = v;
-    return true;
-}
-
-} // namespace
 
 AcquiringBpo3004::AcquiringBpo3004() {
     RegisterSystemMethods();
@@ -50,7 +35,7 @@ void AcquiringBpo3004::RegisterPaymentMethods() {
         if (!pan.empty()) cardNo = pan;
 
         double actual = 0.0;
-        if (TryParseAmount(PayloadStr(env, "amount"), actual)) amount = actual;
+        if (TryMoneyFromString(PayloadStr(env, "amount"), actual)) amount = actual;
 
         const std::string invoice = PayloadStr(env, "invoiceNumber");
         if (!invoice.empty()) receiptNo = invoice;

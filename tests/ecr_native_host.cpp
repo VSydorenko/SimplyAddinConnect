@@ -169,6 +169,10 @@ int main() {
             return R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":"0"},"error":false})";
         return "";
     });
+    // Коротка перевірка зв'язку, якою ProbeDevice обслуговує ТестУстройства.
+    emu.OnRequest("GetTerminalInfo", [](const json&) {
+        return std::string(R"({"method":"GetTerminalInfo","params":{"responseCode":"0000"},"error":false})");
+    });
     // Повний набір полів, як віддає реальний термінал: БПО-фасад розкладає їх
     // по OUT-параметрах, і саме це перевіряє крок 7.
     emu.OnRequest("Purchase", [](const json&) {
@@ -340,6 +344,43 @@ int main() {
                 memcpy(v.pwstrVal, s.c_str(), bytes);
                 v.wstrLen = (uint32_t)s.size();
             };
+
+            // ⚠️ РЕГРЕСІЯ ПРО ГРОШІ: ТестУстройства НЕ СМІЄ рвати активне з'єднання.
+            // ProbeDevice раніше безумовно робив Open → Probe → Close, тож на вже
+            // підключеному об'єкті лишав драйвер роз'єднаним, а ИДУстройства на
+            // фасаді — виданим. Каса вважала термінал підключеним (тест же щойно
+            // сказав «на зв'язку»), і перша ж оплата падала з NOT_CONNECTED, доки
+            // обладнання не перепідключать вручну. Відтворюємо шлях адміністратора:
+            // «Тест устройства» на підключеному об'єкті, одразу після нього — оплата.
+            long idxTest = bpo->FindMethod(L"EquipmentTest");
+            long idxPayCheck = bpo->FindMethod(L"PayByPaymentCard");
+            CHECK(idxTest >= 0, "L3-bpo: ТестУстройства знайдено");
+            if (idxTest >= 0 && idxPayCheck >= 0 && !deviceId.empty()) {
+                tVariant t[2];
+                for (auto& v : t) tVarInit(&v);
+                tVariant tret; tVarInit(&tret);
+                bpo->CallAsFunc(idxTest, &tret, t, 2);
+                const std::string testText = (t[0].vt == VTYPE_PWSTR && t[0].pwstrVal)
+                    ? u16to8(reinterpret_cast<const wchar_t*>(t[0].pwstrVal), t[0].wstrLen)
+                    : std::string{};
+                std::printf("  РезультатТеста: %s\n", testText.c_str());
+                CHECK(tret.vt == VTYPE_BOOL && tret.bVal,
+                      "L3-bpo: ТестУстройства на підключеному об'єкті -> true");
+                for (auto& v : t)
+                    if (v.vt == VTYPE_PWSTR && v.pwstrVal) free(v.pwstrVal);
+
+                // Ось воно: якби тест закрив канал, оплата віддала б NOT_CONNECTED.
+                tVariant p[7];
+                for (auto& v : p) tVarInit(&v);
+                setInStr(p[0], u8to16(deviceId));
+                p[2].vt = VTYPE_R8; p[2].dblVal = 1.00;
+                tVariant pret; tVarInit(&pret);
+                bpo->CallAsFunc(idxPayCheck, &pret, p, 7);
+                CHECK(pret.vt == VTYPE_BOOL && pret.bVal,
+                      "L3-bpo: ТестУстройства не рве активне з'єднання (оплата після тесту проходить)");
+                for (auto& v : p)
+                    if (v.vt == VTYPE_PWSTR && v.pwstrVal) free(v.pwstrVal);
+            }
 
             // ПараметрыТерминала: за цими прапорцями конфігурація вирішує, які операції
             // показати касиру. Після переїзду прапорців у Capabilities() драйвера цей

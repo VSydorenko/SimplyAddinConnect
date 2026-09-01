@@ -1,21 +1,7 @@
 #include "../core/pch.h"
 #include "AcquiringBpo4000.h"
+#include "../platform/MoneyFormat.h"   // TryMoneyFromString — пара до MoneyToString
 #include "../helpers/ServiceTools.h"
-#include <cstdlib>
-
-namespace {
-
-/// Розбір суми з payload термінала. Локаль процесу — "C", тож strtod чекає крапку.
-bool TryParseAmount(const std::string& s, double& out) {
-    if (s.empty()) return false;
-    char* end = nullptr;
-    const double v = std::strtod(s.c_str(), &end);
-    if (end == s.c_str() || (end && *end != '\0')) return false;
-    out = v;
-    return true;
-}
-
-} // namespace
 
 AcquiringBpo4000::AcquiringBpo4000() {
     RegisterSystemMethods();
@@ -60,7 +46,7 @@ void AcquiringBpo4000::RegisterPaymentMethods() {
     // схваленні вона відрізняється від запитаної. Перетираємо лише розбірне значення.
     auto fillAmount = [](const ResultEnvelope& env, VH amount) {
         double actual = 0.0;
-        if (TryParseAmount(PayloadStr(env, "amount"), actual)) amount = actual;
+        if (TryMoneyFromString(PayloadStr(env, "amount"), actual)) amount = actual;
     };
 
     AddFunction(u"PayByPaymentCard", u"ОплатитьПлатежнойКартой",
