@@ -19,6 +19,25 @@ std::string DescribeTarget(const DeviceProfile& p) {
     return "черга Windows \"" + p.printerName + "\"";
 }
 
+/// Обов'язкові для обраного транспорту поля профілю.
+///
+/// ⚠️ Свідомо ТУТ, а не в LabelXml::ProfileFromParameters: її контракт —
+/// «порожня мапа → дефолти, а не помилка» — закріплений тестом і ламати його не
+/// можна. Без цієї перевірки порожній Host при tcp дійшов би до транспорту й
+/// адміністратор побачив би «принтер недоступний» замість «не заповнено параметр».
+bool ValidateProfile(const DeviceProfile& p, std::string& err) {
+    if (p.transport == DeviceProfile::Transport::Tcp) {
+        if (p.host.empty()) {
+            err = "Не заповнено параметр Host — IP-адресу мережевого принтера";
+            return false;
+        }
+    } else if (p.printerName.empty()) {
+        err = "Не заповнено параметр PrinterName — ім'я черги друку Windows";
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 AddinLabelPrinter::AddinLabelPrinter() {
@@ -106,14 +125,29 @@ bool AddinLabelPrinter::OpenDevice(std::string& deviceIdOut) {
     DeviceProfile profile;
     std::string err;
     if (!LabelXml::ProfileFromParameters(Params(), profile, err)) {
-        SetError(CodeToInt("BAD_INPUT"), err.empty() ? "Некоректні параметри підключення" : err);
+        const std::string text = err.empty() ? std::string("Некоректні параметри підключення") : err;
+        SetError(CodeToInt("BAD_INPUT"), text);
+        REPORT_ERROR("Помилка підключення принтера: " + text);
+        return false;
+    }
+    if (!ValidateProfile(profile, err)) {
+        SetError(CodeToInt("BAD_INPUT"), err);
+        REPORT_ERROR("Помилка підключення принтера: " + err);
         return false;
     }
     const std::string id = driver_.Connect(profile);
     if (id.empty()) {
         SetError(CodeToInt("TRANSPORT_ERROR"), "Не вдалося зареєструвати пристрій");
+        REPORT_ERROR("Не вдалося зареєструвати пристрій принтера");
         return false;
     }
+    // Повторний Подключить БЕЗ Отключить — штатний сценарій 1С (перепідключення
+    // обладнання після помилки друку). Без цього старий пристрій лишався б у
+    // реєстрі драйвера з ВІДКРИТИМ сокетом, а новий відкрив би ДРУГУ сесію до
+    // того самого принтера. Знімаємо старий лише КОЛИ НОВИЙ УЖЕ зареєстровано:
+    // тоді невдале перепідключення не лишає deviceId_ на вже знятому пристрої.
+    // Двох живих сокетів це не дає — Connect транспорт не відкриває (лінива Open).
+    if (!DeviceId().empty() && DeviceId() != id) driver_.Disconnect(DeviceId());
     deviceIdOut = id;   // прокидуємо СПРАВЖНІЙ id драйвера — лог фасаду й драйвера збігається
     return true;
 }
@@ -129,23 +163,36 @@ bool AddinLabelPrinter::ProbeDevice(std::string& resultOut, bool& demoOut) {
     if (!LabelXml::ProfileFromParameters(Params(), profile, err)) {
         const std::string text = err.empty() ? std::string("Некоректні параметри підключення") : err;
         SetError(CodeToInt("BAD_INPUT"), text);
+        REPORT_ERROR("Помилка тесту принтера: " + text);
         resultOut = text;
         return false;
     }
-    // Тест іде на ОКРЕМОМУ пристрої драйвера, щоб не чіпати активне підключення:
-    // адміністратор може натиснути «Тест устройства» при вже підключеному принтері.
-    const std::string probeId = driver_.Connect(profile);
+    if (!ValidateProfile(profile, err)) {
+        SetError(CodeToInt("BAD_INPUT"), err);
+        REPORT_ERROR("Помилка тесту принтера: " + err);
+        resultOut = err;
+        return false;
+    }
+    // Уже підключений принтер перевіряємо НА НЬОМУ САМОМУ: окрема сесія на :9100
+    // типовим ZPL-принтером НЕ приймається, і адміністратор побачив би
+    // TRANSPORT_ERROR на справному пристрої. Драйвер коректно розрізняє «канал уже
+    // відкритий» -> Ok. Окрема короткоживуча сесія лишається шляхом для випадку,
+    // коли підключення ще немає, — тоді чіпати нічого.
+    const bool reuseActive = !DeviceId().empty();
+    const std::string probeId = reuseActive ? DeviceId() : driver_.Connect(profile);
     if (probeId.empty()) {
         SetError(CodeToInt("TRANSPORT_ERROR"), "Не вдалося створити канал до принтера");
+        REPORT_ERROR("Не вдалося створити канал до принтера");
         resultOut = "Не вдалося створити канал до принтера";
         return false;
     }
     const ResultEnvelope env = driver_.Probe(probeId);
-    driver_.Disconnect(probeId);
+    if (!reuseActive) driver_.Disconnect(probeId);   // знімаємо ЛИШЕ свій тимчасовий пристрій
 
     const std::string target = DescribeTarget(profile);
     if (!env.ok) {
         SetError(CodeToInt(env.code), env.description);
+        REPORT_ERROR("Принтер недоступний (" + target + "): " + env.description);
         resultOut = target + " — недоступно: " + env.description;
         return false;
     }

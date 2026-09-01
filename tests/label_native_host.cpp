@@ -225,6 +225,7 @@ int main() {
 
     // 6) Паспорт і форма налаштувань.
     long idxDescr = comp->FindMethod(L"ПолучитьОписание");
+    CHECK(idxDescr >= 0, "L-p3: ПолучитьОписание знайдено");
     if (idxDescr >= 0) {
         tVariant p; tVarInit(&p);
         tVariant ret; tVarInit(&ret);
@@ -235,6 +236,7 @@ int main() {
               "L-p3: паспорт оголошує EquipmentType=LabelPrinter");
     }
     long idxParams = comp->FindMethod(L"ПолучитьПараметры");
+    CHECK(idxParams >= 0, "L-p3: ПолучитьПараметры знайдено");
     if (idxParams >= 0) {
         tVariant p; tVarInit(&p);
         tVariant ret; tVarInit(&ret);
@@ -372,6 +374,33 @@ int main() {
     long idxDisc = comp->FindMethod(L"Отключить");
     if (idxDisc >= 0 && !deviceId.empty())
         CHECK(callBool(idxDisc, { deviceId }), "L-p3: Отключить -> true");
+
+    // 13) Порожній Host при tcp — це НЕЗАПОВНЕНИЙ ПАРАМЕТР, а не недоступний
+    //     принтер. Адміністратор має побачити BAD_INPUT (12) з назвою параметра,
+    //     інакше він шукатиме несправність у мережі замість форми налаштувань.
+    if (idxSetParam >= 0 && idxConnect >= 0) {
+        callBool(idxSetParam, { "Host", "" });
+        tVariant p; tVarInit(&p);
+        tVariant ret; tVarInit(&ret);
+        comp->CallAsFunc(idxConnect, &ret, &p, 1);
+        if (p.vt == VTYPE_PWSTR && p.pwstrVal) free(p.pwstrVal);
+        CHECK(!(ret.vt == VTYPE_BOOL && ret.bVal),
+              "L-p3: Подключить із порожнім Host відхилено");
+
+        long idxErrBad = comp->FindMethod(L"ПолучитьОшибку");
+        if (idxErrBad >= 0) {
+            tVariant ep; tVarInit(&ep);
+            tVariant eret; tVarInit(&eret);
+            comp->CallAsFunc(idxErrBad, &eret, &ep, 1);
+            long code = (eret.vt == VTYPE_I4) ? eret.lVal : (long)eret.dblVal;
+            const std::string desc = outStr(ep);
+            if (ep.vt == VTYPE_PWSTR && ep.pwstrVal) free(ep.pwstrVal);
+            std::printf("  порожній Host: code=%ld desc=%s\n", code, desc.c_str());
+            CHECK(code == 12, "L-p3: порожній Host дає код BAD_INPUT (12), а не транспортну помилку");
+            CHECK(desc.find("Host") != std::string::npos,
+                  "L-p3: опис помилки називає незаповнений параметр");
+        }
+    }
 
     pDestroyObject(&comp);
     FreeLibrary(h);
