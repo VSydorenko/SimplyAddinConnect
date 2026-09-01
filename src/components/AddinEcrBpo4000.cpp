@@ -23,6 +23,7 @@ bool TryParseAmount(const std::string& s, double& out) {
 AddinEcrBpo4000::AddinEcrBpo4000() {
     REPORT_INFO("Ініціалізація БПО-фасаду еквайрингу, ревізія 4000");
     RegisterSystemMethods();
+    RegisterAcquiringMethods();
     RegisterPaymentMethods();
 }
 

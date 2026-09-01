@@ -1,33 +1,44 @@
 #pragma once
-#include "../core/AddInNative.h"
+#include "BpoFacadeBase.h"
 #include "../drivers/ecr_privatjson/EcrPrivatJsonDriver.h"
-#include <map>
 #include <string>
 #include <vector>
 
-/// Спільна половина БПО-фасадів еквайрингу над драйвером ECRPrivatJSON.
+/// Спільна ЕКВАЙРИНГОВА половина БПО-фасадів над драйвером ECRPrivatJSON.
+///
+/// Контрактна (не залежна від типу обладнання) половина живе в `BpoFacadeBase`;
+/// тут — семантика еквайрингу: паспорт драйвера, форма налаштувань термінала,
+/// підключення до драйвера, методи можливостей і платіжні операції.
 ///
 /// Контракт «Подключаемое оборудование» описано в docs/architecture/bpo-contract.md.
-/// Системні методи, параметри підключення й методи можливостей однакові для всіх
-/// ревізій — вони тут. Різниця між ревізіями лише в РОЗКЛАДЦІ параметрів платіжних
-/// методів, тож похідний клас додає рівно їх плюс власну `ПолучитьРевизиюИнтерфейса`.
+/// Параметри підключення й методи можливостей однакові для всіх ревізій — вони тут.
+/// Різниця між ревізіями лише в РОЗКЛАДЦІ параметрів платіжних методів, тож похідний
+/// клас додає рівно їх плюс власну `ПолучитьРевизиюИнтерфейса`.
 ///
 /// Чому не один клас на всі ревізії: у моделі компоненти одне ім'я методу — це одна
 /// арність (`GetNParams` віддає одне число), а `ОплатитьПлатежнойКартой` має 7 або 9
 /// параметрів залежно від ревізії, причому на позиції 1 різний ЗМІСТ. Див. §2.2 доку.
-class AddinEcrBpoBase : public AddInNative {
+class AddinEcrBpoBase : public BpoFacadeBase {
 public:
     virtual ~AddinEcrBpoBase();
 
 protected:
     AddinEcrBpoBase();
 
-    /// Ревізія інтерфейсу БПО, яку оголошує конкретний фасад (§2.3 доку).
-    virtual int InterfaceRevision() const = 0;
+    // ---- гачки BpoFacadeBase ----
+    DriverInfo BuildDriverInfo() const override;
+    std::string BuildSettingsXml() const override;
+    std::string BuildActionsXml() const override;
+    bool AcceptEquipmentType(const std::string& value) const override;
+    bool OpenDevice(std::string& deviceIdOut) override;
+    void CloseDevice() override;
+    bool ProbeDevice(std::string& resultOut, bool& demoOut) override;
+    bool RunAction(const std::string& name) override;
 
-    /// Реєструє системну половину контракту. Похідний клас кличе її у своєму
-    /// конструкторі ПЕРЕД реєстрацією власних платіжних методів.
-    void RegisterSystemMethods();
+    /// Реєструє еквайрингову половину: методи можливостей, ИтогиДняПоКартам,
+    /// АварийнаяОтменаОперации, асинхронне розширення. Похідний клас кличе її
+    /// ПІСЛЯ RegisterSystemMethods() і ПЕРЕД своїми платіжними методами.
+    void RegisterAcquiringMethods();
 
     // ---- Операції драйвера для платіжних методів похідних класів ----
     // Кожна вже мапить результат у lastError* і повертає ResultEnvelope.
@@ -49,32 +60,6 @@ protected:
     /// Відмова «операція не підтримується обладнанням» у формі, якої вимагає ІТС §1.3.
     ResultEnvelope Unsupported(const std::string& method);
 
-    /// Перевіряє, що ИДУстройства збігається з виданим при `Подключить`.
-    /// При розбіжності ставить lastError і повертає false.
-    bool CheckDeviceId(const std::string& deviceId);
-
-    /// Загальний хвіст платіжного методу: ставить lastError із конверта і
-    /// повертає значення для 1С (Булево).
-    bool MapEnvToBool(const ResultEnvelope& env);
-
-    /// Дістає рядкове поле з `payload` конверта; відсутнє поле → порожній рядок.
-    static std::string PayloadStr(const ResultEnvelope& env, const char* field);
-
-    /// Толерантне читання вхідного параметра в рядок.
-    /// ⚠️ Пряме `static_cast<std::string>(VH)` КИДАЄ на всьому, крім `VTYPE_PWSTR`,
-    /// а 1С передає параметри форми налаштувань їхніми оголошеними типами: `Port`
-    /// і `Baud` приходять числами, `VoidAsRefund` — булевим. Тому всі вхідні
-    /// значення читаємо лише через цей хелпер.
-    static std::string VariantToString(VH value);
-
-    /// Те саме для числа: порожній/незаповнений параметр → 0.0 замість винятку.
-    static double VariantToDouble(VH value);
-
-    /// Сума з 1С приходить як VTYPE_R8 (перевірено зондом на живій 1С), а драйвер
-    /// чекає рядок «100.00». Конверсія ЛОКАЛЕНЕЗАЛЕЖНА — через цілі копійки, бо
-    /// printf-подібне форматування дало б кому замість крапки в ru/uk-локалі.
-    static std::string AmountToString(double amount);
-
 private:
     /// Реєструє асинхронну трійцю ПОВЕРХ контракту БПО. Штатний обробник БПО цих
     /// методів не знає й ніколи не покличе — їх бере розширення 1С через
@@ -87,17 +72,8 @@ private:
     /// Чи скасовувати платіж поверненням за RRN (параметр `VoidAsRefund`).
     bool VoidAsRefundEnabled() const;
 
-    void SetError(int code, const std::string& description);
-    void ClearError();
-    /// Числовий код для `ПолучитьОшибку` з машинного коду ResultEnvelope.
-    static int CodeToInt(const std::string& code);
     /// Рядок підключення драйвера з накопичених `УстановитьПараметр`.
     std::string BuildConnectionString() const;
-    std::string Param(const char* name, const std::string& fallback = "") const;
 
     EcrPrivatJsonDriver driver_;
-    std::map<std::string, std::string> params_;   ///< накопичене через УстановитьПараметр
-    std::string deviceId_;                        ///< видане при Подключить; порожнє = не підключено
-    int lastErrorCode_ = 0;
-    std::string lastErrorDesc_;
 };
