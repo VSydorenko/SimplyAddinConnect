@@ -68,9 +68,11 @@ void AcquiringBpo4000::RegisterPaymentMethods() {
                                          VH cardNo, VH receiptNo, VH rrn,
                                          VH authCode, VH slip) -> bool {
             if (!CheckDeviceId(VariantToString(deviceId))) return false;
-            // НомерМерчанта і РеквизитыКартыQR наш драйвер не використовує:
-            // ПриватБанк-протокол мерчанта бере зі своїх налаштувань, а QR ми не
-            // вміємо (прапорець ConsumerPresentedQR знято, тож 1С його й не надішле).
+            // НомерМерчанта і РеквизитыКартыQR приймаємо (розкладка цієї ревізії
+            // того вимагає), але драйверу не передаємо: номер мерчанта — налаштування
+            // самого термінала, а не параметр виклику; QR доступний лише коли драйвер
+            // задекларував ConsumerPresentedQR (знятий прапорець означає, що 1С його
+            // й не надішле).
             const ResultEnvelope env = RunPurchase(VariantToDouble(amount));
             if (!MapEnvToBool(env)) return false;
             fillAmount(env, amount);
