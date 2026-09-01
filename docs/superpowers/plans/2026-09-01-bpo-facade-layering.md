@@ -73,14 +73,25 @@ SDK 1С (`IComponentBase`/`tVariant`), nlohmann/json, spdlog, pugixml (vendored)
   форми налаштувань їхніми оголошеними типами: `Port`/`Baud`/`DotsPerMm` приходять **числами**,
   `VoidAsRefund` — **булевим**.
 - **`version.h` перегенеровується при кожній збірці** — очікуваний diff, руками не чіпати.
-- **Гейт після кожного завдання (обидві архітектури):**
+- **⚠️ Гейт після кожного завдання — СПЕРШУ ЗБІРКА, потім прогон, обидві архітектури:**
   ```powershell
+  powershell -ExecutionPolicy Bypass -File build_project.ps1 -WithTests
   powershell -ExecutionPolicy Bypass -File run_tests.ps1 -NoUapki x64
   powershell -ExecutionPolicy Bypass -File run_tests.ps1 -NoUapki x86
   ```
-  Скрипт сам конфігурує CMake (`-DBUILD_TESTS=ON`, без UAPKI) і збирає перед прогоном.
+  **`run_tests.ps1` НЕ перезбирає проєкт, якщо тестові exe вже лежать у `bin/Release`**
+  (`run_tests.ps1:241-251` — збірка лише за їх відсутності). Прогін без попереднього
+  `build_project.ps1` крутить СТАРУ DLL і до твоїх правок нечутливий: гейт зелений,
+  а перевірено нічого. Виявлено в Задачі 1 — не наступай на це знову.
   Критерій — ненульових exit-кодів немає; у підсумковій таблиці `L0.5`, `L0.6`, `L0.7`,
   `L2-ecr`, `L-p1`, `L-p3` — `PASS`. `L0.2`, `L1`, `L2/L3` — `SKIP` (це нормально без UAPKI).
+- **⚠️ `/utf-8` гейтом НЕ перевіряється.** `ecr_native_host` і `label_native_host` шукають
+  методи за англійськими іменами, тож зіпсовані кириличні літерали пройдуть зеленими.
+  Додавши нову CMake-ціль, звір наявність кириличних імен у зібраній DLL прямим пошуком
+  UTF-16LE-рядків (як зроблено в Задачі 1), а не покладайся на гейт.
+- **⚠️ `tests/data/czo/` (16 файлів) — НЕ сміття й НЕ артефакт харнесу.** Це офіційні
+  тестові приклади ЕЦП з ЦЗО, покладені паралельною сесією як вхідні дані для майбутнього
+  тесту UAPKI. До цього плану стосунку не мають: **не комітити, не видаляти, не чіпати.**
 - **⚠️ Критерій успіху Задач 1-3: `ecr_native_host` лишається зеленим БЕЗ ЖОДНОЇ правки в
   `tests/ecr_native_host.cpp`.** Знадобилось правити тест — зламано зовнішню поведінку, відкочуй.
 - **Єдина числова таксономія помилок** (`BpoFacadeBase::CodeToInt`), глобально унікальна на всю
@@ -1584,7 +1595,8 @@ powershell -ExecutionPolicy Bypass -File run_tests.ps1 -NoUapki x86
 - [ ] **Крок 11: Коміт**
 
 ```bash
-git add -A src/drivers src/components CMake tests
+git add -A src/drivers src/components CMake
+git add tests/ecr_privatjson_selftest.cpp tests/CMakeLists.txt
 git commit -m "refactor(bpo): IAcquiringDriver + адаптер ПриватБанку, семантика еквайрингу без протоколу"
 ```
 
