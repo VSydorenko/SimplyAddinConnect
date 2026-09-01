@@ -300,7 +300,7 @@ target_include_directories(label_facade_component PRIVATE
     ${CMAKE_SOURCE_DIR}/extern/pugixml/src
 )
 target_compile_definitions(label_facade_component PRIVATE _WINDOWS UNICODE _UNICODE)
-add_dependencies(label_facade_component base_component spdlog nlohmann_json helpers_component driver_label_printer_component platform_component)
+add_dependencies(label_facade_component base_component spdlog nlohmann_json helpers_component driver_label_printer_component platform_component bpo_facade_component)
 
 ## @var bpo_facade_component
 ## @brief Спільна КОНТРАКТНА половина БПО-фасадів (BpoFacadeBase) — системні методи,

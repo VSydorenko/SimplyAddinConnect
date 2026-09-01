@@ -122,6 +122,7 @@ add_executable(label_printer_selftest ${CMAKE_SOURCE_DIR}/tests/label_printer_se
     support/LabelEmulator.cpp                          # TCP-емулятор-захоплювач ZPL (L-p2 e2e)
 )
 target_sources(label_printer_selftest PRIVATE
+    $<TARGET_OBJECTS:bpo_facade_component>             # BpoFacadeBase — база фасаду принтера
     $<TARGET_OBJECTS:label_facade_component>           # БПО-фасад AddinLabelPrinter (смоук через CreateObject)
     $<TARGET_OBJECTS:driver_label_printer_component>   # LabelRaster/GfEncoder/BarcodeZpl/LabelPrinterDriver
     $<TARGET_OBJECTS:platform_component>               # ResultEnvelope (результат операції драйвера)

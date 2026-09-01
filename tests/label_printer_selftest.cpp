@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <clocale>
 #include <string>
 #include <optional>
 #include <memory>
@@ -479,7 +480,28 @@ static void TestFacadeSmoke() {
     MockMem mem; MockConn conn;
     comp->Init(&conn);
     comp->setMemManager(&mem);
-    CHECK(comp->GetNMethods() >= 8, "Facade: зареєстровано >=8 БПО-методів");
+
+    // Імена контракту БПО, які РЕАЛЬНО кличе конфігурація (bpo-contract.md §2).
+    // GetNMethods тут не годиться: він був зеленим і на старих довгих іменах.
+    const wchar_t* contract[] = {
+        L"ПолучитьРевизиюИнтерфейса", L"ПолучитьНомерВерсии", L"ПолучитьОписание",
+        L"ПолучитьПараметры", L"УстановитьПараметр", L"Подключить", L"Отключить",
+        L"ТестУстройства", L"ПолучитьОшибку", L"ПолучитьДополнительныеДействия",
+        L"ВыполнитьДополнительноеДействие", L"ИнициализацияПринтера", L"ПечатьЭтикеток"
+    };
+    bool all = true;
+    for (const wchar_t* n : contract)
+        if (comp->FindMethod(n) < 0) { all = false; std::printf("  немає: %ls\n", n); }
+    CHECK(all, "Facade: усі 13 імен контракту БПО зареєстровано");
+
+    const wchar_t* legacy[] = { L"ПодключитьОборудование", L"ПараметрыОборудования",
+                                L"ТестированиеОборудования", L"ОтключитьОборудование",
+                                L"УстановитьИнформациюПриложения" };
+    bool none = true;
+    for (const wchar_t* n : legacy)
+        if (comp->FindMethod(n) >= 0) { none = false; std::printf("  лишилось: %ls\n", n); }
+    CHECK(none, "Facade: старі довгі імена за ІТС прибрано");
+
     delete comp;
 }
 
@@ -625,6 +647,10 @@ static void TestDriverProbe() {
 }
 
 int main() {
+    // %ls у діагностиці нижче конвертує wchar_t за LC_CTYPE: у дефолтній
+    // локалі "C" кирилиця не конвертується й printf МОВЧКИ обриває рядок —
+    // імена ненайдених методів просто зникали б зі звіту. LC_NUMERIC не чіпаємо.
+    std::setlocale(LC_CTYPE, ".UTF-8");
     TestUnits();
     TestGfEncoder();
     TestGfTiling();

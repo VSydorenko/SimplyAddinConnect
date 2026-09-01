@@ -10,49 +10,41 @@ using namespace labelprinter;
 REGISTER_COMPONENT(u"LabelPrinter", AddinLabelPrinter)
 
 namespace {
-// Версія вимог до інтерфейсу БПО (ревізія контракту «Подключаемое оборудование»).
-constexpr int kInterfaceRevision = 4007;
 
-// Числовий код помилки з машинного коду ResultEnvelope для GetLastError (LONG):
-// цифровий код (напр. код відповіді пристрою) -> як є; рядкова таксономія драйвера
-// -> стабільні числові коди; невідомий нечисловий -> -1.
-int CodeToInt(const std::string& code) {
-    if (code.empty()) return -1;
-    bool numeric = true;
-    for (char c : code) if (c < '0' || c > '9') { numeric = false; break; }
-    if (numeric) { try { return std::stoi(code); } catch (...) { return -1; } }
-    if (code == "OK")                  return 0;
-    if (code == "NOT_CONNECTED")       return 1;
-    if (code == "BAD_INPUT")           return 2;
-    if (code == "TRANSPORT_ERROR")     return 3;
-    if (code == "UNSUPPORTED_BARCODE") return 4;
-    if (code == "BARCODE_TOO_WIDE")    return 5;
-    if (code == "RENDER_ERROR")        return 6;
-    if (code == "EXCEPTION")           return 7;
-    return -1;   // невідомий нечисловий код
+/// Людський опис цілі підключення для РезультатТеста — адміністратор має бачити,
+/// що саме перевірялось, а не просто «помилка».
+std::string DescribeTarget(const DeviceProfile& p) {
+    if (p.transport == DeviceProfile::Transport::Tcp)
+        return "tcp://" + p.host + ":" + std::to_string(p.port);
+    return "черга Windows \"" + p.printerName + "\"";
 }
 
-// DriverDescription — паспорт драйвера для БПО (тип обладнання, версії, прапорці).
-std::string BuildDriverDescriptionXml() {
-    const std::string ver = AddInNative::version();
-    return
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-        "<DriverDescription "
-        "Name=\"Драйвер принтера этикеток (SimplyAddinConnect)\" "
-        "Description=\"Друк етикеток на ZPL-принтер через spooler-RAW або TCP:9100\" "
-        "EquipmentType=\"LabelPrinter\" "
-        "IntegrationComponent=\"false\" "
-        "MainDriverInstalled=\"true\" "
-        "DriverVersion=\"" + ver + "\" "
-        "IntegrationComponentVersion=\"" + ver + "\" "
-        "IsEmulator=\"false\" "
-        "LocalizationSupported=\"false\" "
-        "AutoSetup=\"false\" "
-        "LogIsEnabled=\"false\" "
-        "LogPath=\"\"/>";
+} // namespace
+
+AddinLabelPrinter::AddinLabelPrinter() {
+    REPORT_INFO("Ініціалізація компоненти LabelPrinter");
+    RegisterSystemMethods();
+    RegisterPrinterMethods();
 }
 
-// TableParameters — опис форми налаштувань підключення (транспорт/порт/DPI/…).
+AddinLabelPrinter::~AddinLabelPrinter() {
+    REPORT_INFO("Завершення роботи компоненти LabelPrinter");
+    if (!DeviceId().empty()) driver_.Disconnect(DeviceId());
+}
+
+// ============================ гачки BpoFacadeBase ============================
+
+BpoFacadeBase::DriverInfo AddinLabelPrinter::BuildDriverInfo() const {
+    // logEnabled=false: вимога ІТС про лог за замовчуванням стосується ККТ і
+    // POSTerminal; принтер етикеток у той перелік не входить, і параметрів
+    // LogPath/LogLevel у його формі налаштувань немає.
+    return DriverInfo{ "Драйвер принтера этикеток (SimplyAddinConnect)",
+                       "Друк етикеток на ZPL-принтер через spooler-RAW або TCP:9100",
+                       "LabelPrinter",
+                       /*logEnabled*/ false };
+}
+
+// Опис форми налаштувань підключення (транспорт/порт/DPI/…).
 //
 // ФОРМАТ СУВОРИЙ. Форма налаштувань БПО (Catalogs.ПодключаемоеОборудование, ФормаНастройки)
 // читає XML послідовно і входить у розбір лише за умови кореневого вузла `Settings`:
@@ -63,7 +55,7 @@ std::string BuildDriverDescriptionXml() {
 // (текст вузла — представлення). Решта атрибутів ігнорується.
 // Джерела: ІТС «Разработка драйвера для подключения оборудования локально к устройству
 // пользователя» (розділ ТаблицаПараметров) + розбір парсера у конфігурації УНФ.
-std::string BuildTableParametersXml() {
+std::string AddinLabelPrinter::BuildSettingsXml() const {
     return
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
         "<Settings>"
@@ -102,197 +94,112 @@ std::string BuildTableParametersXml() {
         "</Page>"
         "</Settings>";
 }
-} // namespace
 
-AddinLabelPrinter::AddinLabelPrinter() {
-    REPORT_INFO("Ініціалізація компоненти LabelPrinter");
-    RegisterMethods();
+bool AddinLabelPrinter::AcceptEquipmentType(const std::string& value) const {
+    // ⚠️ 1С передає ІМ'Я ЗНАЧЕННЯ ПЕРЕЛІКУ Enums/ТипыПодключаемогоОборудования —
+    // ПринтерЭтикеток, а не англійський рядок LabelPrinter з таблиці ІТС.
+    // Приймаємо обидва: коштує нічого, страхує від наступної редакції.
+    return value == "ПринтерЭтикеток" || ToUpperAscii(value) == "LABELPRINTER";
 }
 
-AddinLabelPrinter::~AddinLabelPrinter() {
-    REPORT_INFO("Завершення роботи компоненти LabelPrinter");
-    ServiceTools::DisableComponentLogging(this);
-}
-
-bool AddinLabelPrinter::mapEnvToBool(const ResultEnvelope& env) {
-    if (!env.ok) {
-        lastErrorCode_ = CodeToInt(env.code);
-        lastErrorDesc_ = env.description;
-    } else {
-        lastErrorCode_ = 0;
-        lastErrorDesc_.clear();
+bool AddinLabelPrinter::OpenDevice(std::string& deviceIdOut) {
+    DeviceProfile profile;
+    std::string err;
+    if (!LabelXml::ProfileFromParameters(Params(), profile, err)) {
+        SetError(CodeToInt("BAD_INPUT"), err.empty() ? "Некоректні параметри підключення" : err);
+        return false;
     }
-    return env.ok;
+    const std::string id = driver_.Connect(profile);
+    if (id.empty()) {
+        SetError(CodeToInt("TRANSPORT_ERROR"), "Не вдалося зареєструвати пристрій");
+        return false;
+    }
+    deviceIdOut = id;   // прокидуємо СПРАВЖНІЙ id драйвера — лог фасаду й драйвера збігається
+    return true;
 }
 
-void AddinLabelPrinter::RegisterMethods() {
-    // ================= СИСТЕМНІ методи БПО =================
+void AddinLabelPrinter::CloseDevice() {
+    if (!DeviceId().empty()) driver_.Disconnect(DeviceId());
+}
 
-    // Версія вимог до інтерфейсу драйвера — LONG, без параметрів.
-    AddFunction(u"GetInterfaceRevision", u"ПолучитьРевизиюИнтерфейса",
-        Ret([]() -> int { return kInterfaceRevision; }));
+bool AddinLabelPrinter::ProbeDevice(std::string& resultOut, bool& demoOut) {
+    demoOut = false;                       // демо-режиму драйвер не має
+    DeviceProfile profile;
+    std::string err;
+    if (!LabelXml::ProfileFromParameters(Params(), profile, err)) {
+        const std::string text = err.empty() ? std::string("Некоректні параметри підключення") : err;
+        SetError(CodeToInt("BAD_INPUT"), text);
+        resultOut = text;
+        return false;
+    }
+    // Тест іде на ОКРЕМОМУ пристрої драйвера, щоб не чіпати активне підключення:
+    // адміністратор може натиснути «Тест устройства» при вже підключеному принтері.
+    const std::string probeId = driver_.Connect(profile);
+    if (probeId.empty()) {
+        SetError(CodeToInt("TRANSPORT_ERROR"), "Не вдалося створити канал до принтера");
+        resultOut = "Не вдалося створити канал до принтера";
+        return false;
+    }
+    const ResultEnvelope env = driver_.Probe(probeId);
+    driver_.Disconnect(probeId);
 
-    // Паспорт драйвера: OUT DriverDescription (XML) -> BOOL.
-    AddFunction(u"GetDescription", u"ПолучитьОписание",
-        Ret([this](VH driverDescription) -> bool {
-            try {
-                driverDescription = BuildDriverDescriptionXml();
-                lastErrorCode_ = 0; lastErrorDesc_.clear();
-                return true;
-            } catch (const std::exception& e) {
-                lastErrorCode_ = -1; lastErrorDesc_ = e.what();
-                REPORT_ERROR(std::string("Помилка ПолучитьОписание: ") + e.what());
-                return false;
-            }
-        }),
-        std::vector<ParamSpec>{ ParamSpec{ u"DriverDescription", u"ОписаниеДрайвера", /*required*/false, {} } });
+    const std::string target = DescribeTarget(profile);
+    if (!env.ok) {
+        SetError(CodeToInt(env.code), env.description);
+        resultOut = target + " — недоступно: " + env.description;
+        return false;
+    }
+    resultOut = target + " — доступно";
+    ClearError();
+    return true;
+}
 
-    // Остання помилка: OUT ErrorDescription (опис) -> LONG (код).
-    AddFunction(u"GetLastError", u"ПолучитьОшибку",
-        Ret([this](VH errorDescription) -> int {
-            errorDescription = lastErrorDesc_;
-            return lastErrorCode_;
-        }),
-        std::vector<ParamSpec>{ ParamSpec{ u"ErrorDescription", u"ОписаниеОшибки", false, {} } });
+// ============================ функціональні методи ============================
 
-    // Форма параметрів підключення: IN EquipmentType, OUT TableParameters (XML) -> BOOL.
-    AddFunction(u"EquipmentParameters", u"ПараметрыОборудования",
-        Ret([this](VH equipmentType, VH tableParameters) -> bool {
-            try {
-                (void)equipmentType;
-                tableParameters = BuildTableParametersXml();
-                lastErrorCode_ = 0; lastErrorDesc_.clear();
-                return true;
-            } catch (const std::exception& e) {
-                lastErrorCode_ = -1; lastErrorDesc_ = e.what();
-                REPORT_ERROR(std::string("Помилка ПараметрыОборудования: ") + e.what());
-                return false;
-            }
-        }),
-        std::vector<ParamSpec>{
-            ParamSpec{ u"EquipmentType", u"ТипОборудования", false, {} },
-            ParamSpec{ u"TableParameters", u"ТаблицаПараметров", false, {} } });
+void AddinLabelPrinter::RegisterPrinterMethods() {
 
-    // Підключення: OUT DeviceID, IN EquipmentType, IN ConnectionParameters (XML) -> BOOL.
-    AddFunction(u"ConnectEquipment", u"ПодключитьОборудование",
-        Ret([this](VH deviceId, VH equipmentType, VH connectionParameters) -> bool {
-            try {
-                (void)equipmentType;
-                std::string xml = static_cast<std::string>(connectionParameters);
-                DeviceProfile profile; std::string err;
-                if (!LabelXml::ParseConnectionParameters(xml, profile, err)) {
-                    lastErrorCode_ = -1; lastErrorDesc_ = err.empty() ? "Некоректні параметри підключення" : err;
-                    REPORT_ERROR(std::string("Помилка розбору ConnectionParameters: ") + lastErrorDesc_);
-                    return false;
-                }
-                std::string id = driver_.Connect(profile);
-                if (id.empty()) {
-                    lastErrorCode_ = -1; lastErrorDesc_ = "Не вдалося зареєструвати пристрій";
-                    return false;
-                }
-                deviceId = id;
-                lastErrorCode_ = 0; lastErrorDesc_.clear();
-                return true;
-            } catch (const std::exception& e) {
-                lastErrorCode_ = -1; lastErrorDesc_ = e.what();
-                REPORT_ERROR(std::string("Помилка ПодключитьОборудование: ") + e.what());
-                return false;
-            }
-        }),
-        std::vector<ParamSpec>{
-            ParamSpec{ u"DeviceID", u"ИдентификаторУстройства", false, {} },
-            ParamSpec{ u"EquipmentType", u"ТипОборудования", false, {} },
-            ParamSpec{ u"ConnectionParameters", u"ПараметрыПодключения", true, {} } });
-
-    // Відключення: IN DeviceID -> BOOL.
-    AddFunction(u"DisconnectEquipment", u"ОтключитьОборудование",
-        Ret([this](VH deviceId) -> bool {
-            try {
-                driver_.Disconnect(static_cast<std::string>(deviceId));
-                lastErrorCode_ = 0; lastErrorDesc_.clear();
-                return true;
-            } catch (const std::exception& e) {
-                lastErrorCode_ = -1; lastErrorDesc_ = e.what();
-                REPORT_ERROR(std::string("Помилка ОтключитьОборудование: ") + e.what());
-                return false;
-            }
-        }),
-        std::vector<ParamSpec>{ ParamSpec{ u"DeviceID", u"ИдентификаторУстройства", true, {} } });
-
-    // Тест обладнання: IN EquipmentType, IN ConnectionParameters, OUT Description, OUT DemoModeIsActivated -> BOOL.
-    AddFunction(u"EquipmentTest", u"ТестированиеОборудования",
-        Ret([this](VH equipmentType, VH connectionParameters, VH description, VH demoModeIsActivated) -> bool {
-            try {
-                (void)equipmentType;
-                demoModeIsActivated = false;
-                std::string xml = static_cast<std::string>(connectionParameters);
-                DeviceProfile profile; std::string err;
-                if (!LabelXml::ParseConnectionParameters(xml, profile, err)) {
-                    lastErrorCode_ = -1; lastErrorDesc_ = err.empty() ? "Некоректні параметри підключення" : err;
-                    description = lastErrorDesc_;
-                    return false;
-                }
-                description = std::string("Параметри підключення коректні; демо-режим не використовується");
-                lastErrorCode_ = 0; lastErrorDesc_.clear();
-                return true;
-            } catch (const std::exception& e) {
-                lastErrorCode_ = -1; lastErrorDesc_ = e.what();
-                REPORT_ERROR(std::string("Помилка ТестированиеОборудования: ") + e.what());
-                return false;
-            }
-        }),
-        std::vector<ParamSpec>{
-            ParamSpec{ u"EquipmentType", u"ТипОборудования", false, {} },
-            ParamSpec{ u"ConnectionParameters", u"ПараметрыПодключения", true, {} },
-            ParamSpec{ u"Description", u"Описание", false, {} },
-            ParamSpec{ u"DemoModeIsActivated", u"ДемоРежимАктивирован", false, {} } });
-
-    // Інформація застосунку — приймаємо й ігноруємо (немає ліцензійної логіки) -> BOOL.
-    AddFunction(u"SetApplicationInformation", u"УстановитьИнформациюПриложения",
-        Ret([this](VH applicationSettings) -> bool {
-            (void)applicationSettings;
-            lastErrorCode_ = 0; lastErrorDesc_.clear();
-            return true;
-        }),
-        std::vector<ParamSpec>{ ParamSpec{ u"ApplicationSettings", u"НастройкиПриложения", false, {} } });
-
-    // ================= ФУНКЦІОНАЛЬНІ методи =================
-
-    // Ініціалізація принтера: IN DeviceID -> BOOL.
+    // Ініціалізація принтера: IN ИДУстройства -> BOOL.
     AddFunction(u"InitializePrinter", u"ИнициализацияПринтера",
         Ret([this](VH deviceId) -> bool {
             try {
-                return mapEnvToBool(driver_.InitializePrinter(static_cast<std::string>(deviceId)));
+                const std::string id = VariantToString(deviceId);
+                if (!CheckDeviceId(id)) return false;
+                return MapEnvToBool(driver_.InitializePrinter(id));
             } catch (const std::exception& e) {
-                lastErrorCode_ = -1; lastErrorDesc_ = e.what();
+                SetError(-1, e.what());
                 REPORT_ERROR(std::string("Помилка ИнициализацияПринтера: ") + e.what());
                 return false;
             }
         }),
-        std::vector<ParamSpec>{ ParamSpec{ u"DeviceID", u"ИдентификаторУстройства", true, {} } });
+        std::vector<ParamSpec>{ ParamSpec{ u"DeviceID", u"ИДУстройства", true, {} } });
 
-    // Друк етикеток: IN DeviceID, IN LabelsTable (XML), IN PackageStatus -> BOOL.
+    // Друк етикеток: IN ИДУстройства, IN ТаблицаЭтикеток(XML), IN СтатусПакета -> BOOL.
+    // СтатусПакета — first/regular/last: first несе <Formatting> і скидає кеш формату,
+    // last після друку його очищає.
     AddFunction(u"PrintLabels", u"ПечатьЭтикеток",
         Ret([this](VH deviceId, VH labelsTable, VH packageStatus) -> bool {
             try {
-                std::string xml = static_cast<std::string>(labelsTable);
-                LabelBatch batch; std::string err;
+                const std::string id = VariantToString(deviceId);
+                if (!CheckDeviceId(id)) return false;
+                const std::string xml = VariantToString(labelsTable);
+                LabelBatch batch;
+                std::string err;
                 if (!LabelXml::ParseLabelsTable(xml, batch, err)) {
-                    lastErrorCode_ = -1; lastErrorDesc_ = err.empty() ? "Некоректний пакет LabelsTable" : err;
-                    REPORT_ERROR(std::string("Помилка розбору LabelsTable: ") + lastErrorDesc_);
+                    const std::string text = err.empty() ? "Некоректний пакет ТаблицаЭтикеток" : err;
+                    SetError(CodeToInt("BAD_INPUT"), text);
+                    REPORT_ERROR("Помилка розбору ТаблицаЭтикеток: " + text);
                     return false;
                 }
-                return mapEnvToBool(driver_.PrintLabels(
-                    static_cast<std::string>(deviceId), batch, static_cast<std::string>(packageStatus)));
+                return MapEnvToBool(driver_.PrintLabels(id, batch, VariantToString(packageStatus)));
             } catch (const std::exception& e) {
-                lastErrorCode_ = -1; lastErrorDesc_ = e.what();
+                SetError(-1, e.what());
                 REPORT_ERROR(std::string("Помилка ПечатьЭтикеток: ") + e.what());
                 return false;
             }
         }),
         std::vector<ParamSpec>{
-            ParamSpec{ u"DeviceID", u"ИдентификаторУстройства", true, {} },
-            ParamSpec{ u"LabelsTable", u"ТаблицаЭтикеток", true, {} },
+            ParamSpec{ u"DeviceID", u"ИДУстройства", true, {} },
+            ParamSpec{ u"LabelsTable", u"ДанныеДляВыгрузки", true, {} },
             ParamSpec{ u"PackageStatus", u"СтатусПакета", true, {} } });
 
     REPORT_INFO("Реєстрація методів LabelPrinter завершена");
