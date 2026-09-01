@@ -1,5 +1,7 @@
 #pragma once
-#include "AddinEcrBpoBase.h"
+#include "AcquiringFacadeBase.h"
+#include "../drivers/ecr_privatjson/EcrPrivatJsonAcquiring.h"
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -10,13 +12,18 @@
 /// Тобто фасад працює в обох продуктах і в старіших збірках, де гілки 4000 ще немає.
 ///
 /// Повна звірка сигнатур і розкладки OUT — docs/architecture/bpo-contract.md §2.4.
-class AddinEcrBpo3004 : public AddinEcrBpoBase {
+class AddinEcrBpo3004 : public AcquiringFacadeBase {
 public:
     static std::vector<std::u16string> names;
     AddinEcrBpo3004();
 
 protected:
     int InterfaceRevision() const override { return 3004; }
+    /// Єдиний протокол сьогодні — ПриватБанк JSON. Другий протокол додасть свій
+    /// клас фасаду, а не гілку тут.
+    std::unique_ptr<IAcquiringDriver> MakeDriver() const override {
+        return std::make_unique<EcrPrivatJsonAcquiring>();
+    }
 
 private:
     void RegisterPaymentMethods();

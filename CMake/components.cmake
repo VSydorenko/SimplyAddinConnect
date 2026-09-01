@@ -36,7 +36,9 @@ set(HEADER_FILES
     src/components/AddinLabelPrinter.h
     src/platform/MoneyFormat.h
     src/components/BpoFacadeBase.h
-    src/components/AddinEcrBpoBase.h
+    src/drivers/IAcquiringDriver.h
+    src/drivers/ecr_privatjson/EcrPrivatJsonAcquiring.h
+    src/components/AcquiringFacadeBase.h
     src/components/AddinEcrBpo3004.h
     src/components/AddinEcrBpo4000.h
 )
@@ -64,7 +66,8 @@ set(SOURCE_FILES
     src/components/AddinECRPrivatJSON.cpp
     src/components/AddinLabelPrinter.cpp
     src/components/BpoFacadeBase.cpp
-    src/components/AddinEcrBpoBase.cpp
+    src/drivers/ecr_privatjson/EcrPrivatJsonAcquiring.cpp
+    src/components/AcquiringFacadeBase.cpp
     src/components/AddinEcrBpo3004.cpp
     src/components/AddinEcrBpo4000.cpp
 )
@@ -204,6 +207,8 @@ add_library(driver_ecr_privatjson_component OBJECT
     src/drivers/ecr_privatjson/EcrPrivatJsonClassifier.cpp
     src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h
     src/drivers/ecr_privatjson/EcrPrivatJsonDriver.cpp
+    src/drivers/ecr_privatjson/EcrPrivatJsonAcquiring.h
+    src/drivers/ecr_privatjson/EcrPrivatJsonAcquiring.cpp
 )
 set_target_properties(driver_ecr_privatjson_component PROPERTIES
     POSITION_INDEPENDENT_CODE ON
@@ -318,14 +323,32 @@ target_compile_definitions(bpo_facade_component PRIVATE _WINDOWS UNICODE _UNICOD
 add_dependencies(bpo_facade_component base_component spdlog nlohmann_json helpers_component
     platform_component)
 
+## @var acquiring_facade_component
+## @brief Семантика еквайрингу поверх IAcquiringDriver (AcquiringFacadeBase) + ревізійні
+##        шари. ПРОТОКОЛУ НЕ ЗНАЄ — новий протокол реалізує IAcquiringDriver і додає два
+##        тонкі класи, не чіпаючи цю ціль.
+add_library(acquiring_facade_component OBJECT
+    src/drivers/IAcquiringDriver.h
+    src/components/AcquiringFacadeBase.h
+    src/components/AcquiringFacadeBase.cpp
+)
+set_target_properties(acquiring_facade_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_include_directories(acquiring_facade_component PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+    ${SPDLOG_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR})
+target_compile_definitions(acquiring_facade_component PRIVATE _WINDOWS UNICODE _UNICODE)
+add_dependencies(acquiring_facade_component base_component spdlog nlohmann_json
+    helpers_component platform_component bpo_facade_component)
+
 ## @var ecr_bpo_facade_component
 ## @brief БПО-фасади еквайрингу над драйвером ECRPrivatJSON (контракт «Подключаемое оборудование»).
-## @details Спільна системна половина — AddinEcrBpoBase; на кожне СІМЕЙСТВО СИГНАТУР свій
-##          похідний клас (3004 — сімка; далі 4000 — дев'ятка). Одним класом не обійтися:
-##          одне ім'я методу = одна арність. Контракт — docs/architecture/bpo-contract.md.
+## @details Семантику еквайрингу (методи можливостей, VoidAsRefund, асинхронне розширення)
+##          дає AcquiringFacadeBase поверх IAcquiringDriver; тут — лише ревізійний шар, на
+##          кожне СІМЕЙСТВО СИГНАТУР свій похідний клас (3004 — сімка; 4000 — дев'ятка).
+##          Одним класом не обійтися: одне ім'я методу = одна арність.
+##          Контракт — docs/architecture/bpo-contract.md.
 add_library(ecr_bpo_facade_component OBJECT
-    src/components/AddinEcrBpoBase.h
-    src/components/AddinEcrBpoBase.cpp
     src/components/AddinEcrBpo3004.h
     src/components/AddinEcrBpo4000.h
     src/components/AddinEcrBpo3004.cpp
@@ -344,7 +367,7 @@ target_include_directories(ecr_bpo_facade_component PRIVATE
 )
 target_compile_definitions(ecr_bpo_facade_component PRIVATE _WINDOWS UNICODE _UNICODE)
 add_dependencies(ecr_bpo_facade_component base_component spdlog nlohmann_json helpers_component
-    driver_ecr_privatjson_component platform_component bpo_facade_component)
+    driver_ecr_privatjson_component platform_component bpo_facade_component acquiring_facade_component)
 
 
 ## @var uapki_helper_component
@@ -447,6 +470,7 @@ add_library(${TARGET} SHARED
     $<TARGET_OBJECTS:driver_label_printer_component>
     $<TARGET_OBJECTS:label_facade_component>
     $<TARGET_OBJECTS:bpo_facade_component>
+    $<TARGET_OBJECTS:acquiring_facade_component>
     $<TARGET_OBJECTS:ecr_bpo_facade_component>
     # $<TARGET_OBJECTS:ecrcommx_component>
     # $<TARGET_OBJECTS:posapi_component>

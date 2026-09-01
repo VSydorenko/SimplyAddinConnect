@@ -110,12 +110,12 @@ void AddinEcrBpo4000::RegisterPaymentMethods() {
                                          VH rrn, VH authCode, VH slip) -> bool {
             if (!CheckDeviceId(VariantToString(deviceId))) return false;
 
-            // Часткове скасування не підтримуємо, і прапорець PartialCancellation
-            // знято — конфігурація мала б відсіяти виклик ДО драйвера. Але якщо він
-            // усе-таки дійшов (інша гілка, інша збірка), відмовляємо явно, а не
-            // мовчки скасовуємо на іншу суму.
+            // Часткове скасування дозволено лише коли драйвер його задекларував.
+            // Конфігурація мала б відсіяти виклик ДО драйвера за прапорцем
+            // PartialCancellation, але якщо він усе-таки дійшов (інша гілка, інша
+            // збірка) — відмовляємо явно, а не мовчки скасовуємо на іншу суму.
             const double original = VariantToDouble(originalAmount);
-            if (original > 0.0) {
+            if (original > 0.0 && !Capabilities().partialCancellation) {
                 return MapEnvToBool(Unsupported("Часткове скасування"));
             }
 

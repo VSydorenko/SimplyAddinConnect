@@ -86,6 +86,8 @@ add_executable(ecr_privatjson_selftest ecr_privatjson_selftest.cpp
     $<TARGET_OBJECTS:ecr_facade_component>       # 1С-фасад AddinECRPrivatJSON (смоук через CreateObject)
     $<TARGET_OBJECTS:driver_ecr_privatjson_component>
     $<TARGET_OBJECTS:platform_component>
+    $<TARGET_OBJECTS:bpo_facade_component>          # BpoFacadeBase
+    $<TARGET_OBJECTS:acquiring_facade_component>    # AcquiringFacadeBase (RunVoid під тестом)
     $<TARGET_OBJECTS:transport_component>   # реальний TransportTCP/COM для e2e
     $<TARGET_OBJECTS:wire_component>        # DeviceSession/NullTerminatedFramer/IFrameClassifier
     $<TARGET_OBJECTS:helpers_component>
