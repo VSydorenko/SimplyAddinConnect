@@ -229,6 +229,30 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# iit_verify — L4-арбітр підпису на НАТИВНІЙ бібліотеці АТ «ІІТ» (EUSignCP.dll).
+# Друга, НЕЗАЛЕЖНА думка про наш підпис: UAPKI є форком Cryptonite, тож перевіряти
+# його підпис Cryptonite-похідною = перевіряти себе собою. Саме тому ціль оголошена
+# ДО гейта BUILD_WITH_UAPKI нижче — крипто-ядро їй не потрібне й лінкувати його сюди
+# не можна: у незалежності від нашого стека весь сенс арбітра.
+# ТІЛЬКИ x86: EUSignCP.dll 32-бітна (dumpbin /headers -> 14C machine), x64-процес
+# 32-бітну DLL не завантажить. Сама DLL у репозиторій НЕ копіюється (ліцензія ІІТ
+# §2.2) — вантажиться з місця встановлення через LoadLibraryW+GetProcAddress.
+# ---------------------------------------------------------------------------
+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    add_executable(iit_verify iit_verify.cpp)
+    set_target_properties(iit_verify PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+        OUTPUT_NAME "iit_verify${_TEST_ARCH_SUFFIX}")
+    # SDK 1С тут не задіяний, тож _WINDOWS не потрібен; UNICODE/_UNICODE — узгодженість W-API.
+    target_compile_definitions(iit_verify PRIVATE UNICODE _UNICODE)
+    # shell32 (CommandLineToArgvW) підключається #pragma comment у вихіднику, як у native_host.
+    if(MSVC)
+        target_compile_options(iit_verify PRIVATE /utf-8)
+    endif()
+else()
+    message(STATUS "[tests] iit_verify пропущено для x64 (EUSignCP.dll лише x86)")
+endif()
+
+# ---------------------------------------------------------------------------
 # Далі — цілі, що потребують крипто-ядра UAPKI (uapki_bundle існує лише при
 # BUILD_WITH_UAPKI). Без нього тихо пропускаємо решту файлу.
 # ---------------------------------------------------------------------------
