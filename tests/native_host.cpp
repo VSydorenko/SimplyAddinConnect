@@ -32,6 +32,8 @@ int main() {
 
 #include <nlohmann/json.hpp>
 
+#include "support/LocalKeys.h"
+
 #pragma comment(lib, "shell32.lib")  // CommandLineToArgvW
 
 // SDK 1С (include/). types.h визначає WCHAR_T=wchar_t та ADDIN_API=__stdcall
@@ -757,11 +759,97 @@ static bool case6_passwordNotLogged(const std::wstring& binDir, const std::wstri
 }
 
 // ========================================================================
+// КЕЙС 7 — відкриття РЕАЛЬНИХ контейнерів КНЕДП
+// ========================================================================
+// Дві різні гілки детекту в cm-pkcs12: JKS (магія 0xFEEDFEED -> decodeJks ->
+// jks_decrypt_key) і PKCS#12 (.ZS2 попри розширення є повноцінним PFX).
+// Жодного реального контейнера від КНЕДП раніше не відкривали.
+static bool case7_realContainers(const std::wstring& binDir, const std::wstring& dataDir,
+                                 bool& skipped) {
+    printf("== Case 7: реальні контейнери КНЕДП ==\n");
+    skipped = false;
+
+    std::vector<LocalKey> keys;
+    std::string err;
+    const std::wstring cfg = dataDir + L"\\local-keys.json";
+    if (!LoadLocalKeys(cfg, keys, err)) {
+        printf("FAIL: конфіг зіпсований: %s\n", err.c_str());
+        return false;                       // конфіг є -> наміри заявлені -> FAIL
+    }
+    if (keys.empty()) {
+        printf("SKIP (немає tests/data/local-keys.json — реальні ключі не налаштовані)\n");
+        skipped = true;
+        return true;
+    }
+
+    std::wstring dllName = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
+    Component c;
+    if (!c.load(binDir + L"\\" + dllName)) return false;
+
+    json j;
+    std::string r = c.call("INIT", buildInit(true));
+    CHECK(errCode(r, j) == 0, "INIT errorCode == 0");
+
+    bool allOk = true;
+    for (const auto& k : keys) {
+        printf("  -- ключ '%s'\n", k.id.c_str());
+
+        json op;
+        op["provider"] = "PKCS12";          // провайдер один: детект іде за ВМІСТОМ
+        op["storage"]  = k.path;
+        op["password"] = k.password;
+        op["mode"]     = "RO";
+        r = c.call("OPEN", op.dump());
+        if (errCode(r, j) != 0) {
+            printf("  FAIL: OPEN errorCode=%ld error=%s\n",
+                   errCode(r, j), j.value("error", std::string()).c_str());
+            allOk = false;
+            continue;
+        }
+        printf("  OPEN ok\n");
+
+        r = c.call("KEYS", "");
+        if (errCode(r, j) != 0) { printf("  FAIL: KEYS\n"); allOk = false; c.call("CLOSE", ""); continue; }
+
+        bool algoSeen = k.expectSignAlgo.empty();
+        std::string firstId;
+        if (j["result"].contains("keys") && j["result"]["keys"].is_array()) {
+            for (const auto& key : j["result"]["keys"]) {
+                if (firstId.empty()) firstId = key.value("id", std::string());
+                if (key.contains("signAlgo") && key["signAlgo"].is_array()) {
+                    for (const auto& a : key["signAlgo"])
+                        if (a.get<std::string>() == k.expectSignAlgo) algoSeen = true;
+                }
+            }
+        }
+        if (!algoSeen) {
+            printf("  FAIL: очікуваний signAlgo %s не знайдено серед можливостей ключа\n",
+                   k.expectSignAlgo.c_str());
+            allOk = false;
+        } else {
+            printf("  signAlgo %s підтверджено\n", k.expectSignAlgo.c_str());
+        }
+
+        if (!firstId.empty()) {
+            json sp; sp["id"] = firstId;
+            r = c.call("SELECT_KEY", sp.dump());
+            if (errCode(r, j) != 0) { printf("  FAIL: SELECT_KEY\n"); allOk = false; }
+        }
+        c.call("CLOSE", "");
+    }
+
+    c.call("DEINIT", "");
+    c.unload();
+    CHECK(allOk, "усі реальні контейнери відкрито й алгоритми збіглися");
+    return true;
+}
+
+// ========================================================================
 // main / CLI
 // ========================================================================
 static void usage() {
     printf(
-        "native_host <case 1..6> [mainDll] [dataDir] [binDir] [prroDir]\n"
+        "native_host <case 1..7> [mainDll] [dataDir] [binDir] [prroDir]\n"
         "  case     : номер сценарію (окремий процес на кейс — INIT раз на процес)\n"
         "  mainDll  : шлях до головної DLL (деф.: <binDir>/SimplyAddinConnectWin"
 #ifdef _WIN64
@@ -786,7 +874,7 @@ int main() {
 
     if (argc < 2) { usage(); LocalFree(wargv); return 2; }
     int kase = _wtoi(wargv[1]);
-    if (kase < 1 || kase > 6) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
+    if (kase < 1 || kase > 7) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
 
     std::wstring binDir  = argAt(4)[0] ? std::wstring(argAt(4)) : u8to16(HOST_BIN_DIR);
     std::wstring dataDir = argAt(3)[0] ? std::wstring(argAt(3)) : u8to16(HOST_DATA_DIR);
@@ -807,12 +895,12 @@ int main() {
            kase, w2u8(mainDll).c_str(), w2u8(dataDir).c_str(), w2u8(binDir).c_str());
 
     if (binDir.empty() && kase != 1 && kase != 2) {
-        // кейси 3/4/5 вантажать DLL із binDir
+        // кейси 3/4/5/7 вантажать DLL із binDir
         if (mainDll.empty()) { printf("FAIL: не задано binDir/mainDll\n"); return 2; }
     }
 
     bool pass = false;
-    bool skipped = false;   // лише кейс 5: еталонів немає -> це НЕ покриття (exit 3)
+    bool skipped = false;   // кейси 5 і 7: вхідних даних немає -> це НЕ покриття (exit 3)
     try {
         switch (kase) {
             case 1: pass = case1_resourceDeploy(mainDll);          break;
@@ -821,6 +909,7 @@ int main() {
             case 4: pass = case4_fullChain(binDir, dataDir);       break;
             case 5: pass = case5_crossValidatePrro(binDir, prroDir, skipped); break;
             case 6: pass = case6_passwordNotLogged(binDir, dataDir);  break;
+            case 7: pass = case7_realContainers(binDir, dataDir, skipped); break;
         }
     } catch (const std::exception& e) {
         printf("FATAL: незловлений виняток: %s\n", e.what());
