@@ -693,6 +693,70 @@ else {
 }
 
 # =====================================================================
+# ЕТАП L4-iit: матриця вердиктів — корпус ЦЗО очима двох двигунів
+# =====================================================================
+# Еталони ЦЗО лежать у tests/data/czo з 2026-09-01 і жодного разу не проганялися
+# через наш власний VERIFY. Вердикт ІІТ для них відомий (негативний контроль вище:
+# code=51, "Сертифікат не знайдено"). Мета матриці — НЕ в тому, щоб обидва двигуни
+# сказали "валідно" (еталони підписані ТЕСТОВИМ ЦСК, "невалідно" від обох —
+# очікуваний результат), а в тому, щоб вони не РОЗХОДИЛИСЬ несподівано.
+#
+# Свідомо БЕЗ автоматичного вироку: правило "яка розбіжність є дефектом, а яка
+# властивістю вхідних даних" ухвалюється ПІСЛЯ першого прогону на реальних даних
+# (відкрите питання №6 специфікації) — саме таке передчасне судження вже раз
+# зашилось у кейс 5 (де 4161 вважався прийнятним) і тому підлягає перегляду.
+# Тут рядок результату лише PASS/SKIP із кількістю файлів — критерію провалу нема.
+Section 'ЕТАП L4-iit: матриця вердиктів (корпус ЦЗО)'
+
+$czoDir = Join-Path $DataDir 'czo'
+if ($NoUapki) {
+    Add-Result 'L4-iit' 'матриця вердиктів' 'SKIP' 'режим -NoUapki: крипто-стек UAPKI не збирається'
+}
+elseif (-not (Test-Path $czoDir)) {
+    Add-Result 'L4-iit' 'матриця вердиктів' 'SKIP' "немає корпусу ЦЗО: $czoDir"
+}
+elseif (-not (Test-Path $IitVerifyExe)) {
+    Add-Result 'L4-iit' 'матриця вердиктів' 'SKIP' 'немає iit_verify_x86.exe (ціль збирається лише в x86)'
+}
+elseif (-not (Test-Path $NativeHostExe)) {
+    Add-Result 'L4-iit' 'матриця вердиктів' 'SKIP' "немає native_host: $NativeHostExe"
+}
+elseif (-not (Test-Path $MainDll)) {
+    Add-Result 'L4-iit' 'матриця вердиктів' 'SKIP' "немає головної DLL: $MainDll"
+}
+else {
+    # Наш вердикт (кейс 9) по одному файлу. GUID-суфікс тимч. файлу — та сама
+    # пастка, що й у решти рівня (SigOut/лог кейса 6): фіксоване ім'я дало б
+    # гонку при паралельних прогонах x86+x64.
+    function Invoke-Case9([string]$file) {
+        $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_9_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+        $argList = @('9', "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"", '""', "`"$file`"")
+        $p = Start-Process -FilePath $NativeHostExe -ArgumentList $argList `
+                -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+        $raw = ''
+        if (Test-Path $outF) { $raw = [System.IO.File]::ReadAllText($outF, [System.Text.Encoding]::UTF8) }
+        Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
+        $line = ($raw -split "`r?`n" | Where-Object { $_ -match '^\{' } | Select-Object -Last 1)
+        [pscustomobject]@{ ExitCode = $p.ExitCode; Raw = $line }
+    }
+
+    # @(...) обовʼязково (та сама пастка PS 5.1, що й у підсумку): Get-ChildItem
+    # на єдиному збігу віддав би скаляр, а не масив з одним елементом.
+    $files = @(Get-ChildItem -Path $czoDir -Recurse -Filter '*.p7s' | Sort-Object FullName)
+    $rows = @()
+    foreach ($f in $files) {
+        $rel  = $f.FullName.Substring($czoDir.Length + 1)
+        $ours = Invoke-Case9 $f.FullName
+        $iit  = Invoke-IitVerify $f.FullName   # наявний хелпер рівня L4-iit — читає stdout як UTF-8
+        $rows += [pscustomobject]@{ File = $rel; Uapki = $ours.Raw; Iit = $iit.Raw }
+    }
+    foreach ($row in $rows) {
+        Write-Host ("    {0,-46} uapki={1} iit={2}" -f $row.File, $row.Uapki, $row.Iit) -ForegroundColor DarkGray
+    }
+    Add-Result 'L4-iit' 'матриця вердиктів' 'PASS' "$($rows.Count) файлів, вердикти обох двигунів зібрано"
+}
+
+# =====================================================================
 # ПІДСУМОК
 # =====================================================================
 Section 'ПІДСУМОК'

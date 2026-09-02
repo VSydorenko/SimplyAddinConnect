@@ -1041,11 +1041,64 @@ static bool case8_kupynaSign(const std::wstring& binDir, const std::wstring& dat
 }
 
 // ========================================================================
+// КЕЙС 9 — вердикт НАШОГО VERIFY по одному файлу (для матриці двох двигунів)
+// ========================================================================
+// Еталони ЦЗО лежать у репозиторії з 2026-09-01 і ЖОДНОГО разу не проганялися
+// через нашу перевірку. Вердикт ІІТ для них відомий (code=51, "Сертифікат не
+// знайдено") -> будуємо матрицю: кожен файл отримує ДВА незалежні вердикти.
+// Мета — НЕ в тому, щоб обидва двигуни сказали "валідно" (еталони ЦЗО від
+// тестового ЦСК, "невалідно" від обох — очікувано), а в тому, щоб вони не
+// розходились несподівано.
+//
+// Друкує РІВНО ОДИН рядок JSON на початку рядка (без відступу): run_tests.ps1
+// фільтрує вивід за регексом ^\{, щоб дістати вердикт із решти діагностики.
+static bool case9_verifyOne(const std::wstring& binDir, const std::wstring& file) {
+    if (file.empty()) { printf("FAIL: не задано файл (шостий аргумент, argv[6])\n"); return false; }
+    std::vector<unsigned char> raw;
+    if (!readFileBytes(file, raw) || raw.empty()) { printf("FAIL: файл не прочитано\n"); return false; }
+
+    std::wstring dllName = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
+    Component c;
+    if (!c.load(binDir + L"\\" + dllName)) return false;
+
+    json j;
+    std::string r = c.call("INIT", buildInit(true));
+    if (errCode(r, j) != 0) { printf("FAIL: INIT\n"); c.unload(); return false; }
+
+    json p;
+    p["signature"]["bytes"]        = b64encode(raw);
+    p["options"]["validationType"] = "STRUCT";
+    r = c.call("VERIFY", p.dump());
+    const long ec = errCode(r, j);
+
+    // result заповнюється навіть при errorCode != 0 (див. кейс 5) — саме там
+    // лежить діагностика на кшталт CERT_NOT_FOUND.
+    std::string status          = "NO-INFO";
+    std::string statusSignature;
+    bool        validDigests = false;
+    if (j.contains("result") && j["result"].is_object()) {
+        auto& res = j["result"];
+        if (res.contains("signatureInfos") && res["signatureInfos"].is_array()
+            && !res["signatureInfos"].empty()) {
+            auto& si        = res["signatureInfos"][0];
+            status          = si.value("status", std::string("NO-STATUS"));
+            statusSignature = si.value("statusSignature", std::string());
+            validDigests    = si.value("validDigests", false);
+        }
+    }
+    printf("{\"engine\":\"uapki\",\"status\":\"%s\",\"statusSignature\":\"%s\",\"validDigests\":%s,\"errorCode\":%ld}\n",
+           status.c_str(), statusSignature.c_str(), validDigests ? "true" : "false", ec);
+
+    c.call("DEINIT", ""); c.unload();
+    return true;
+}
+
+// ========================================================================
 // main / CLI
 // ========================================================================
 static void usage() {
     printf(
-        "native_host <case 1..8> [mainDll] [dataDir] [binDir] [prroDir] [outSig]\n"
+        "native_host <case 1..9> [mainDll] [dataDir] [binDir] [prroDir] [outSig]\n"
         "  case     : номер сценарію (окремий процес на кейс — INIT раз на процес)\n"
         "  mainDll  : шлях до головної DLL (деф.: <binDir>/SimplyAddinConnectWin"
 #ifdef _WIN64
@@ -1057,7 +1110,8 @@ static void usage() {
         "  dataDir  : каталог тест-даних test-diia.p12/certs/crls (деф. compile-time)\n"
         "  binDir   : каталог з провайдером cm-pkcs12_*.dll (деф. compile-time)\n"
         "  prroDir  : каталог еталонів ДФС для кейса 5 (або env PRRO_DOCS_DIR)\n"
-        "  outSig   : файл, куди кейс 8 запише створений підпис (вхід для арбітра ІІТ)\n");
+        "  outSig   : файл, куди кейс 8 запише створений підпис (вхід для арбітра ІІТ);\n"
+        "             для кейса 9 — той самий argv[6], але як ВХІД: файл .p7s для VERIFY\n");
 }
 
 int main() {
@@ -1071,7 +1125,7 @@ int main() {
 
     if (argc < 2) { usage(); LocalFree(wargv); return 2; }
     int kase = _wtoi(wargv[1]);
-    if (kase < 1 || kase > 8) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
+    if (kase < 1 || kase > 9) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
 
     std::wstring binDir  = argAt(4)[0] ? std::wstring(argAt(4)) : u8to16(HOST_BIN_DIR);
     std::wstring dataDir = argAt(3)[0] ? std::wstring(argAt(3)) : u8to16(HOST_DATA_DIR);
@@ -1110,6 +1164,7 @@ int main() {
             case 6: pass = case6_passwordNotLogged(binDir, dataDir);  break;
             case 7: pass = case7_realContainers(binDir, dataDir, skipped); break;
             case 8: pass = case8_kupynaSign(binDir, dataDir, outSig, skipped); break;
+            case 9: pass = case9_verifyOne(binDir, outSig);                    break;
         }
     } catch (const std::exception& e) {
         printf("FATAL: незловлений виняток: %s\n", e.what());
