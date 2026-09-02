@@ -709,11 +709,21 @@ else {
 Section 'ЕТАП L4-iit: матриця вердиктів (корпус ЦЗО)'
 
 $czoDir = Join-Path $DataDir 'czo'
+# @(...) обовʼязково (та сама пастка PS 5.1, що й у підсумку): Get-ChildItem на єдиному
+# збігу віддав би скаляр, а не масив з одним елементом. Рахуємо ДО гілки if/elseif, щоб
+# порожній (але існуючий) каталог czo можна було відрізнити від відсутнього — інакше він
+# дав би зелений PASS "0 файлів" за нуль реального покриття.
+$czoFiles = @()
+if (Test-Path $czoDir) { $czoFiles = @(Get-ChildItem -Path $czoDir -Recurse -Filter '*.p7s' | Sort-Object FullName) }
+
 if ($NoUapki) {
     Add-Result 'L4-iit' 'матриця вердиктів' 'SKIP' 'режим -NoUapki: крипто-стек UAPKI не збирається'
 }
 elseif (-not (Test-Path $czoDir)) {
     Add-Result 'L4-iit' 'матриця вердиктів' 'SKIP' "немає корпусу ЦЗО: $czoDir"
+}
+elseif ($czoFiles.Count -eq 0) {
+    Add-Result 'L4-iit' 'матриця вердиктів' 'SKIP' "корпус ЦЗО порожній (немає *.p7s): $czoDir"
 }
 elseif (-not (Test-Path $IitVerifyExe)) {
     Add-Result 'L4-iit' 'матриця вердиктів' 'SKIP' 'немає iit_verify_x86.exe (ціль збирається лише в x86)'
@@ -728,6 +738,9 @@ else {
     # Наш вердикт (кейс 9) по одному файлу. GUID-суфікс тимч. файлу — та сама
     # пастка, що й у решти рівня (SigOut/лог кейса 6): фіксоване ім'я дало б
     # гонку при паралельних прогонах x86+x64.
+    # Відсутність рядка JSON (падіння процесу, несподіваний вивід) — це НЕ порожній
+    # рядок таблиці: без видимого маркера така подія непомітно зменшила б покриття,
+    # а підсумок усе одно рапортував би "зібрано" на весь список файлів.
     function Invoke-Case9([string]$file) {
         $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_9_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
         $argList = @('9', "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"", '""', "`"$file`"")
@@ -737,23 +750,33 @@ else {
         if (Test-Path $outF) { $raw = [System.IO.File]::ReadAllText($outF, [System.Text.Encoding]::UTF8) }
         Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
         $line = ($raw -split "`r?`n" | Where-Object { $_ -match '^\{' } | Select-Object -Last 1)
+        if (-not $line) { $line = "<немає виводу, exit=$($p.ExitCode)>" }
         [pscustomobject]@{ ExitCode = $p.ExitCode; Raw = $line }
     }
 
-    # @(...) обовʼязково (та сама пастка PS 5.1, що й у підсумку): Get-ChildItem
-    # на єдиному збігу віддав би скаляр, а не масив з одним елементом.
-    $files = @(Get-ChildItem -Path $czoDir -Recurse -Filter '*.p7s' | Sort-Object FullName)
     $rows = @()
-    foreach ($f in $files) {
+    foreach ($f in $czoFiles) {
         $rel  = $f.FullName.Substring($czoDir.Length + 1)
         $ours = Invoke-Case9 $f.FullName
         $iit  = Invoke-IitVerify $f.FullName   # наявний хелпер рівня L4-iit — читає stdout як UTF-8
-        $rows += [pscustomobject]@{ File = $rel; Uapki = $ours.Raw; Iit = $iit.Raw }
+        $iitLine = if ($iit.Raw) { $iit.Raw } else { "<немає виводу, exit=$($iit.ExitCode)>" }
+        $rows += [pscustomobject]@{ File = $rel; Uapki = $ours.Raw; Iit = $iitLine }
     }
     foreach ($row in $rows) {
         Write-Host ("    {0,-46} uapki={1} iit={2}" -f $row.File, $row.Uapki, $row.Iit) -ForegroundColor DarkGray
     }
-    Add-Result 'L4-iit' 'матриця вердиктів' 'PASS' "$($rows.Count) файлів, вердикти обох двигунів зібрано"
+
+    # Підсумок рахує САМЕ успішно зібрані пари (обидва рядки — реальний JSON, а не
+    # маркер відсутності), не загальну кількість файлів: інакше збій одного з двигунів
+    # на конкретному файлі мовчки сховався б за оптимістичним числом.
+    $collected = @($rows | Where-Object { $_.Uapki -notmatch '^<' -and $_.Iit -notmatch '^<' })
+    if ($collected.Count -eq $rows.Count) {
+        Add-Result 'L4-iit' 'матриця вердиктів' 'PASS' "$($rows.Count) файлів, вердикти обох двигунів зібрано"
+    }
+    else {
+        Add-Result 'L4-iit' 'матриця вердиктів' 'FAIL' `
+            "зібрано лише $($collected.Count) з $($rows.Count) файлів — див. рядки з <немає виводу> вище"
+    }
 }
 
 # =====================================================================
