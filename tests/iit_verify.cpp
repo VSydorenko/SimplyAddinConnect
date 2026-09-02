@@ -44,15 +44,23 @@
 // GetProcAddress по іменах (звірено dumpbin /exports, 630 експортів, імена
 // недекоровані).
 //
+// ДЖЕРЕЛО СИГНАТУР — настанова АТ «ІІТ» (додаток з описом інтерфейсу бібліотеки
+// підпису, EUSignMSWCPPAppendixA): звірено поле за полем, аргумент за аргументом.
+// Заголовка EUSignCP.h у постачанні кінцевого користувача НЕМАЄ, тож перевірити
+// прототип «на місці» неможливо — саме тому кожен нижче має посилання на джерело.
+//
 // Угода виклику — __stdcall (WINAPI), як і в решті API ІІТ. УВАГА: при __stdcall
 // стек чистить ВИКЛИКАНА сторона, тож помилка в КІЛЬКОСТІ параметрів псує стек
-// мовчки. Каркас (задача 5) жодної з цих функцій НЕ ВИКЛИКАЄ — лише прив'язує, —
-// тож ризику тут немає; задача 6 мусить підтвердити сигнатури ПЕРЕД першим викликом.
-// Позначки нижче: [док] — сигнатура з настанови/канонічного порядку викликів,
-// [припущення] — розумний прототип, який задача 6 зобов'язана підтвердити.
+// МОВЧКИ — ні помилки збірки, ні винятку, лише зіпсовані дані десь далі.
+// НЕ «спрощуй» ці прототипи, прибираючи «зайвий» аргумент: два з них уже були
+// коротшими на один параметр (EUSetFileStoreSettings, EUGetErrorLangDesc), і саме
+// настанова показала, що це помилка. Правити — лише звірившись із настановою ІІТ.
+// PSTR у настанові = char* (не const): рядки передаються модифікованими буферами.
 // ---------------------------------------------------------------------------
 
 /// Відомості про підпис, які повертає EUVerifyData*; звільняється EUFreeSignInfo.
+/// Настанова ІІТ (EUSignMSWCPPAppendixA, EU_SIGN_INFO): BOOL bFilled, рівно 17 PSTR
+/// у цьому порядку, BOOL bTimeAvail, BOOL bTimeStamp, SYSTEMTIME Time.
 typedef struct {
     BOOL       bFilled;
     char*      pszIssuer;         char* pszIssuerCN;       char* pszSerial;
@@ -66,25 +74,42 @@ typedef struct {
     SYSTEMTIME Time;
 } EU_SIGN_INFO;
 
-// Ізоляція налаштувань у власну гілку реєстру (перший аргумент — корінь, 2 = HKCU).
-// КРИТИЧНО й викликається ДО EUInitialize: за настановою ІІТ, коли шлях налаштувань
-// порожній, бібліотека на Windows бере налаштування з реєстру КОРИСТУВАЧА — і
-// EUSetModeSettings(TRUE) мовчки перемкнув би інсталяцію ІІТ користувача в офлайн.
-// [док: канонічний порядок викликів, EUSetSettingsRegPath(2, "Software\\...")]
-typedef DWORD (WINAPI *PFN_SetSettingsRegPath)(DWORD, const char*);
-typedef void  (WINAPI *PFN_SetUIMode)(BOOL);                       // [док] FALSE = без діалогів
-typedef DWORD (WINAPI *PFN_Initialize)(void);                      // [док]
-typedef DWORD (WINAPI *PFN_SetModeSettings)(BOOL);                 // [док] TRUE = офлайн
-typedef DWORD (WINAPI *PFN_SetFileStoreSettings)(char*, BOOL, BOOL, BOOL, BOOL, BOOL, BOOL);  // [припущення]
-// Імпорт бандла сертифікатів (P7B) у файлове сховище — задача 7. [док: SaveCertificates(bytes, len)]
+// Настанова ІІТ: EUSetSettingsRegPath(DWORD dwRootKey, PSTR pszRegPath).
+// dwRootKey: 0 = DEFAULT, 1 = HKLM, 2 = HKCU, 3 = CURRENT.
+// Ізоляція налаштувань у власну гілку реєстру КРИТИЧНА й робиться ДО EUInitialize:
+// коли шлях налаштувань порожній, бібліотека на Windows бере налаштування з реєстру
+// КОРИСТУВАЧА — і EUSetModeSettings(TRUE) мовчки перемкнув би інсталяцію ІІТ
+// користувача в офлайн, тобто наш тест зіпсував би чужий софт побічним ефектом.
+typedef DWORD (WINAPI *PFN_SetSettingsRegPath)(DWORD, char*);
+typedef void  (WINAPI *PFN_SetUIMode)(BOOL);        // настанова ІІТ: VOID; FALSE = без діалогів
+typedef DWORD (WINAPI *PFN_Initialize)(void);       // настанова ІІТ: DWORD, без аргументів
+typedef DWORD (WINAPI *PFN_SetModeSettings)(BOOL);  // настанова ІІТ: DWORD; TRUE = офлайн
+// Настанова ІІТ: EUSetFileStoreSettings(PSTR pszPath, BOOL bCheckCRLs,
+//   BOOL bAutoRefresh, BOOL bOwnCRLsOnly, BOOL bFullAndDeltaCRLs,
+//   BOOL bAutoDownloadCRLs, BOOL bSaveLoadedCerts, DWORD dwExpireTime).
+// ВІСІМ аргументів. Восьмий (час зберігання стану перевіреного сертифіката, секунди)
+// легко не помітити: із сімома викликана сторона зняла б зі стека 32 байти проти
+// покладених 28. Задача 7 має ставити dwExpireTime = 30 (аналог ocspResponseExpireTime
+// у віджеті ЦЗО); при bCheckCRLs=FALSE та офлайні значення ні на що не впливає, але
+// випадкове число тут неприйнятне.
+typedef DWORD (WINAPI *PFN_SetFileStoreSettings)(char*, BOOL, BOOL, BOOL, BOOL, BOOL, BOOL, DWORD);
+// Настанова ІІТ: EUSaveCertificates(PBYTE pbCertificates, DWORD dwCertificatesLength).
+// Імпорт бандла сертифікатів (P7B) у файлове сховище — задача 7.
 typedef DWORD (WINAPI *PFN_SaveCertificates)(BYTE*, DWORD);
-typedef DWORD (WINAPI *PFN_VerifyDataInternal)(char*, BYTE*, DWORD, BYTE**, DWORD*, EU_SIGN_INFO*);  // [припущення]
-// Людський опис коду помилки (другий аргумент — мова). Потрібен, щоб «відхилив
-// підпис» і «не зміг перевірити» не зливались у безликий exit 1. [припущення]
-typedef const char* (WINAPI *PFN_GetErrorLangDesc)(DWORD, DWORD);
-typedef void  (WINAPI *PFN_FreeMemory)(BYTE*);                     // [док]
-typedef void  (WINAPI *PFN_FreeSignInfo)(EU_SIGN_INFO*);           // [док]
-typedef void  (WINAPI *PFN_Finalize)(void);                        // [док]
+// Настанова ІІТ: EUVerifyDataInternal(PSTR pszSignedData, PBYTE pbSignedData,
+//   DWORD dwSignedDataLength, PBYTE* ppbData, PDWORD pdwDataLength, PEU_SIGN_INFO).
+// Провідний PSTR — той самий підпис у base64; «якщо параметр == 0, перевіряються
+// дані з масиву байт», тож nullptr + байти — ШТАТНИЙ задокументований шлях.
+typedef DWORD (WINAPI *PFN_VerifyDataInternal)(char*, BYTE*, DWORD, BYTE**, DWORD*, EU_SIGN_INFO*);
+// Настанова ІІТ: PSTR EUGetErrorLangDesc(DWORD dwError, DWORD dwLang) — ПОВЕРТАЄ
+// рядок, а не заповнює буфер. dwLang = 0 (EU_DEFAULT_LANG; інших мовних констант
+// настанова не наводить). EUFreeMemory на результат НЕ кликати: настанова цього не
+// приписує, а зайве звільнення чужого статичного буфера гірше за витік кількох байтів.
+// Потрібен, щоб «відхилив підпис» і «не зміг перевірити» не зливались у безликий exit 1.
+typedef char* (WINAPI *PFN_GetErrorLangDesc)(DWORD, DWORD);
+typedef void  (WINAPI *PFN_FreeMemory)(BYTE*);            // настанова ІІТ: VOID
+typedef void  (WINAPI *PFN_FreeSignInfo)(EU_SIGN_INFO*);  // настанова ІІТ: VOID
+typedef void  (WINAPI *PFN_Finalize)(void);               // настанова ІІТ: VOID, не DWORD
 
 /// Прив'язана бібліотека ІІТ. Перелік експортів живе РІВНО ТУТ: задачі 6 і 7
 /// беруть уже прив'язані вказівники й bindEu більше не правлять.
@@ -192,8 +217,11 @@ static bool readFileBytes(const std::wstring& path, std::vector<BYTE>& out) {
 // ---------------------------------------------------------------------------
 
 /// Пошук каталогу ІІТ: спершу перекриття змінною середовища IIT_EU_DIR (нею ж
-/// тест перевіряє гілку SKIP), потім стандартне місце встановлення. Версію
-/// каталогу НЕ хардкодимо — перебираємо підкаталоги «Certificate Authority-*».
+/// тест перевіряє гілку SKIP), потім стандартне місце встановлення.
+/// Критерій добору — НЕ ім'я підкаталогу, а наявність у ньому «End User\EUSignCP.dll»:
+/// перебираємо БУДЬ-ЯКУ підтеку «Institute of Informational Technologies» і беремо
+/// першу, де така DLL реально лежить. Тому ані версія («Certificate Authority-1.3»),
+/// ані сама схема іменування ЦСК у код не впаяні й переживуть оновлення ІІТ.
 static bool findIitDir(std::wstring& out) {
     wchar_t env[MAX_PATH]{};
     if (GetEnvironmentVariableW(L"IIT_EU_DIR", env, MAX_PATH) > 0) {
@@ -243,9 +271,15 @@ static bool bindEu(Eu& eu, std::string& err) {
         return false;
     }
 
+    // FreeLibrary перед виходом: інакше частковий провал прив'язки лишав би
+    // завантажений HMODULE — асиметрія з успішним шляхом, де модуль звільняє main.
     #define BIND(field, name)                                                    \
         eu.field = (decltype(eu.field))GetProcAddress(eu.h, name);               \
-        if (!eu.field) { err = std::string("Немає експорту ") + name; return false; }
+        if (!eu.field) {                                                         \
+            err = std::string("Немає експорту ") + name;                         \
+            FreeLibrary(eu.h); eu.h = nullptr;                                   \
+            return false;                                                        \
+        }
     BIND(SetSettingsRegPath,   "EUSetSettingsRegPath")   // ізоляція налаштувань (задача 6)
     BIND(SetUIMode,            "EUSetUIMode")
     BIND(Initialize,           "EUInitialize")
