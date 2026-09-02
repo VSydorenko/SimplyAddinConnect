@@ -34,6 +34,8 @@
 #include <string>
 #include <vector>
 
+#include "support/IitStore.h"  // сховище довіри ІІТ у %LOCALAPPDATA% (задача 7); виклик — задача 6
+
 #pragma comment(lib, "shell32.lib")  // CommandLineToArgvW
 
 // ---------------------------------------------------------------------------

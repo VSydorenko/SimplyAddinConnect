@@ -239,7 +239,7 @@ endif()
 # §2.2) — вантажиться з місця встановлення через LoadLibraryW+GetProcAddress.
 # ---------------------------------------------------------------------------
 if(CMAKE_SIZEOF_VOID_P EQUAL 4)
-    add_executable(iit_verify iit_verify.cpp)
+    add_executable(iit_verify iit_verify.cpp support/IitStore.cpp)
     set_target_properties(iit_verify PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
         OUTPUT_NAME "iit_verify${_TEST_ARCH_SUFFIX}")
     # SDK 1С тут не задіяний, тож _WINDOWS не потрібен; UNICODE/_UNICODE — узгодженість W-API.
