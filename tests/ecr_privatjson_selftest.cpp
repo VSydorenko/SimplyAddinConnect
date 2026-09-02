@@ -11,9 +11,12 @@
 #include "../src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h"
 #include "../src/platform/JobEngine.h"
 #include "../src/core/AddInNative.h"   // 1С-фасад: інстанціювання компоненти через CreateObject
+#include "../src/components/AcquiringFacadeBase.h"
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <map>
+#include <memory>
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -529,6 +532,99 @@ static void TestFacadeSmoke() {
     delete comp;
 }
 
+// ==================== RunVoid: відкат на повернення лише при UNSUPPORTED ====================
+//
+// ⚠️ Це про гроші. TIMEOUT/DISCONNECTED/DESYNC/SEND_FAILED/BAD_RESPONSE означають
+// «невідомо, чи виконалось»: термінал МІГ скасувати операцію, а відповідь не дійшла.
+// Відкат на Refund після такого зрушив би гроші ДВІЧІ. UNSUPPORTED — єдина відповідь,
+// що гарантує: команда термінала не досягла й нічого не сталося.
+
+namespace {
+
+/// Лічильники викликів фейкового драйвера — саме їх перевіряє тест.
+struct FakeAcquiringState {
+    ResultEnvelope voidResult = AcquiringUnsupported("Скасування");
+    int voidCalls = 0;
+    int refundCalls = 0;
+};
+
+class FakeAcquiring : public IAcquiringDriver {
+public:
+    explicit FakeAcquiring(FakeAcquiringState* s) : s_(s) {}
+    ResultEnvelope Open(const std::map<std::string, std::string>&) override { return ResultEnvelope::Ok(); }
+    void Close() override {}
+    bool IsConnected() const override { return true; }
+    std::string Vendor() const override { return "FAKE"; }
+    std::string Model() const override { return "FAKE-1"; }
+    std::string DriverName() const override { return "Фейковий драйвер"; }
+    std::string DriverDescription() const override { return "Лише для тесту"; }
+    std::string SettingsXml() const override { return "<Settings/>"; }
+    AcquiringCapabilities Capabilities() const override { return {}; }
+    std::string TargetKey(const std::map<std::string, std::string>&) const override {
+        return "fake://void-probe";   // ціль фіксована: тест перевіряє RunVoid, не ProbeDevice
+    }
+    ResultEnvelope Probe() override { return ResultEnvelope::Ok(); }
+    ResultEnvelope Void(double, const std::string&) override {
+        ++s_->voidCalls;
+        return s_->voidResult;
+    }
+    ResultEnvelope Refund(double, const std::string&) override {
+        ++s_->refundCalls;
+        return ResultEnvelope::Ok({ { "rrn", "R-1" } });
+    }
+private:
+    FakeAcquiringState* s_;
+};
+
+/// Мінімальний конкретний фасад: методів у 1С не реєструє (RegisterSystemMethods не
+/// кличеться), потрібен лише щоб дістати RunVoid із фейковим драйвером під ним.
+class VoidProbeFacade : public AcquiringFacadeBase {
+public:
+    explicit VoidProbeFacade(FakeAcquiringState* s) : s_(s) {}
+    using AcquiringFacadeBase::RunVoid;   // відкриваємо protected-метод для тесту
+protected:
+    int InterfaceRevision() const override { return 3004; }
+    std::unique_ptr<IAcquiringDriver> MakeDriver() const override {
+        return std::make_unique<FakeAcquiring>(s_);
+    }
+private:
+    FakeAcquiringState* s_;
+};
+
+} // namespace
+
+static void TestVoidFallbackOnlyOnUnsupported() {
+    // 1) Власної операції void протокол не має -> штатний шлях: повернення за RRN.
+    {
+        FakeAcquiringState st;
+        st.voidResult = AcquiringUnsupported("Скасування");
+        VoidProbeFacade f(&st);
+        ResultEnvelope r = f.RunVoid(100.50, "555000111");
+        CHECK(r.ok, "Void=UNSUPPORTED + VoidAsRefund -> скасування виконано поверненням");
+        CHECK(st.voidCalls == 1 && st.refundCalls == 1,
+              "Void=UNSUPPORTED -> Void спитано, Refund викликано рівно раз");
+    }
+    // 2) TIMEOUT: термінал МІГ скасувати. Відкату бути НЕ МОЖЕ — інакше подвійний рух грошей.
+    {
+        FakeAcquiringState st;
+        st.voidResult = ResultEnvelope::Fail("TIMEOUT", "Термінал не відповів");
+        VoidProbeFacade f(&st);
+        ResultEnvelope r = f.RunVoid(100.50, "555000111");
+        CHECK(!r.ok && r.code == "TIMEOUT", "Void=TIMEOUT -> відмова з тим самим кодом");
+        CHECK(st.refundCalls == 0, "Void=TIMEOUT -> Refund НЕ викликано (подвійний рух грошей)");
+    }
+    // 3) Решта «невідомо, чи виконалось» — так само без відкату.
+    for (const char* code : { "DISCONNECTED", "DESYNC", "SEND_FAILED", "BAD_RESPONSE" }) {
+        FakeAcquiringState st;
+        st.voidResult = ResultEnvelope::Fail(code, "Збій зв'язку");
+        VoidProbeFacade f(&st);
+        ResultEnvelope r = f.RunVoid(100.50, "555000111");
+        const std::string name =
+            std::string("Void=") + code + " -> відмова без відкату на повернення";
+        CHECK(!r.ok && r.code == code && st.refundCalls == 0, name.c_str());
+    }
+}
+
 int main() {
     TestResultEnvelope();
     TestEcrJsonCodec();
@@ -546,6 +642,7 @@ int main() {
     TestDriverAsyncCancel();
     TestDriverCancelNoWedge();
     TestFacadeSmoke();
+    TestVoidFallbackOnlyOnUnsupported();
     std::printf(g_failed ? "\nFAILED: %d\n" : "\nOK\n", g_failed);
     return g_failed ? 1 : 0;
 }

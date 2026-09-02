@@ -5,8 +5,9 @@
 (`DeviceSession`/framer/класифікатор) тут **не задіяний** — драйвер сам володіє `ITransport`
 на кожен пристрій. Зі спільної платформи перевикористано лише `ResultEnvelope` (уніфікований
 результат) і транспортний інтерфейс `ITransport` (+ наявний `TransportTCP`). У 1С виставляється
-компонента **`LabelPrinter`** — стандартний фасад **БПО** («Библиотека подключаемого
-оборудования», тип обладнання `LabelPrinter`), вхід/вихід — **XML**.
+компонента **`LabelPrinter`** — фасад **БПО** («Библиотека подключаемого оборудования», тип
+обладнання `LabelPrinter`) поверх спільної бази `BpoFacadeBase`: параметри підключення приходять
+**поодинці** через `УстановитьПараметр`, пакет друку — **XML**.
 
 Цей документ описує **внутрішню будову** драйвера — для розвитку й додавання можливостей. Хто
 пише **прикладний 1С-код** проти готового драйвера — читає окрему теку
@@ -24,11 +25,14 @@
 
 ```
 1С:Підприємство  (підсистема БПО «Подключаемое оборудование»)
-   │ IComponentBase / tVariant · БПО-методи (BOOL + OUT-параметри + GetLastError), I/O — XML
+   │ IComponentBase / tVariant · короткі імена контракту (BOOL + OUT + ПолучитьОшибку)
 ┌──▼──────────────────────────────────────────────────────────────────┐
-│ ФАСАД  AddinLabelPrinter  (компонента 1С «LabelPrinter», тип БПО)     │
-│   системні+функціональні методи EN/RU; XML ⇄ LabelModel (LabelXml/    │
-│   pugixml); ResultEnvelope → BOOL + збережений lastError (код+опис)   │
+│ КОНТРАКТ  BpoFacadeBase          (src/components/, bpo-contract.md §2)│
+│   системні методи, мапа УстановитьПараметр, ИДУстройства, CodeToInt    │
+├──────────────────────────────────────────────────────────────────────┤
+│ ФАСАД  AddinLabelPrinter : BpoFacadeBase  (компонента 1С «LabelPrinter»)│
+│   гачки типу обладнання + ИнициализацияПринтера/ПечатьЭтикеток;        │
+│   XML ⇄ LabelModel (LabelXml/pugixml); ResultEnvelope → BOOL + lastError│
 ├──────────────────────────────────────────────────────────────────────┤
 │ ДРАЙВЕР  LabelPrinterDriver                                           │
 │   map<DeviceID, DeviceContext>: транспорт + кеш Formatting + per-device m │
@@ -231,7 +235,15 @@ Windows-чергу за **іменем** (Winspool). Семантика `ITransp
 ## 7. Драйвер — `LabelPrinterDriver`
 
 `src/drivers/label_printer/LabelPrinterDriver.{h,cpp}`. Оркеструє мульти-пристрій, batch і
-concurrency; **синхронно, виняток-безпечно** (try/catch → `Fail`).
+concurrency; **синхронно, виняток-безпечно** (try/catch → `Fail`). Публічний API:
+`Connect(profile) → DeviceID`, `InitializePrinter`, `PrintLabels`, `Probe`, `Disconnect`,
+`IsConnected` + тест-шов `SetTransportFactoryForTest`.
+
+**`Probe(deviceId)`** — форсує ліниву `Open()` і одразу закриває: доводить **досяжність**
+(TCP — конект на `host:port`; spooler — `OpenPrinter` на черзі) і **нічого не друкує**. Ініт-пакет
+змінив би стан принтера (темність/швидкість/розмір), а адміністратор, який тисне «Тест
+устройства», на це не підписувався. Уже відкритий транспорт лишається відкритим і повертає `Ok`
+без чіпання каналу. Невідомий `DeviceID` → `NOT_CONNECTED`; канал не відкрився → `TRANSPORT_ERROR`.
 
 ### 7.1. Мульти-пристрій і concurrency
 
@@ -279,53 +291,104 @@ batch), `TRANSPORT_ERROR` (будь-яка відмова транспорту, 
 
 ---
 
-## 8. БПО-фасад — `AddinLabelPrinter`
+## 8. БПО-фасад — `AddinLabelPrinter : BpoFacadeBase`
 
 `src/components/AddinLabelPrinter.{h,cpp}`. Тонка компонента: `REGISTER_COMPONENT(u"LabelPrinter",
-AddinLabelPrinter)`, тримає `LabelPrinterDriver driver_` + `lastErrorCode_`/`lastErrorDesc_`.
-Вхід/вихід — **XML** (`LabelXml`/pugixml). Кожен метод: `ResultEnvelope` драйвера → `BOOL` (через
-`mapEnvToBool`), при `!ok` зберігає код+опис для `GetLastError`. `kInterfaceRevision = 4007`.
+AddinLabelPrinter)`, тримає `LabelPrinterDriver driver_`. **Системна половина контракту живе не
+тут, а в базі** `BpoFacadeBase` (`bpo-contract.md` §2, §2.6): системні методи, накопичення
+параметрів, `ИДУстройства`, `lastError`, `CodeToInt`. Фасад реалізує лише **гачки** типу
+обладнання плюс два функціональні методи. `InterfaceRevision() == 3004`.
 
-**Системні методи БПО:**
+**Чому 3004, а не вище** (виправлено 2026-09-01, було `4007`): гілок за ревізією для друку
+етикеток у конфігурації немає, тобто число нічого не перемикає, — а з `4000` 1С починає кликати
+`УстановитьЛокализацию`, якого ми не реалізуємо.
 
-| EN / RU | Параметри | Повертає |
+**Системні методи** реєструє `BpoFacadeBase::RegisterSystemMethods()` — короткі імена, які 1С
+реально кличе (повна таблиця з параметрами — `bpo-contract.md` §2):
+
+```
+ПолучитьРевизиюИнтерфейса · ПолучитьНомерВерсии · ПолучитьОписание · ПолучитьПараметры
+УстановитьПараметр · Подключить · Отключить · ТестУстройства · ПолучитьОшибку
+ПолучитьДополнительныеДействия · ВыполнитьДополнительноеДействие
+```
+
+⚠️ **Старі довгі імена за документом ІТС** (`ПодключитьОборудование`, `ПараметрыОборудования`,
+`ТестированиеОборудования`, `ОтключитьОборудование`, `УстановитьИнформациюПриложения`)
+**прибрано**: 1С їх не кличе **в жодній із двох конфігурацій** (доказ — `bpo-contract.md` §2), тож
+драйвер через штатну підсистему не підхоплювався взагалі. `УстановитьИнформациюПриложения` не
+замінено нічим — нуль викликів в обох продуктах.
+
+**Функціональні методи** (`RegisterPrinterMethods`):
+
+| EN / RU | Параметри (EN / RU) | Повертає |
 |---|---|---|
-| `GetInterfaceRevision` / `ПолучитьРевизиюИнтерфейса` | — | LONG |
-| `GetDescription` / `ПолучитьОписание` | `DriverDescription`[OUT XML] | BOOL |
-| `GetLastError` / `ПолучитьОшибку` | `ErrorDescription`[OUT] | LONG (код) |
-| `EquipmentParameters` / `ПараметрыОборудования` | `EquipmentType`[IN], `TableParameters`[OUT XML] | BOOL |
-| `ConnectEquipment` / `ПодключитьОборудование` | `DeviceID`[OUT], `EquipmentType`[IN], `ConnectionParameters`[IN XML] | BOOL |
-| `DisconnectEquipment` / `ОтключитьОборудование` | `DeviceID`[IN] | BOOL |
-| `EquipmentTest` / `ТестированиеОборудования` | `EquipmentType`[IN], `ConnectionParameters`[IN], `Description`[OUT], `DemoModeIsActivated`[OUT] | BOOL |
-| `SetApplicationInformation` / `УстановитьИнформациюПриложения` | `ApplicationSettings`[IN XML] | BOOL |
+| `InitializePrinter` / `ИнициализацияПринтера` | `DeviceID`/`ИДУстройства`[IN] | BOOL |
+| `PrintLabels` / `ПечатьЭтикеток` | `DeviceID`/`ИДУстройства`[IN], `LabelsTable`/`ДанныеДляВыгрузки`[IN XML], `PackageStatus`/`СтатусПакета`[IN] | BOOL |
 
-**Функціональні методи:**
+**Гачки бази, які реалізує фасад:**
 
-| EN / RU | Параметри | Повертає |
-|---|---|---|
-| `InitializePrinter` / `ИнициализацияПринтера` | `DeviceID`[IN] | BOOL |
-| `PrintLabels` / `ПечатьЭтикеток` | `DeviceID`[IN], `LabelsTable`[IN XML], `PackageStatus`[IN] | BOOL |
+| Гачок | Що робить у принтера |
+|---|---|
+| `InterfaceRevision` | `3004` |
+| `BuildDriverInfo` | `EquipmentType="LabelPrinter"`, `logEnabled=false` (вимога ІТС про лог за замовчуванням стосується ККТ і POSTerminal; параметрів `LogPath`/`LogLevel` у формі принтера немає) |
+| `BuildSettingsXml` | форма налаштувань: транспорт/черга/IP/порт/DPI/темність/швидкість/розмір |
+| `AcceptEquipmentType` | приймає `ПринтерЭтикеток` (ім'я значення переліку — саме це шле 1С) **і** `LabelPrinter` |
+| `OpenDevice` | `LabelXml::ProfileFromParameters(Params())` → валідація → `driver_.Connect` |
+| `CloseDevice` | `driver_.Disconnect(DeviceId())` |
+| `ProbeDevice` | тіло `ТестУстройства` — див. нижче |
+| `BuildActionsXml`/`RunAction` | **дефолтні** — додаткових дій у принтера немає |
 
-Конвенції фасаду:
+**⚠️ ОДИН об'єкт = ОДИН пристрій.** Контракт накопичує параметри **на об'єкті** до `Подключить`,
+тож параметри другого принтера затерли б перший. Це обмеження **ФАСАДУ**; сам
+`LabelPrinterDriver` лишається мульти-пристроєвим (§7.1) — на два принтери потрібні два об'єкти
+компоненти. `OpenDevice` віддає нагору **справжній** `DeviceID` драйвера (не синтезований), щоб
+лог фасаду й драйвера збігався; повторний `Подключить` без `Отключить` (штатний сценарій
+перепідключення після помилки друку) знімає старий пристрій **лише** після успішної реєстрації
+нового.
 
-- `GetDescription` віддає `DriverDescription` (`EquipmentType="LabelPrinter"`,
-  `IntegrationComponent=false`, `IsEmulator=false`, `LocalizationSupported=false`, версії з
-  `AddInNative::version()`); `EquipmentParameters` — `TableParameters` (форма налаштувань:
-  транспорт/порт/DPI/темність/швидкість/розмір).
+**`ТестУстройства` реально перевіряє зв'язок.** `ProbeDevice` розбирає накопичені параметри,
+вимагає обов'язкові для обраного транспорту (`Host` для `tcp`, `PrinterName` для `spooler` —
+інакше `BAD_INPUT` з іменем поля, а не «принтер недоступний»), і кличе `LabelPrinterDriver::Probe`
+— фактичне відкриття/закриття каналу **без друку** (§7). Підключеним фасад бути не зобов'язаний:
+форма налаштувань кличе `ТестУстройства` одразу після `УстановитьПараметр`. Якщо пристрій **уже**
+підключений, проба йде **на ньому самому** — окрему сесію на `:9100` типовий ZPL-принтер не
+приймає, і адміністратор побачив би `TRANSPORT_ERROR` на справному пристрої; тимчасовий пристрій
+проби знімається, чужий — ні. `РезультатТеста` несе людський опис цілі (`tcp://host:port` або
+`черга Windows "…"`) і вердикт; `АктивированДемоРежим` — завжди `Ложь` (демо-режиму драйвер не має).
+
+**Формат `ПолучитьПараметры` суворий** (виправлено 2026-08-31): корінь **`Settings`** →
+`Page@Caption` → `Group@Caption` → `Parameter@Name/@Caption/@TypeValue/@DefaultValue/@Description`
+(+ вкладений `ChoiceList/Item@Value`). Форма налаштувань БПО входить у розбір лише за коренем
+`Settings` і читає тип з `TypeValue`; попередній варіант (корінь `Parameters`, атрибут `Type`)
+давав **мовчки порожню форму**. Прикладний бік — `docs/integration-1c/label_printer.md` §3.
+
+⚠️ **Значення параметрів приходять їхніми ОГОЛОШЕНИМИ типами**, а не рядками: `Port`/`DotsPerMm`/
+`Darkness` оголошені як `Number` — 1С шле `VTYPE_R8`. Тому база читає їх толерантним
+`VariantToString`, а не прямим `static_cast<std::string>(VH)`, який кинув би на всьому, крім
+`VTYPE_PWSTR`.
+
+Решта конвенцій:
+
 - **`try/catch` у кожному методі** (виняток C++ межу 1С не перетинає): при винятку — `REPORT_ERROR`
-  + `lastError` (LONG код + STRING опис), не сирий текст. `CodeToInt` (`AddinLabelPrinter.cpp`)
-  дає LONG-код для `GetLastError`: **числова таксономія** — суто числовий код (напр. код відповіді
-  пристрою) проходить як є; рядкова таксономія драйвера мапиться у **стабільні числа**
-  (`NOT_CONNECTED=1`, `BAD_INPUT=2`, `TRANSPORT_ERROR=3`, `UNSUPPORTED_BARCODE=4`,
-  `BARCODE_TOO_WIDE=5`, `RENDER_ERROR=6`, `EXCEPTION=7`), `OK=0`; невідомий нечисловий код і збої
-  рівня фасаду (розбір XML, виняток у системному методі) → `-1`. Опис завжди в OUT-параметрі.
+  + `lastError`, не сирий текст. LONG-код для `ПолучитьОшибку` дає `BpoFacadeBase::CodeToInt` —
+  **єдина числова таксономія на всю компоненту**: `OK=0`, `NOT_CONNECTED=1`, `EXCEPTION=11`,
+  `BAD_INPUT=12`, `TRANSPORT_ERROR=13`, `UNSUPPORTED_BARCODE=14`, `BARCODE_TOO_WIDE=15`,
+  `RENDER_ERROR=16`; суто числовий код пристрою проходить як є; невідомий нечисловий код і збої
+  рівня фасаду → `-1`. Повна таблиця — `bpo-contract.md` §4.3. **Це НЕ старі коди `1..7`** —
+  власної нумерації в принтера більше немає.
+- Валідація обов'язкових полів профілю живе **у фасаді**, а не в
+  `LabelXml::ProfileFromParameters`: її контракт «порожня мапа → дефолти, а не помилка»
+  закріплений тестом і ламати його не можна.
 - `EnableLogging`/`ИспользоватьЛогирование` — успадкований (реєструвати не треба); у деструкторі —
-  `ServiceTools::DisableComponentLogging(this)`. `Version` — property, не метод.
+  `driver_.Disconnect(DeviceId())`, `ServiceTools::DisableComponentLogging(this)` робить база.
+  `Version` — property, не метод.
 
-**XML-адаптер `LabelXml`** (`ParseLabelsTable`/`ParseConnectionParameters`, pugixml): толерантний,
-з дефолтами; **невідомі параметри/атрибути ігноруються** (вимога БПО); `OptAttr` реалізує
-«відсутній атрибут ≠ порожній рядок» (`std::optional`). Корінь `LabelsTable` — `<Data>`
-(`Formatting` присутнє лише при `first`; далі `Labels/Label/Record`).
+**XML-адаптер `LabelXml`** (pugixml): толерантний, з дефолтами; **невідомі параметри/атрибути
+ігноруються** (вимога БПО); `OptAttr` реалізує «відсутній атрибут ≠ порожній рядок»
+(`std::optional`). Корінь `LabelsTable` — `<Data>` (`Formatting` присутнє лише при `first`; далі
+`Labels/Label/Record`). Параметри підключення розбирає `ProfileFromParameters(мапа)` — саме її
+кличе фасад; `ParseConnectionParameters(XML)` лишилась як XML→мапа + той самий виклик (семантика
+параметрів — в **одному** місці) і використовується тестами й історичним XML-пакетом ІТС.
 
 ---
 
@@ -363,8 +426,15 @@ Winsock). Збірка **завжди при `-WithTests`, без UAPKI**. Дж�
   `UNSUPPORTED_BARCODE`, `^FH`-escaping, `8/12/24 dots/mm`, e2e через `TransportTCP → LabelEmulator`
   (L-p2 інтегровано в selftest), смоук фасаду через `CreateObject`.
 - **L-p3 `label_native_host`** — компонента `LabelPrinter` через **головну DLL** (`LoadLibraryW`+
-  `GetClassObject`): кличе **БПО-методи** (`ПодключитьОборудование` + `ПечатьЭтикеток` з `LabelsTable`
-  XML) проти in-process `LabelEmulator` → перевірка BOOL/`GetLastError` + отриманого ZPL.
+  `GetClassObject`) проти in-process `LabelEmulator`. Переписаний 2026-09-01 під контракт: тест
+  бере методи **за іменами, які кличе 1С** (`FindMethod`), а не за власними, — перевіряє
+  **присутність** усіх 13 імен контракту (11 системних + `ИнициализацияПринтера`/`ПечатьЭтикеток`)
+  і **відсутність** 5 старих довгих. Саме цього бракувало: попередня версія кликала власні ж імена
+  й дефекту не бачила. Далі — ревізія `== 3004`, `УстановитьПараметр` із **числовим** значенням
+  (`Port`/`DotsPerMm` приходять `VTYPE_R8`), відмова на чужому `EquipmentType`, `ТестУстройства`
+  проти емулятора (BOOL + текст + `АктивированДемоРежим == Ложь`), `Подключить` з OUT-`ИДУстройства`,
+  друк `ПечатьЭтикеток` і звірка отриманого ZPL, `ПолучитьОшибку` (зокрема `12` = `BAD_INPUT` на
+  порожньому `Host`), `Отключить`.
 - **`label_printer_emulator.exe`** (standalone, ручний) — TCP-емулятор ZPL-принтера для тесту з
   **реальної 1С без обладнання** (зберігає ZPL; візуалка — Labelary).
 
@@ -379,10 +449,13 @@ exit-код 0.
 - `driver_label_printer_component` (OBJECT): `LabelModel`/`LabelUnits`/`GfEncoder`/`BarcodeZpl`/
   `LabelRaster`/`LabelZplGenerator`/`LabelPrinterDriver`/`LabelXml`; deps `base_component spdlog
   nlohmann_json`.
+- `bpo_facade_component` (OBJECT): `BpoFacadeBase` — спільна контрактна половина БПО-фасадів.
+  Виділена **окремою** ціллю свідомо: `label_printer_selftest` лінкує саме її й не має тягнути
+  еквайринговий код (інакше знадобились би `driver_ecr_privatjson_component` + `wire_component`).
 - `label_facade_component` (OBJECT): `AddinLabelPrinter`; deps `+helpers_component
-  driver_label_printer_component platform_component`.
+  driver_label_printer_component platform_component bpo_facade_component`.
 - `Transport_SpoolerRaw` — у транспортному компоненті.
-- Обидві OBJECT-цілі → `$<TARGET_OBJECTS:…>` фінальної DLL. **Системні бібліотеки лінкуються на
+- Усі OBJECT-цілі → `$<TARGET_OBJECTS:…>` фінальної DLL. **Системні бібліотеки лінкуються на
   ФІНАЛЬНИЙ таргет і тест-цілі** (`winspool gdiplus ole32`) — бо лінк на object-бібліотеці не
   пропагується. pugixml — vendored у `extern/`.
 
@@ -390,6 +463,9 @@ exit-код 0.
 
 ## 12. Пов'язані документи
 
+- [bpo-contract.md](bpo-contract.md) — контракт «Подключаемое оборудование»: імена, які РЕАЛЬНО
+  кличе 1С, шарування фасадів (§2.6), єдина числова таксономія помилок (§4.3). **Джерело правди
+  щодо системної половини цього фасаду.**
 - [device-core.md](device-core.md) — фундамент драйверів; тут **не** задіяний (друк
   односпрямований), але `ResultEnvelope`/`ITransport` перевикористано.
 - [ecrprivatjson.md](ecrprivatjson.md) — перший драйвер обладнання (шаблон драйвера/фасаду/тестів).

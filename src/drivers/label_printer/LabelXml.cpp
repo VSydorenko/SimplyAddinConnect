@@ -3,6 +3,7 @@
 #include "../../helpers/ServiceTools.h"
 #include "pugixml.hpp"
 #include <cctype>
+#include <map>
 #include <optional>
 
 namespace labelprinter {
@@ -186,37 +187,12 @@ bool LabelXml::ParseConnectionParameters(const std::string& xml, DeviceProfile& 
             NEUTRAL_REPORT_ERROR(kTag, err);
             return false;
         }
-        for (pugi::xml_node p : params.children("Parameter")) {
-            const std::string name = p.attribute("Name").value();
-            const std::string value = p.attribute("Value").value();
-            if (name == "TransportKind") {
-                std::string v;
-                for (char c : value) v.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-                out.transport = (v == "tcp") ? DeviceProfile::Transport::Tcp : DeviceProfile::Transport::Spooler;
-            } else if (name == "PrinterName") {
-                out.printerName = value;
-            } else if (name == "Host") {
-                out.host = value;
-            } else if (name == "Port") {
-                out.port = ParseInt(value.c_str(), out.port);
-            } else if (name == "DotsPerMm") {
-                out.dotsPerMm = ParseInt(value.c_str(), out.dotsPerMm);
-            } else if (name == "Darkness") {
-                out.darkness = ParseInt(value.c_str(), out.darkness);
-            } else if (name == "Speed") {
-                out.speed = ParseInt(value.c_str(), out.speed);
-            } else if (name == "LabelWidthMm") {
-                out.labelWidthMm = ParseDouble(value.c_str(), out.labelWidthMm);
-            } else if (name == "LabelHeightMm") {
-                out.labelHeightMm = ParseDouble(value.c_str(), out.labelHeightMm);
-            } else if (name == "HomeXDots") {
-                out.homeXDots = ParseInt(value.c_str(), out.homeXDots);
-            } else if (name == "HomeYDots") {
-                out.homeYDots = ParseInt(value.c_str(), out.homeYDots);
-            }
-            // невідомі параметри ігноруємо (вимога БПО)
-        }
-        return true;
+        // XML -> пласка мапа; уся семантика параметрів живе в ProfileFromParameters
+        // (контракт БПО кличе УстановитьПараметр по одному, тож ту саму мапу заповнює й він).
+        std::map<std::string, std::string> flat;
+        for (pugi::xml_node p : params.children("Parameter"))
+            flat[p.attribute("Name").value()] = p.attribute("Value").value();
+        return ProfileFromParameters(flat, out, err);
     } catch (const std::exception& ex) {
         err = std::string("Виняток під час розбору ConnectionParameters: ") + ex.what();
         NEUTRAL_REPORT_ERROR(kTag, err);
@@ -226,6 +202,42 @@ bool LabelXml::ParseConnectionParameters(const std::string& xml, DeviceProfile& 
         NEUTRAL_REPORT_ERROR(kTag, err);
         return false;
     }
+}
+
+bool LabelXml::ProfileFromParameters(const std::map<std::string, std::string>& params,
+                                     DeviceProfile& out, std::string& err) {
+    err.clear();
+    for (const auto& kv : params) {
+        const std::string& name = kv.first;
+        const std::string& value = kv.second;
+        if (name == "TransportKind") {
+            std::string v;
+            for (char c : value) v.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+            out.transport = (v == "tcp") ? DeviceProfile::Transport::Tcp : DeviceProfile::Transport::Spooler;
+        } else if (name == "PrinterName") {
+            out.printerName = value;
+        } else if (name == "Host") {
+            out.host = value;
+        } else if (name == "Port") {
+            out.port = ParseInt(value.c_str(), out.port);
+        } else if (name == "DotsPerMm") {
+            out.dotsPerMm = ParseInt(value.c_str(), out.dotsPerMm);
+        } else if (name == "Darkness") {
+            out.darkness = ParseInt(value.c_str(), out.darkness);
+        } else if (name == "Speed") {
+            out.speed = ParseInt(value.c_str(), out.speed);
+        } else if (name == "LabelWidthMm") {
+            out.labelWidthMm = ParseDouble(value.c_str(), out.labelWidthMm);
+        } else if (name == "LabelHeightMm") {
+            out.labelHeightMm = ParseDouble(value.c_str(), out.labelHeightMm);
+        } else if (name == "HomeXDots") {
+            out.homeXDots = ParseInt(value.c_str(), out.homeXDots);
+        } else if (name == "HomeYDots") {
+            out.homeYDots = ParseInt(value.c_str(), out.homeYDots);
+        }
+        // невідомі параметри ігноруємо (вимога БПО)
+    }
+    return true;
 }
 
 } // namespace labelprinter

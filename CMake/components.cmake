@@ -34,6 +34,15 @@ set(HEADER_FILES
     src/components/AddinUAPKIConnect.h
     src/components/AddinECRPrivatJSON.h
     src/components/AddinLabelPrinter.h
+    src/platform/MoneyFormat.h
+    src/components/BpoFacadeBase.h
+    src/drivers/IAcquiringDriver.h
+    src/drivers/ecr_privatjson/EcrPrivatJsonAcquiring.h
+    src/components/AcquiringFacadeBase.h
+    src/components/AcquiringBpo3004.h
+    src/components/AcquiringBpo4000.h
+    src/components/EcrPrivatBpo3004.h
+    src/components/EcrPrivatBpo4000.h
 )
 
 ## @var SOURCE_FILES
@@ -58,6 +67,13 @@ set(SOURCE_FILES
     src/components/AddinUAPKIConnect.cpp
     src/components/AddinECRPrivatJSON.cpp
     src/components/AddinLabelPrinter.cpp
+    src/components/BpoFacadeBase.cpp
+    src/drivers/ecr_privatjson/EcrPrivatJsonAcquiring.cpp
+    src/components/AcquiringFacadeBase.cpp
+    src/components/AcquiringBpo3004.cpp
+    src/components/AcquiringBpo4000.cpp
+    src/components/EcrPrivatBpo3004.cpp
+    src/components/EcrPrivatBpo4000.cpp
 )
 
 ## @var RESOURCE_FILES
@@ -168,6 +184,7 @@ add_library(platform_component OBJECT
     src/platform/ResultEnvelope.cpp
     src/platform/JobEngine.h
     src/platform/JobEngine.cpp
+    src/platform/MoneyFormat.h
 )
 set_target_properties(platform_component PROPERTIES
     POSITION_INDEPENDENT_CODE ON
@@ -194,6 +211,8 @@ add_library(driver_ecr_privatjson_component OBJECT
     src/drivers/ecr_privatjson/EcrPrivatJsonClassifier.cpp
     src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h
     src/drivers/ecr_privatjson/EcrPrivatJsonDriver.cpp
+    src/drivers/ecr_privatjson/EcrPrivatJsonAcquiring.h
+    src/drivers/ecr_privatjson/EcrPrivatJsonAcquiring.cpp
 )
 set_target_properties(driver_ecr_privatjson_component PROPERTIES
     POSITION_INDEPENDENT_CODE ON
@@ -281,7 +300,85 @@ target_include_directories(label_facade_component PRIVATE
     ${CMAKE_SOURCE_DIR}/extern/pugixml/src
 )
 target_compile_definitions(label_facade_component PRIVATE _WINDOWS UNICODE _UNICODE)
-add_dependencies(label_facade_component base_component spdlog nlohmann_json helpers_component driver_label_printer_component platform_component)
+add_dependencies(label_facade_component base_component spdlog nlohmann_json helpers_component driver_label_printer_component platform_component bpo_facade_component)
+
+## @var bpo_facade_component
+## @brief Спільна КОНТРАКТНА половина БПО-фасадів (BpoFacadeBase) — системні методи,
+##        мапа параметрів, єдина числова таксономія помилок. Типу обладнання не знає.
+## @note Окремою ціллю СВІДОМО: label_printer_selftest лінкує саме її $<TARGET_OBJECTS>
+##       і не має тягнути еквайринговий код (інакше знадобились би driver_ecr_privatjson_
+##       component + wire_component).
+add_library(bpo_facade_component OBJECT
+    src/components/BpoFacadeBase.h
+    src/components/BpoFacadeBase.cpp
+)
+set_target_properties(bpo_facade_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+target_include_directories(bpo_facade_component PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${SPDLOG_INCLUDE_DIR}
+    ${NLOHMANN_JSON_INCLUDE_DIR}
+)
+target_compile_definitions(bpo_facade_component PRIVATE _WINDOWS UNICODE _UNICODE)
+add_dependencies(bpo_facade_component base_component spdlog nlohmann_json helpers_component
+    platform_component)
+
+## @var acquiring_facade_component
+## @brief Семантика еквайрингу поверх IAcquiringDriver (AcquiringFacadeBase) + ревізійні
+##        шари (AcquiringBpo3004/4000 — рівно розкладка параметрів платіжних методів).
+##        ПРОТОКОЛУ НЕ ЗНАЄ — новий протокол реалізує IAcquiringDriver і додає два
+##        тонкі класи (конкретний фасад), не чіпаючи цю ціль.
+add_library(acquiring_facade_component OBJECT
+    src/drivers/IAcquiringDriver.h
+    src/components/AcquiringFacadeBase.h
+    src/components/AcquiringFacadeBase.cpp
+    src/components/AcquiringBpo3004.h
+    src/components/AcquiringBpo3004.cpp
+    src/components/AcquiringBpo4000.h
+    src/components/AcquiringBpo4000.cpp
+)
+set_target_properties(acquiring_facade_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_include_directories(acquiring_facade_component PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+    ${SPDLOG_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR})
+target_compile_definitions(acquiring_facade_component PRIVATE _WINDOWS UNICODE _UNICODE)
+add_dependencies(acquiring_facade_component base_component spdlog nlohmann_json
+    helpers_component platform_component bpo_facade_component)
+
+## @var ecr_bpo_facade_component
+## @brief Конкретні БПО-фасади еквайрингу ПриватБанк (контракт «Подключаемое оборудование»).
+## @details Розкладку параметрів платіжних методів і число ревізії дає ревізійний шар
+##          (AcquiringBpo3004/4000, ціль acquiring_facade_component); тут — рівно вибір
+##          протоколу (MakeDriver() -> EcrPrivatJsonAcquiring) і реєстрація компоненти
+##          в 1С (REGISTER_COMPONENT). Новий протокол додає такий самий тонкий клас,
+##          не чіпаючи цю ціль і ревізійний шар.
+##          Контракт — docs/architecture/bpo-contract.md.
+add_library(ecr_bpo_facade_component OBJECT
+    src/components/EcrPrivatBpo3004.h
+    src/components/EcrPrivatBpo4000.h
+    src/components/EcrPrivatBpo3004.cpp
+    src/components/EcrPrivatBpo4000.cpp
+)
+set_target_properties(ecr_bpo_facade_component PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+target_include_directories(ecr_bpo_facade_component PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${SPDLOG_INCLUDE_DIR}
+    ${NLOHMANN_JSON_INCLUDE_DIR}
+)
+target_compile_definitions(ecr_bpo_facade_component PRIVATE _WINDOWS UNICODE _UNICODE)
+add_dependencies(ecr_bpo_facade_component base_component spdlog nlohmann_json helpers_component
+    driver_ecr_privatjson_component platform_component bpo_facade_component acquiring_facade_component)
+
 
 ## @var uapki_helper_component
 ## @brief Вспомогательный компонент для работы с библиотекой UAPKI
@@ -382,6 +479,9 @@ add_library(${TARGET} SHARED
     $<TARGET_OBJECTS:ecr_facade_component>
     $<TARGET_OBJECTS:driver_label_printer_component>
     $<TARGET_OBJECTS:label_facade_component>
+    $<TARGET_OBJECTS:bpo_facade_component>
+    $<TARGET_OBJECTS:acquiring_facade_component>
+    $<TARGET_OBJECTS:ecr_bpo_facade_component>
     # $<TARGET_OBJECTS:ecrcommx_component>
     # $<TARGET_OBJECTS:posapi_component>
 

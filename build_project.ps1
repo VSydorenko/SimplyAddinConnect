@@ -1,4 +1,4 @@
-# Команда запуску компіляції проекту
+﻿# Команда запуску компіляції проекту
 # powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTests]
 #
 # Только основной проект (без UAPKI и без тестов)
@@ -173,6 +173,70 @@ foreach ($arch in $architectureMap.Keys) {
 $releaseFolder = "$PSScriptRoot\bin\Release"
 $dllFiles = Get-ChildItem -Path $releaseFolder -Filter *.dll -ErrorAction SilentlyContinue
 
+# Читає склад класів компоненти з ЕКСПОРТУ GetClassNames зібраної DLL (а не зі списку
+# REGISTER_COMPONENT у джерелах — див. component-info.txt нижче й docs/architecture/
+# build-and-packaging.md §3.2 щодо того, чому це принципово). Допоміжний крок: будь-який
+# збій тут повертає $null і друкує WARNING, але НІКОЛИ не кидає далі й не чіпає код виходу.
+function Get-ComponentClassNames {
+    param([string]$DllPath)
+
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]'SimplyAddinConnect.NativeLoader').Type) {
+            Add-Type -Language CSharp -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+namespace SimplyAddinConnect {
+    public static class NativeLoader {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr LoadLibrary(string lpFileName);
+        [DllImport("kernel32.dll")]
+        public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
+        [DllImport("kernel32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool FreeLibrary(IntPtr hModule);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public delegate IntPtr GetClassNamesDelegate();
+    }
+}
+"@ -ErrorAction Stop
+        }
+
+        # LoadLibrary/GetProcAddress/FreeLibrary напряму (а не звичайний [DllImport] на ім'я
+        # файлу DLL) — щоб самим керувати звільненням: після FreeLibrary файл DLL не
+        # лишається заблокованим для наступної збірки.
+        $hModule = [SimplyAddinConnect.NativeLoader]::LoadLibrary($DllPath)
+        if ($hModule -eq [IntPtr]::Zero) {
+            Write-Host "WARNING: не вдалося завантажити $DllPath для читання складу класів" -ForegroundColor Yellow
+            return $null
+        }
+        try {
+            $procAddr = [SimplyAddinConnect.NativeLoader]::GetProcAddress($hModule, "GetClassNames")
+            if ($procAddr -eq [IntPtr]::Zero) {
+                Write-Host "WARNING: експорт GetClassNames не знайдено в $DllPath" -ForegroundColor Yellow
+                return $null
+            }
+            $delegate = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer(
+                $procAddr, [SimplyAddinConnect.NativeLoader+GetClassNamesDelegate])
+            $namesPtr = $delegate.Invoke()
+            if ($namesPtr -eq [IntPtr]::Zero) {
+                Write-Host "WARNING: GetClassNames повернув нульовий вказівник ($DllPath)" -ForegroundColor Yellow
+                return $null
+            }
+            $namesRaw = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($namesPtr)
+            if ([string]::IsNullOrWhiteSpace($namesRaw)) {
+                Write-Host "WARNING: GetClassNames повернув порожній рядок ($DllPath)" -ForegroundColor Yellow
+                return $null
+            }
+            return ($namesRaw -split '\|' | Where-Object { $_ -ne '' })
+        } finally {
+            [SimplyAddinConnect.NativeLoader]::FreeLibrary($hModule) | Out-Null
+        }
+    } catch {
+        Write-Host "WARNING: читання складу класів не вдалося - $($_.Exception.Message)" -ForegroundColor Yellow
+        return $null
+    }
+}
+
 if ($dllFiles) {
     # Створення zip архіву з файлами .dll та manifest.xml.
     #
@@ -207,6 +271,48 @@ if ($dllFiles) {
         Write-Host "Adding manifest file: $manifestFile"
     } else {
         Write-Host "Warning: Manifest file not found at $manifestFile"
+    }
+
+    # component-info.txt: склад компоненти поруч з артефактом, щоб не з'ясовувати його
+    # заново з чужої пам'яті чи коментарів. Клас беремо з GetClassNames ЗІБРАНОЇ DLL, а не
+    # зі списку REGISTER_COMPONENT у джерелах — саме тому, що вони можуть розходитись
+    # ЛЕГАЛЬНО (умовна компіляція під -WithUAPKI). Деталі - docs/architecture/build-and-packaging.md §3.2.
+    #
+    # Процес PowerShell вантажить лише DLL СВОЄЇ розрядності - беремо ту, що відповідає
+    # поточному процесу; обидві зібрані з тих самих джерел/прапорців, тож склад класів
+    # у них однаковий.
+    try {
+        $sourceDllName = if ([Environment]::Is64BitProcess) { "SimplyAddinConnectWin_x64.dll" } else { "SimplyAddinConnectWin_x86.dll" }
+        $sourceDllPath = Join-Path $releaseFolder $sourceDllName
+
+        $classNames = $null
+        if (Test-Path $sourceDllPath) {
+            $classNames = Get-ComponentClassNames -DllPath $sourceDllPath
+        } else {
+            Write-Host "WARNING: $sourceDllPath не знайдено - склад класів component-info.txt не визначено" -ForegroundColor Yellow
+        }
+
+        $flagsList = @()
+        if ($WithUAPKI) { $flagsList += "-WithUAPKI" }
+        if ($WithTests) { $flagsList += "-WithTests" }
+
+        $componentInfoLines = @(
+            "version=$version",
+            "flags=$($flagsList -join ' ')",
+            "# джерело: $sourceDllName"
+        )
+        if ($classNames) {
+            $componentInfoLines += ($classNames | ForEach-Object { "class=$_" })
+        } else {
+            $componentInfoLines += "# УВАГА: склад класів не визначено"
+        }
+
+        $componentInfoPath = Join-Path $stageFolder "component-info.txt"
+        [System.IO.File]::WriteAllLines($componentInfoPath, $componentInfoLines, (New-Object System.Text.UTF8Encoding($false)))
+        Write-Host "Component info file created: $componentInfoPath"
+    } catch {
+        Write-Host "WARNING: не вдалося створити component-info.txt - $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "Build result is not affected." -ForegroundColor Yellow
     }
 
     $zipFilePath = "$releaseFolder\SimplyAddinConnectWin.zip"

@@ -13,6 +13,7 @@
 #include <string_view>
 #include <functional>
 #include <type_traits>
+#include <utility>
 
 #include "ComponentBase.h"
 #include "AddInDefBase.h"
@@ -110,6 +111,19 @@ protected:
 	using MethFunction5 = std::function<void(VH, VH, VH, VH, VH)>;
 	using MethFunction6 = std::function<void(VH, VH, VH, VH, VH, VH)>;
 	using MethFunction7 = std::function<void(VH, VH, VH, VH, VH, VH, VH)>;
+	// Арності 8..16 потрібні драйверам БПО: контракт «Подключаемое оборудование» має
+	// методи на 9-10 параметрів (напр. ОплатитьПлатежнойКартой — 9, ОтменитьПлатеж… — 10),
+	// які до цього не реєструвалися взагалі (GetNParams віддавав 0). Запас до 16 узятий
+	// свідомо: розширення цього списку тягне перезбірку й гейт усіх компонент DLL.
+	using MethFunction8  = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH)>;
+	using MethFunction9  = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
+	using MethFunction10 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
+	using MethFunction11 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
+	using MethFunction12 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
+	using MethFunction13 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
+	using MethFunction14 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
+	using MethFunction15 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
+	using MethFunction16 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
 
 	using MethFunction = std::variant<
 		MethFunction0,
@@ -119,8 +133,31 @@ protected:
 		MethFunction4,
 		MethFunction5,
 		MethFunction6,
-		MethFunction7
+		MethFunction7,
+		MethFunction8,
+		MethFunction9,
+		MethFunction10,
+		MethFunction11,
+		MethFunction12,
+		MethFunction13,
+		MethFunction14,
+		MethFunction15,
+		MethFunction16
 	>;
+
+	// Порядок альтернатив — контракт GetNParams: він віддає в 1С кількість параметрів
+	// методу як index() variant-а. Вставка альтернативи не в кінець (або не за арністю)
+	// зламала б це МОВЧКИ — тому інваріант закріплено тут.
+	static_assert(std::variant_size_v<MethFunction> == 17,
+		"MethFunction: очікується 17 альтернатив (арності 0..16)");
+	static_assert(std::is_same_v<std::variant_alternative_t<0, MethFunction>, MethFunction0>,
+		"MethFunction: альтернатива 0 мусить бути MethFunction0");
+	static_assert(std::is_same_v<std::variant_alternative_t<7, MethFunction>, MethFunction7>,
+		"MethFunction: альтернатива 7 мусить бути MethFunction7");
+	static_assert(std::is_same_v<std::variant_alternative_t<9, MethFunction>, MethFunction9>,
+		"MethFunction: альтернатива 9 мусить бути MethFunction9");
+	static_assert(std::is_same_v<std::variant_alternative_t<16, MethFunction>, MethFunction16>,
+		"MethFunction: альтернатива 16 мусить бути MethFunction16");
 
 	void AddProperty(const std::u16string& nameEn, const std::u16string& nameRu, const PropFunction &getter, const PropFunction &setter = nullptr);
 	void AddProcedure(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction &handler, const MethDefaults &defs = {});
@@ -189,6 +226,27 @@ private:
 	};
 
 	bool CallMethod(MethFunction* function, tVariant* paParams, Meth* meth, const long lSizeArray);
+
+	// Розгортає виклик хендлера довільної арності: індекси параметрів беруться з
+	// index_sequence, тож списки VA(...) для арностей 0..16 не виписуються руками
+	// (17 рукописних списків — надто ласий грунт для описки в індексі).
+	template <typename Fn, size_t... I>
+	void InvokeHandler(const Fn& handler, tVariant* paParams, Meth* meth, std::index_sequence<I...>)
+	{
+		handler(VA(paParams, meth, static_cast<long>(I))...);
+	}
+
+	// Одна гілка диспетчера CallMethod: якщо у variant лежить саме Fn — перевірити
+	// кількість фактичних параметрів і викликати. false = «це не та альтернатива».
+	template <size_t N, typename Fn>
+	bool TryCallArity(MethFunction* function, tVariant* paParams, Meth* meth, const long lSizeArray)
+	{
+		auto handler = std::get_if<Fn>(function);
+		if (!handler) return false;
+		if (lSizeArray < static_cast<long>(N)) throw std::bad_function_call();
+		InvokeHandler(*handler, paParams, meth, std::make_index_sequence<N>{});
+		return true;
+	}
 	// Перевіряє required-параметри без дефолту перед викликом хендлера: за порожнім
 	// чи відсутнім аргументом реєструє AddError з ім'ям параметра й повертає false.
 	bool ValidateParams(Meth& m, tVariant* paParams, const long lSizeArray);

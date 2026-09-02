@@ -31,6 +31,10 @@
 друк односпрямований і синхронний, тож `DeviceSession` він **не** задіює — перевикористовує лише
 `ResultEnvelope` та `ITransport`.
 
+У штатну підсистему **«Подключаемое оборудование»** драйвери входять через шаровані БПО-фасади
+(`ECRPrivatBPO3004`, `ECRPrivatBPO4000`, `LabelPrinter`) — контракт і шарування описано в
+[bpo-contract.md](bpo-contract.md).
+
 UAPKI — **лише одна з підсистем**, а не суть усього проєкту. Архітектура шарова: верхні шари
 не знають про деталі нижніх, зв'язок — через інтерфейси (`IComponentBase`, `ITransport`) і хелпери.
 
@@ -44,6 +48,7 @@ UAPKI — **лише одна з підсистем**, а не суть усьо
 | 02 | Фундамент драйверів (device-core) | [device-core.md](device-core.md) | Транспорт/framer/класифікатор/`DeviceSession` + платформа `ResultEnvelope`/`JobEngine`; контракт для нових драйверів |
 | 03 | Драйвер ECRPrivatJSON | [ecrprivatjson.md](ecrprivatjson.md) | Платіжний термінал ПриватБанк: кодек/класифікатор, `Connect`, операції/poller/interrupt/async, фасад `ECRPrivatJSON` |
 | 04 | Драйвер LabelPrinter | [label_printer.md](label_printer.md) | Принтер етикеток (ZPL): БПО-фасад `LabelPrinter`, гібридний рендер (нативні штрихкоди + растр GDI+ у `^GF`), batch state machine, spooler-RAW/TCP:9100 |
+| 04a | Контракт БПО | [bpo-contract.md](bpo-contract.md) | «Подключаемое оборудование»: імена системних методів, які РЕАЛЬНО кличе 1С (короткі, не `Equipment-*`), **шарування фасадів** (контракт → семантика → ревізія → протокол, §2.6), три формати XML, **єдина числова таксономія помилок** (§4.3), розбіжність із ІТС |
 | 05 | UAPKI | [uapki.md](uapki.md) | ЕЦП/крипто: JSON-API `process()`, провайдер `cm-pkcs12`, потрійний пошук каталогу |
 | 06 | Збірка й пакування | [build-and-packaging.md](build-and-packaging.md) | Модульний CMake, `build_project.ps1`, ZIP + `manifest.xml`, доставка в 1С |
 
@@ -92,7 +97,7 @@ flowchart TD
 | Шар | Файли | Роль |
 |---|---|---|
 | Ядро (bridge) | `src/core/AddInNative.*` | Реалізація SDK 1С, реєстр компонент, `VariantHelper` |
-| Компоненти | `src/components/*` | Фасади, що реєструють методи для 1С |
+| Компоненти | `src/components/*` | Фасади, що реєструють методи для 1С. Фасади **БПО** шаровані: `BpoFacadeBase` (контракт «Подключаемое оборудование») → `AcquiringFacadeBase` (семантика еквайрингу поверх `IAcquiringDriver`) → ревізійний шар (`AcquiringBpo3004`/`4000` — розкладка параметрів) → конкретний протокол (`EcrPrivatBpo3004`/`4000`). `AddinLabelPrinter` стоїть прямо на `BpoFacadeBase` — див. [bpo-contract.md §2.6](bpo-contract.md) |
 | Device-core | `src/transport/{IFramer,NullTerminatedFramer,IFrameClassifier,DeviceSession}` | Фундамент драйверів: кадрування → класифікація → сесія запит/відповідь |
 | Платформа драйверів | `src/platform/*` | Спільний каркас драйверів (`ResultEnvelope` — уніфікований результат операції) |
 | Драйвери обладнання | `src/drivers/ecr_privatjson/*` | Пілотний ECRPrivatJSON: кодек JSON, класифікатор кадрів, `Connect`, операції/poller/interrupt/async поверх `JobEngine` |

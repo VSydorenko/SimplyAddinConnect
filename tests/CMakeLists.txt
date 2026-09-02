@@ -86,6 +86,8 @@ add_executable(ecr_privatjson_selftest ecr_privatjson_selftest.cpp
     $<TARGET_OBJECTS:ecr_facade_component>       # 1С-фасад AddinECRPrivatJSON (смоук через CreateObject)
     $<TARGET_OBJECTS:driver_ecr_privatjson_component>
     $<TARGET_OBJECTS:platform_component>
+    $<TARGET_OBJECTS:bpo_facade_component>          # BpoFacadeBase
+    $<TARGET_OBJECTS:acquiring_facade_component>    # AcquiringFacadeBase (RunVoid під тестом)
     $<TARGET_OBJECTS:transport_component>   # реальний TransportTCP/COM для e2e
     $<TARGET_OBJECTS:wire_component>        # DeviceSession/NullTerminatedFramer/IFrameClassifier
     $<TARGET_OBJECTS:helpers_component>
@@ -120,6 +122,7 @@ add_executable(label_printer_selftest ${CMAKE_SOURCE_DIR}/tests/label_printer_se
     support/LabelEmulator.cpp                          # TCP-емулятор-захоплювач ZPL (L-p2 e2e)
 )
 target_sources(label_printer_selftest PRIVATE
+    $<TARGET_OBJECTS:bpo_facade_component>             # BpoFacadeBase — база фасаду принтера
     $<TARGET_OBJECTS:label_facade_component>           # БПО-фасад AddinLabelPrinter (смоук через CreateObject)
     $<TARGET_OBJECTS:driver_label_printer_component>   # LabelRaster/GfEncoder/BarcodeZpl/LabelPrinterDriver
     $<TARGET_OBJECTS:platform_component>               # ResultEnvelope (результат операції драйвера)
@@ -201,7 +204,11 @@ endif()
 # ---------------------------------------------------------------------------
 # label_native_host — L-p3-харнес компоненти LabelPrinter поверх ГОЛОВНОЇ DLL.
 # Емулює платформу 1С: вантажить головну DLL через LoadLibraryW у рантаймі й
-# викликає компоненту через IComponentBase (ПодключитьОборудование/ПечатьЭтикеток).
+# кличе компоненту через IComponentBase КОРОТКИМИ іменами контракту БПО
+# (УстановитьПараметр / Подключить / ТестУстройства / ИнициализацияПринтера /
+# ПечатьЭтикеток) — рівно тими, що кличе конфігурація. Окремо перевіряє, що старі
+# довгі імена (ПодключитьОборудование тощо) з компоненти ЗНИКЛИ: лишившись, вони
+# маскували б помилку налаштування обладнання.
 # ZPL-принтер — in-process LabelEmulator. Драйвер/фасад НЕ лінкуються (усе через DLL).
 # Не залежить від UAPKI — тому ДО гейта нижче.
 # ---------------------------------------------------------------------------

@@ -3,10 +3,14 @@
 // @brief L-p3-харнес компоненти LabelPrinter поверх ГОЛОВНОЇ DLL.
 //        Емулює платформу 1С: вантажить головну DLL через LoadLibraryW,
 //        отримує IComponentBase через експорт GetClassObject, надає власні
-//        IAddInDefBase та IMemoryManager і викликає БПО-методи
-//        "ПодключитьОборудование"/"ПечатьЭтикеток" точно так, як платформа
-//        (маршалінг tVariant VTYPE_PWSTR у параметрах; OUT DeviceID — через
-//        paParams[0]). ZPL-принтер емулюється in-process LabelEmulator-ом.
+//        IAddInDefBase та IMemoryManager і кличе КОРОТКІ імена контракту
+//        «Подключаемое оборудование» — УстановитьПараметр / Подключить /
+//        ТестУстройства / ИнициализацияПринтера / ПечатьЭтикеток, тобто рівно
+//        ті, які кличе конфігурація, а НЕ довгі імена з таблиці ІТС
+//        (маршалінг tVariant VTYPE_PWSTR і VTYPE_R8 у параметрах;
+//        ИДУстройства — OUT через paParams[0]). Окремо перевіряє, що старі
+//        довгі імена зникли: лишившись, вони маскували б помилку налаштування.
+//        ZPL-принтер емулюється in-process LabelEmulator-ом.
 //        Драйвер/фасад НЕ лінкуються — усе працює через головну DLL.
 //
 // Це окремий консольний exe; PCH головного проєкту НЕ підключається, дозволено printf.
@@ -25,8 +29,11 @@ int main() {
 #include "support/LabelEmulator.h"   // тягне winsock2.h ПЕРШИМ (до windows.h)
 #include <windows.h>
 #include <string>
+#include <vector>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <clocale>
 #include <cwchar>
 #include <thread>
 #include <chrono>
@@ -119,6 +126,11 @@ static int g_failed = 0;
 } while (0)
 
 int main() {
+    // %ls у діагностиці нижче конвертує wchar_t за LC_CTYPE: у дефолтній
+    // локалі "C" кирилиця не конвертується й printf МОВЧКИ обриває рядок —
+    // імена ненайдених методів просто зникали б зі звіту. LC_NUMERIC не чіпаємо.
+    std::setlocale(LC_CTYPE, ".UTF-8");
+
     // 1) In-process емулятор ZPL-принтера на ефемерному порту.
     LabelEmulator emu;
     CHECK(emu.Start(), "L-p3: емулятор стартував");
@@ -150,46 +162,166 @@ int main() {
     bool initOk = comp->Init((void*)&conn) && comp->setMemManager((void*)&mem);
     CHECK(initOk, "L-p3: Init + setMemManager");
 
-    // 4) ПодключитьОборудование: OUT DeviceID, IN EquipmentType, IN ConnectionParameters(XML) -> BOOL.
-    //    DeviceID повертається через paParams[0] (VTYPE_PWSTR), НЕ через return.
-    std::string deviceId;
-    long idxConnect = comp->FindMethod(L"ПодключитьОборудование");
-    CHECK(idxConnect >= 0, "L-p3: метод ПодключитьОборудование знайдено");
-    if (idxConnect >= 0) {
-        std::string connXml =
-            "<?xml version=\"1.0\"?><Parameters>"
-            "<Parameter Name=\"TransportKind\" Value=\"tcp\"/>"
-            "<Parameter Name=\"Host\" Value=\"127.0.0.1\"/>"
-            "<Parameter Name=\"Port\" Value=\"" + std::to_string(emu.Port()) + "\"/>"
-            "</Parameters>";
-        std::wstring wEquip = u8to16("LabelPrinter");
-        std::wstring wXml   = u8to16(connXml);
-
-        tVariant params[3];
-        tVarInit(&params[0]);                       // OUT DeviceID — VTYPE_EMPTY (Undefined)
-        tVarInit(&params[1]);
-        params[1].vt = VTYPE_PWSTR; params[1].pwstrVal = (WCHAR_T*)wEquip.c_str(); params[1].wstrLen = (uint32_t)wEquip.size();
-        tVarInit(&params[2]);
-        params[2].vt = VTYPE_PWSTR; params[2].pwstrVal = (WCHAR_T*)wXml.c_str();   params[2].wstrLen = (uint32_t)wXml.size();
-
+    // Хелпери маршалінгу (за зразком ecr_native_host.cpp).
+    auto setInStr = [](tVariant& v, const std::wstring& s) {
+        tVarInit(&v);
+        const size_t bytes = (s.size() + 1) * sizeof(wchar_t);
+        v.vt = VTYPE_PWSTR;
+        v.pwstrVal = (WCHAR_T*)malloc(bytes);
+        memcpy(v.pwstrVal, s.c_str(), bytes);
+        v.wstrLen = (uint32_t)s.size();
+    };
+    auto outStr = [](const tVariant& v) -> std::string {
+        return (v.vt == VTYPE_PWSTR && v.pwstrVal)
+            ? u16to8(reinterpret_cast<const wchar_t*>(v.pwstrVal), v.wstrLen)
+            : std::string{};
+    };
+    // Виклик методу, усі аргументи якого — рядки; результат — BOOL.
+    auto callBool = [&](long idx, const std::vector<std::string>& args) -> bool {
+        std::vector<std::wstring> w;
+        for (const auto& a : args) w.push_back(u8to16(a));
+        std::vector<tVariant> p(args.empty() ? 1 : args.size());
+        for (size_t i = 0; i < w.size(); ++i) setInStr(p[i], w[i]);
         tVariant ret; tVarInit(&ret);
-        bool called = comp->CallAsFunc(idxConnect, &ret, params, 3);
-        bool retTrue = (ret.vt == VTYPE_BOOL && ret.bVal);
-        CHECK(called && retTrue, "L-p3: ПодключитьОборудование -> true");
+        comp->CallAsFunc(idx, &ret, p.data(), (long)w.size());
+        for (auto& v : p) if (v.vt == VTYPE_PWSTR && v.pwstrVal) free(v.pwstrVal);
+        return ret.vt == VTYPE_BOOL && ret.bVal;
+    };
 
-        // OUT DeviceID з paParams[0].
-        if (params[0].vt == VTYPE_PWSTR && params[0].pwstrVal) {
-            deviceId = u16to8(reinterpret_cast<const wchar_t*>(params[0].pwstrVal), params[0].wstrLen);
-            mem.FreeMemory((void**)&params[0].pwstrVal); // виділено головною DLL через наш HostMemoryManager
-        }
-        std::printf("  DeviceID=%s\n", deviceId.c_str());
-        CHECK(!deviceId.empty(), "L-p3: DeviceID отримано через paParams[0]");
+    // 4) Ревізія — рівно 3004: за нею конфігурація обирає розкладку викликів.
+    long idxRev = comp->FindMethod(L"ПолучитьРевизиюИнтерфейса");
+    CHECK(idxRev >= 0, "L-p3: ПолучитьРевизиюИнтерфейса знайдено");
+    if (idxRev >= 0) {
+        tVariant ret; tVarInit(&ret);
+        comp->CallAsFunc(idxRev, &ret, nullptr, 0);
+        long rev = (ret.vt == VTYPE_I4) ? ret.lVal : (long)ret.dblVal;
+        CHECK(rev == 3004, "L-p3: ревізія інтерфейсу == 3004");
     }
 
-    // 5) ПечатьЭтикеток: IN DeviceID, IN LabelsTable(XML з EAN13), IN PackageStatus="first" -> BOOL.
+    // 5) Усі імена контракту БПО зареєстровані під ТИМИ іменами, які кличе 1С.
+    //    Саме цього не було в старій версії: драйвер реєстрував довгі імена за ІТС.
+    {
+        const wchar_t* contract[] = {
+            L"ПолучитьРевизиюИнтерфейса", L"ПолучитьНомерВерсии", L"ПолучитьОписание",
+            L"ПолучитьПараметры", L"УстановитьПараметр", L"Подключить", L"Отключить",
+            L"ТестУстройства", L"ПолучитьОшибку", L"ПолучитьДополнительныеДействия",
+            L"ВыполнитьДополнительноеДействие", L"ИнициализацияПринтера", L"ПечатьЭтикеток"
+        };
+        bool all = true;
+        for (const wchar_t* n : contract)
+            if (comp->FindMethod(n) < 0) { all = false; std::printf("  немає: %ls\n", n); }
+        CHECK(all, "L-p3: усі імена контракту БПО зареєстровано");
+
+        // Старі довгі імена за документом ІТС мають ЗНИКНУТИ — вони не працювали
+        // ніколи, а лишившись, маскували б помилку налаштування.
+        const wchar_t* legacy[] = { L"ПодключитьОборудование", L"ПараметрыОборудования",
+                                    L"ТестированиеОборудования", L"ОтключитьОборудование",
+                                    L"УстановитьИнформациюПриложения" };
+        bool none = true;
+        for (const wchar_t* n : legacy)
+            if (comp->FindMethod(n) >= 0) { none = false; std::printf("  лишилось: %ls\n", n); }
+        CHECK(none, "L-p3: старі довгі імена прибрано");
+    }
+
+    // 6) Паспорт і форма налаштувань.
+    long idxDescr = comp->FindMethod(L"ПолучитьОписание");
+    CHECK(idxDescr >= 0, "L-p3: ПолучитьОписание знайдено");
+    if (idxDescr >= 0) {
+        tVariant p; tVarInit(&p);
+        tVariant ret; tVarInit(&ret);
+        comp->CallAsFunc(idxDescr, &ret, &p, 1);
+        const std::string xml = outStr(p);
+        if (p.vt == VTYPE_PWSTR && p.pwstrVal) free(p.pwstrVal);
+        CHECK(xml.find("EquipmentType=\"LabelPrinter\"") != std::string::npos,
+              "L-p3: паспорт оголошує EquipmentType=LabelPrinter");
+    }
+    long idxParams = comp->FindMethod(L"ПолучитьПараметры");
+    CHECK(idxParams >= 0, "L-p3: ПолучитьПараметры знайдено");
+    if (idxParams >= 0) {
+        tVariant p; tVarInit(&p);
+        tVariant ret; tVarInit(&ret);
+        comp->CallAsFunc(idxParams, &ret, &p, 1);
+        const std::string xml = outStr(p);
+        if (p.vt == VTYPE_PWSTR && p.pwstrVal) free(p.pwstrVal);
+        // ⚠️ Корінь МАЄ бути Settings: з коренем Parameters форма БПО мовчки
+        // лишається без жодного поля.
+        CHECK(xml.find("<Settings>") != std::string::npos,
+              "L-p3: форма налаштувань має кореневий вузол Settings");
+    }
+
+    // 7) УстановитьПараметр: тип обладнання приходить ІМЕНЕМ ЗНАЧЕННЯ ПЕРЕЛІКУ.
+    long idxSetParam = comp->FindMethod(L"УстановитьПараметр");
+    CHECK(idxSetParam >= 0, "L-p3: УстановитьПараметр знайдено");
+    if (idxSetParam >= 0) {
+        CHECK(callBool(idxSetParam, { "EquipmentType", "ПринтерЭтикеток" }),
+              "L-p3: УстановитьПараметр(EquipmentType) прийнято");
+        CHECK(!callBool(idxSetParam, { "EquipmentType", "ЭквайринговыйТерминал" }),
+              "L-p3: чужий тип обладнання відхилено");
+        callBool(idxSetParam, { "EquipmentType", "ПринтерЭтикеток" });
+        callBool(idxSetParam, { "TransportKind", "tcp" });
+        callBool(idxSetParam, { "Host", "127.0.0.1" });
+
+        // ⚠️ Port і DotsPerMm оголошені в формі як Number, тож 1С передає їх ЧИСЛОМ.
+        // Пряме приведення VH до рядка на цьому кидає — саме на цьому горів
+        // еквайринговий фасад.
+        auto setNumber = [&](const char* name, double value) -> bool {
+            std::wstring wName = u8to16(name);
+            tVariant p[2];
+            for (auto& v : p) tVarInit(&v);
+            p[0].vt = VTYPE_PWSTR; p[0].pwstrVal = (WCHAR_T*)wName.c_str();
+            p[0].wstrLen = (uint32_t)wName.size();
+            p[1].vt = VTYPE_R8;    p[1].dblVal = value;
+            tVariant ret; tVarInit(&ret);
+            comp->CallAsFunc(idxSetParam, &ret, p, 2);
+            return ret.vt == VTYPE_BOOL && ret.bVal;
+        };
+        CHECK(setNumber("Port", (double)emu.Port()),
+              "L-p3: УстановитьПараметр приймає ЧИСЛОВЕ значення (Port)");
+        CHECK(setNumber("DotsPerMm", 8.0),
+              "L-p3: УстановитьПараметр приймає ЧИСЛОВЕ значення (DotsPerMm)");
+    }
+
+    // 8) ТестУстройства: реально відкриває канал до емулятора й закриває.
+    long idxTest = comp->FindMethod(L"ТестУстройства");
+    CHECK(idxTest >= 0, "L-p3: ТестУстройства знайдено");
+    if (idxTest >= 0) {
+        tVariant p[2];
+        for (auto& v : p) tVarInit(&v);
+        tVariant ret; tVarInit(&ret);
+        comp->CallAsFunc(idxTest, &ret, p, 2);
+        const std::string text = outStr(p[0]);
+        std::printf("  ТестУстройства: %s\n", text.c_str());
+        CHECK(ret.vt == VTYPE_BOOL && ret.bVal, "L-p3: ТестУстройства -> true (емулятор досяжний)");
+        CHECK(p[1].vt == VTYPE_BOOL && !p[1].bVal, "L-p3: АктивированДемоРежим == Ложь");
+        CHECK(!text.empty(), "L-p3: РезультатТеста несе текст для адміністратора");
+        if (p[0].vt == VTYPE_PWSTR && p[0].pwstrVal) free(p[0].pwstrVal);
+    }
+
+    // 9) Подключить: параметрів не приймає, ИДУстройства — OUT.
+    std::string deviceId;
+    long idxConnect = comp->FindMethod(L"Подключить");
+    CHECK(idxConnect >= 0, "L-p3: Подключить знайдено");
+    if (idxConnect >= 0) {
+        tVariant p; tVarInit(&p);
+        tVariant ret; tVarInit(&ret);
+        comp->CallAsFunc(idxConnect, &ret, &p, 1);
+        if (p.vt == VTYPE_PWSTR && p.pwstrVal) {
+            deviceId = u16to8(reinterpret_cast<const wchar_t*>(p.pwstrVal), p.wstrLen);
+            free(p.pwstrVal);
+        }
+        CHECK(ret.vt == VTYPE_BOOL && ret.bVal, "L-p3: Подключить -> true");
+        CHECK(!deviceId.empty(), "L-p3: ИДУстройства повернуто в OUT");
+        std::printf("  DeviceID=%s\n", deviceId.c_str());
+    }
+
+    // 10) ИнициализацияПринтера + ПечатьЭтикеток проти емулятора.
     if (!deviceId.empty()) {
+        long idxInit = comp->FindMethod(L"ИнициализацияПринтера");
+        CHECK(idxInit >= 0 && callBool(idxInit, { deviceId }),
+              "L-p3: ИнициализацияПринтера -> true");
+
         long idxPrint = comp->FindMethod(L"ПечатьЭтикеток");
-        CHECK(idxPrint >= 0, "L-p3: метод ПечатьЭтикеток знайдено");
+        CHECK(idxPrint >= 0, "L-p3: ПечатьЭтикеток знайдено");
         if (idxPrint >= 0) {
             const char* labelsXml =
                 "<?xml version=\"1.0\"?><Data>"
@@ -203,41 +335,73 @@ int main() {
                 "<Record FieldName=\"Bar\" Value=\"4008110271538\"/>"
                 "</Label>"
                 "</Labels></Data>";
+            CHECK(callBool(idxPrint, { deviceId, labelsXml, "first" }),
+                  "L-p3: ПечатьЭтикеток -> true");
 
-            std::wstring wId     = u8to16(deviceId);
-            std::wstring wLabels = u8to16(labelsXml);
-            std::wstring wStatus = u8to16("first");
-
-            tVariant params[3];
-            tVarInit(&params[0]); params[0].vt = VTYPE_PWSTR; params[0].pwstrVal = (WCHAR_T*)wId.c_str();     params[0].wstrLen = (uint32_t)wId.size();
-            tVarInit(&params[1]); params[1].vt = VTYPE_PWSTR; params[1].pwstrVal = (WCHAR_T*)wLabels.c_str(); params[1].wstrLen = (uint32_t)wLabels.size();
-            tVarInit(&params[2]); params[2].vt = VTYPE_PWSTR; params[2].pwstrVal = (WCHAR_T*)wStatus.c_str(); params[2].wstrLen = (uint32_t)wStatus.size();
-
-            tVariant ret; tVarInit(&ret);
-            bool called = comp->CallAsFunc(idxPrint, &ret, params, 3);
-            bool retTrue = (ret.vt == VTYPE_BOOL && ret.bVal);
-            CHECK(called && retTrue, "L-p3: ПечатьЭтикеток -> true");
-
-            // Дочекатися, поки емулятор прийме ZPL із сокета (Send синхронний, recv — асинхронний).
+            // Дочекатися, поки емулятор прийме ZPL із сокета. Чекаємо саме на ^BE,
+            // а не на ^XA/^XZ: Send синхронний, а recv — ні, і перед етикеткою в
+            // потік уже пішов ЦІЛИЙ кадр ИнициализацияПринтера (^XA…^XZ). Тобто
+            // і ^XA, і ^XZ у буфері з'являються ЗАДОВГО до штрихкоду — очікування
+            // по них давало плаваючий FAIL на перевірці ^BE (спіймано на x86).
             std::string zpl;
-            for (int i = 0; i < 50; ++i) {          // до ~5с
+            for (int i = 0; i < 50; ++i) {
                 zpl = emu.LastZpl();
-                if (zpl.find("^XA") != std::string::npos) break;
+                if (zpl.find("^BE") != std::string::npos) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
             CHECK(zpl.find("^XA") != std::string::npos, "L-p3: емулятор отримав ZPL із ^XA");
+            CHECK(zpl.find("^BE") != std::string::npos, "L-p3: емулятор отримав нативний EAN13 ^BE");
+
+            // 11) Навмисна помилка: чужий ИДУстройства має дати відмову з кодом і описом.
+            CHECK(!callBool(idxPrint, { "no-such-device", labelsXml, "first" }),
+                  "L-p3: ПечатьЭтикеток із чужим ИДУстройства відхилено");
+            long idxErr = comp->FindMethod(L"ПолучитьОшибку");
+            CHECK(idxErr >= 0, "L-p3: ПолучитьОшибку знайдено");
+            if (idxErr >= 0) {
+                tVariant ep; tVarInit(&ep);
+                tVariant eret; tVarInit(&eret);
+                comp->CallAsFunc(idxErr, &eret, &ep, 1);
+                long code = (eret.vt == VTYPE_I4) ? eret.lVal : (long)eret.dblVal;
+                const std::string desc = outStr(ep);
+                if (ep.vt == VTYPE_PWSTR && ep.pwstrVal) free(ep.pwstrVal);
+                std::printf("  ПолучитьОшибку: code=%ld desc=%s\n", code, desc.c_str());
+                CHECK(code != 0 && !desc.empty(), "L-p3: ПолучитьОшибку дає код і опис");
+            }
         }
     }
 
-    // 6) Прибирання: відключити пристрій, знищити компоненту, вивантажити DLL.
-    long idxDisc = comp->FindMethod(L"ОтключитьОборудование");
-    if (idxDisc >= 0 && !deviceId.empty()) {
-        std::wstring wId = u8to16(deviceId);
-        tVariant params[1];
-        tVarInit(&params[0]); params[0].vt = VTYPE_PWSTR; params[0].pwstrVal = (WCHAR_T*)wId.c_str(); params[0].wstrLen = (uint32_t)wId.size();
+    // 12) Прибирання.
+    long idxDisc = comp->FindMethod(L"Отключить");
+    if (idxDisc >= 0 && !deviceId.empty())
+        CHECK(callBool(idxDisc, { deviceId }), "L-p3: Отключить -> true");
+
+    // 13) Порожній Host при tcp — це НЕЗАПОВНЕНИЙ ПАРАМЕТР, а не недоступний
+    //     принтер. Адміністратор має побачити BAD_INPUT (12) з назвою параметра,
+    //     інакше він шукатиме несправність у мережі замість форми налаштувань.
+    if (idxSetParam >= 0 && idxConnect >= 0) {
+        callBool(idxSetParam, { "Host", "" });
+        tVariant p; tVarInit(&p);
         tVariant ret; tVarInit(&ret);
-        comp->CallAsFunc(idxDisc, &ret, params, 1);
+        comp->CallAsFunc(idxConnect, &ret, &p, 1);
+        if (p.vt == VTYPE_PWSTR && p.pwstrVal) free(p.pwstrVal);
+        CHECK(!(ret.vt == VTYPE_BOOL && ret.bVal),
+              "L-p3: Подключить із порожнім Host відхилено");
+
+        long idxErrBad = comp->FindMethod(L"ПолучитьОшибку");
+        if (idxErrBad >= 0) {
+            tVariant ep; tVarInit(&ep);
+            tVariant eret; tVarInit(&eret);
+            comp->CallAsFunc(idxErrBad, &eret, &ep, 1);
+            long code = (eret.vt == VTYPE_I4) ? eret.lVal : (long)eret.dblVal;
+            const std::string desc = outStr(ep);
+            if (ep.vt == VTYPE_PWSTR && ep.pwstrVal) free(ep.pwstrVal);
+            std::printf("  порожній Host: code=%ld desc=%s\n", code, desc.c_str());
+            CHECK(code == 12, "L-p3: порожній Host дає код BAD_INPUT (12), а не транспортну помилку");
+            CHECK(desc.find("Host") != std::string::npos,
+                  "L-p3: опис помилки називає незаповнений параметр");
+        }
     }
+
     pDestroyObject(&comp);
     FreeLibrary(h);
     emu.Stop();

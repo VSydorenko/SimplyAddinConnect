@@ -99,6 +99,25 @@ ResultEnvelope LabelPrinterDriver::SendBytes(DeviceContext& ctx, const std::vect
     return ResultEnvelope::Ok();
 }
 
+ResultEnvelope LabelPrinterDriver::Probe(const std::string& deviceId) {
+    std::shared_ptr<DeviceContext> ctx = Lookup(deviceId);
+    if (!ctx)
+        return ResultEnvelope::Fail("NOT_CONNECTED", "Пристрій не підключено: " + deviceId);
+
+    std::lock_guard<std::mutex> lk(ctx->m);
+    if (!ctx->transport)
+        return ResultEnvelope::Fail("TRANSPORT_ERROR", "Транспорт пристрою не ініціалізовано");
+    if (ctx->transport->IsOpen()) {
+        NEUTRAL_REPORT_INFO(kTag, "Канал до пристрою вже відкритий: " + deviceId);
+        return ResultEnvelope::Ok();
+    }
+    if (!ctx->transport->Open())
+        return ResultEnvelope::Fail("TRANSPORT_ERROR", "Не вдалося відкрити канал до принтера");
+    ctx->transport->Close();   // повертаємо ліниво-закритий стан
+    NEUTRAL_REPORT_INFO(kTag, "Канал до пристрою доступний: " + deviceId);
+    return ResultEnvelope::Ok();
+}
+
 ResultEnvelope LabelPrinterDriver::InitializePrinter(const std::string& deviceId) {
     std::shared_ptr<DeviceContext> ctx = Lookup(deviceId);
     if (!ctx)

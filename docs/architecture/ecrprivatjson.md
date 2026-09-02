@@ -27,6 +27,10 @@ JSON-протокол платіжних терміналів ПриватБан
 │   тонка: реєструє методи EN/RU, делегує драйверу, серіалізує      │
 │   ResultEnvelope → JSON-рядок; опційні події через PostExternalEvent│
 ├──────────────────────────────────────────────────────────────────┤
+│ ФАСАДИ БПО  EcrPrivatBpo3004 / EcrPrivatBpo4000            (§7)   │
+│   шари контракту й еквайрингу — bpo-contract.md §2.6; протокол    │
+│   бачать лише через адаптер EcrPrivatJsonAcquiring:IAcquiringDriver│
+├──────────────────────────────────────────────────────────────────┤
 │ ДРАЙВЕР  EcrPrivatJsonDriver                                      │
 │   Connect (еталонна схема) · операції sync/async · worker+poller  │
 │   · send-арбітр 0.1с · desync-відновлення · MapResult             │
@@ -243,7 +247,36 @@ best-effort `ExecuteInternal("GetReceiptInfo", …)` (не публічний `G
 
 ---
 
-## 7. Фасад 1С — `AddinECRPrivatJSON`
+## 7. Фасади 1С — ДВА шляхи до одного драйвера
+
+Драйвер віддається в 1С **двома незалежними способами**, і плутати їх не можна:
+
+| Шлях | Класи | Коли |
+|---|---|---|
+| **Прямий** | `ECRPrivatJSON` | прикладний код створює об'єкт сам; є асинхронна оплата, онлайн-статус, скасування операції. Єдиний шлях, перевірений на **реальному терміналі** |
+| **БПО** | `ECRPrivatBPO3004`, `ECRPrivatBPO4000` | штатна підсистема «Подключаемое оборудование»; прикладного коду не потребує взагалі |
+
+БПО-фасади описано **не тут, а в [bpo-contract.md](bpo-contract.md)** — це контракт підсистеми,
+спільний з іншими драйверами обладнання, і його джерело правди там. Тут лишається прямий фасад.
+
+> Два класи на БПО — не дублювання, а **вимога контракту**: ревізія інтерфейсу визначає розкладку
+> параметрів платіжних методів (7 проти 9), а одне ім'я методу в компоненті = одна арність.
+> Деталі — `bpo-contract.md` §2.1-2.3.
+
+**Про протокол ПриватБанку БПО-шар не знає.** Між ним і драйвером стоїть інтерфейс
+`IAcquiringDriver` (`src/drivers/IAcquiringDriver.h`), а `EcrPrivatJsonDriver` під нього
+загорнуто адаптером **`EcrPrivatJsonAcquiring`**
+(`src/drivers/ecr_privatjson/EcrPrivatJsonAcquiring.{h,cpp}`, ціль
+`driver_ecr_privatjson_component`). Адаптер перевизначає лише те, що протокол справді вміє
+(`Open`/`Close`/`Probe`/`Purchase`/`Refund`/`DayTotals`/`Audit` + асинхронна трійця); `Void` і
+`EmergencyVoid` лишаються дефолтною чесною відмовою — власних операцій протокол не має, і
+скасування фасад робить поверненням за RRN. Він же віддає `AcquiringCapabilities`: `terminalId` =
+`Model()` (справжнього TID протокол не віддає), `printSlipOnTerminal = true` (N950 друкує
+квитанції сам), решта — `false`, бо часткове скасування, видача готівки, Consumer-Presented QR,
+електронні сертифікати й список операцій термінал не вміє (§8). Шарування фасадів і ціна нового
+протоколу — `bpo-contract.md` §2.6.
+
+### 7.0. Прямий фасад — `AddinECRPrivatJSON`
 
 `src/components/AddinECRPrivatJSON.{h,cpp}`. Тонка компонента: успадковує `AddInNative`,
 `REGISTER_COMPONENT(u"ECRPrivatJSON", AddinECRPrivatJSON)`, тримає `EcrPrivatJsonDriver driver_`.
@@ -346,6 +379,8 @@ approval** (`0010`) поки трактується як звичайний `ok:
 
 ## 10. Пов'язані документи
 
+- [bpo-contract.md](bpo-contract.md) — контракт «Подключаемое оборудование» і шарування фасадів
+  (§2.6): **джерело правди** про `ECRPrivatBPO3004`/`ECRPrivatBPO4000`.
 - [device-core.md](device-core.md) — фундамент (транспорт/framer/класифікатор/`DeviceSession`/
   `ResultEnvelope`/`JobEngine`), який цей драйвер перевикористовує.
 - [docs/integration-1c/ecr-privatjson.md](../integration-1c/ecr-privatjson.md) — інструкція для
