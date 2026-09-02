@@ -105,6 +105,47 @@ static bool writeFileAtomic(const std::wstring& dst, const char* data, size_t le
     return true;
 }
 
+// Екранування одинарної лапки для підстановки в одинарний PowerShell-рядок:
+// ' -> ''. Без цього шлях з апострофом (валідний символ у профілі Windows,
+// напр. C:\Users\O'Brien\..., і звичайний орфографічний знак української
+// мови) обриває -OutFile посеред рядка й ламає синтаксис команди —
+// ДЕТЕРМІНОВАНО на кожному такому профілі, а не зрідка.
+static std::wstring psSingleQuoteEscape(const std::wstring& s) {
+    std::wstring out;
+    out.reserve(s.size());
+    for (wchar_t c : s) {
+        out += c;
+        if (c == L'\'') out += L'\'';
+    }
+    return out;
+}
+
+// Мінімальна перевірка вмісту завантаженого: captive portal чи заглушка CDN
+// віддають HTTP 200 з HTML/XML замість бандла, і без цієї перевірки зіпсований
+// файл закешувався б НАЗАВЖДИ (повторне завантаження — лише за відсутності
+// цільового файлу). Формат DER/PEM не вгадуємо — відкидаємо тільки очевидно
+// НЕ бандл: перший непробільний байт '<' або розмір менший за 1024 Б
+// (реальний бандл ЦЗО — 1 569 840 Б, запас із великим кратним запасом).
+static bool looksLikeBundle(const std::wstring& path) {
+    ULONGLONG size = 0;
+    if (!fileSize64(path, size) || size < 1024) return false;
+
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    BYTE buf[64]{};
+    DWORD got = 0;
+    const BOOL ok = ReadFile(h, buf, sizeof(buf), &got, nullptr);
+    CloseHandle(h);
+    if (!ok) return false;
+
+    for (DWORD i = 0; i < got; ++i) {
+        if (buf[i] == ' ' || buf[i] == '\t' || buf[i] == '\r' || buf[i] == '\n') continue;
+        return buf[i] != '<';
+    }
+    return true;   // самі пробіли на початку — нетиповий, але не captive-portal випадок
+}
+
 // Завантаження бандла ЦСК. Запис АТОМАРНИЙ: тимчасове ім'я + MoveFileExW.
 // Атомарність не косметика — run_tests.ps1 ганяє дві архітектури, прогони
 // можуть перетнутися на одному кеші. Програш гонки трактується як успіх,
@@ -116,7 +157,7 @@ static bool downloadBundle(const std::wstring& dir, const std::wstring& dst) {
     std::wstring cmd = L"powershell -NoProfile -ExecutionPolicy Bypass -Command "
                        L"\"try { Invoke-WebRequest "
                        L"'https://czo.gov.ua/download/certificates/CACertificates.p7b' "
-                       L"-OutFile '" + tmp + L"' -UseBasicParsing; exit 0 } catch { exit 1 }\"";
+                       L"-OutFile '" + psSingleQuoteEscape(tmp) + L"' -UseBasicParsing; exit 0 } catch { exit 1 }\"";
 
     STARTUPINFOW si{ sizeof(si) };
     si.dwFlags = STARTF_USESHOWWINDOW;
@@ -126,12 +167,23 @@ static bool downloadBundle(const std::wstring& dir, const std::wstring& dst) {
     buf.push_back(L'\0');
     if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) return false;
-    WaitForSingleObject(pi.hProcess, 120000);
+
+    // Таймаут 120 с — не лише межа очікування, а й тригер: якщо процес не
+    // вклався, TerminateProcess обов'язковий. Інакше зависла powershell.exe
+    // лишається тримати tmp відкритим (DeleteFileW нижче мовчки провалиться)
+    // або дописує файл уже ПІСЛЯ повернення функції — єдина гілка, де тимчасовий
+    // файл раніше міг пережити функцію.
+    if (WaitForSingleObject(pi.hProcess, 120000) == WAIT_TIMEOUT) {
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, INFINITE);   // дочекатись реального завершення й звільнення tmp
+    }
     DWORD rc = 1;
     GetExitCodeProcess(pi.hProcess, &rc);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     if (rc != 0) { DeleteFileW(tmp.c_str()); return false; }
+
+    if (!looksLikeBundle(tmp)) { DeleteFileW(tmp.c_str()); return false; }
 
     if (!MoveFileExW(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING)) {
         DeleteFileW(tmp.c_str());
