@@ -664,8 +664,8 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
         std::string requestStr = requestJson.dump();
 
         // Логирование запроса (с ограничением длины для больших запросов).
-        // Для лога — ОКРЕМА замаскована копія. У process() ЗАВЖДИ йде оригінал:
-        // маскування тут не має жодного впливу на сам запит.
+        // Для лога — ОТДЕЛЬНАЯ замаскированная копия. В process() ВСЕГДА идёт оригинал:
+        // маскирование здесь никак не влияет на сам запрос.
         std::string logRequest = requestStr;
         try {
             nlohmann::json maskedReq = requestJson;
@@ -673,8 +673,8 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
             logRequest = maskedReq.dump();
         }
         catch (const std::exception& e) {
-            // Не вдалося замаскувати — краще не логувати запит узагалі, ніж злити пароль.
-            logRequest = "<запит не залоговано: помилка маскування: " + std::string(e.what()) + ">";
+            // Не удалось замаскировать — лучше не логировать запрос вообще, чем слить пароль.
+            logRequest = "<запрос не залогирован: ошибка маскирования: " + std::string(e.what()) + ">";
         }
 
         if (logRequest.length() > 2000) {

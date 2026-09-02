@@ -84,8 +84,8 @@ void AddinUAPKIConnect::RegisterMethods() {
 // Метод для вызова команды UAPKI
 bool AddinUAPKIConnect::CallUapki(const std::string& method, const std::string& paramsString, std::string& jsonResponse) {
     try {
-        // Параметри НЕ логуємо: вони містять password для OPEN. Нижче хелпер
-        // залогує вже замаскований запит цілком.
+        // Параметры НЕ логируем: они содержат password для OPEN. Ниже хелпер
+        // залогирует уже замаскированный запрос целиком.
         REPORT_DEBUG("Вызов UAPKIConnectHelper::ExecuteUapkiCommand: метод=" + method);
 
         // Вызываем метод UAPKIConnectHelper для выполнения команды

@@ -738,6 +738,7 @@ static bool case6_passwordNotLogged(const std::wstring& binDir, const std::wstri
 
     r = c.call("OPEN", buildOpen(p12));     // buildOpen кладе password "testpassword"
     printf("  OPEN: %s\n", r.c_str());
+    CHECK(errCode(r, j) == 0, "OPEN errorCode == 0");
 
     c.call("CLOSE", "");
     c.call("DEINIT", "");
