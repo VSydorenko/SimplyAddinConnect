@@ -999,13 +999,23 @@ static bool case8_kupynaSign(const std::wstring& binDir, const std::wstring& dat
 
     // Пастка ПРРО: алгоритм СЕРТИФІКАТА не визначає алгоритм ПІДПИСУ. Дивимось
     // саме в SignerInfo — UAPKI віддає його в signatureInfos[].
-    printf("  SignerInfo: signAlgo=%s digestAlgo=%s statusSignature=%s statusMessageDigest=%s\n",
+    // `status` — ХОЛІСТИЧНИЙ вердикт; друкуємо його для виміру, але CHECK на нього
+    // НЕ ставимо: підпис створено offline з ignoreCertStatus, ланцюг не валідується,
+    // тож не-TOTAL-VALID тут законний (кейс 5 на еталонах ДПС дає INDETERMINATE при
+    // statusSignature=VALID). Спершу вимір — правило потім.
+    printf("  SignerInfo: signAlgo=%s digestAlgo=%s statusSignature=%s statusMessageDigest=%s status=%s\n",
            si.value("signAlgo", std::string()).c_str(),
            si.value("digestAlgo", std::string()).c_str(),
            si.value("statusSignature", std::string()).c_str(),
-           si.value("statusMessageDigest", std::string()).c_str());
+           si.value("statusMessageDigest", std::string()).c_str(),
+           si.value("status", std::string()).c_str());
     CHECK(si.value("statusSignature", std::string()).rfind("VALID", 0) == 0,
           "statusSignature починається з VALID (регресія)");
+    // Самого statusSignature НЕДОСТАТНЬО: він лишається VALID навіть при пошкодженому
+    // вмісті (docs/integration-1c/uapki.md:181, 386-388). Підміну вмісту ловить саме
+    // statusMessageDigest.
+    CHECK(si.value("statusMessageDigest", std::string()) == "VALID",
+          "statusMessageDigest == VALID (саме це ловить підміну вмісту)");
     CHECK(si.value("signAlgo",   std::string()) == "1.2.804.2.1.1.1.1.3.6.1.1",
           "signAlgo у SignerInfo == ДСТУ4145 з Купиною-256");
     CHECK(si.value("digestAlgo", std::string()) == "1.2.804.2.1.1.1.1.2.2.1",
