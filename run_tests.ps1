@@ -594,7 +594,10 @@ foreach ($d in $cleanup) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyC
 Section 'ЕТАП L4-iit: арбітр ІІТ'
 
 $IitVerifyExe = Join-Path $BinRelease 'iit_verify_x86.exe'
-$SigOut       = Join-Path $env:TEMP 'sac_kupyna.p7s'
+# GUID-суфікс — як у решти тимчасових файлів цього рівня (nh_7_<guid>.out, iit_verify_<guid>.out):
+# фіксоване ім'я тут дало б гонку при двох одночасних прогонах гейта (x86+x64 паралельно) —
+# один процес міг би стерти/переписати файл, який у цю мить читає інший.
+$SigOut       = Join-Path $env:TEMP ("sac_kupyna_" + [guid]::NewGuid().ToString('N').Substring(0,8) + '.p7s')
 $CzoNeg       = Join-Path $DataDir 'czo\dstu-7564\enveloped\CAdES-BES\test.txt.p7s'
 
 # iit_verify друкує ОДИН рядок JSON у stdout, і в ньому кирилиця (desc/subject). Читаємо
