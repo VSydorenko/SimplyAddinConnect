@@ -204,6 +204,32 @@ struct Component {
         return out;
     }
 
+    // Виклик EnableLogging(logLevel, logFilePath) — базовий метод, успадкований
+    // усіма компонентами (AddInNative.cpp:90), функція з двома рядковими
+    // параметрами й bool-результатом. Від'ємний FindMethod — тихого успіху
+    // бути не може, повертаємо false.
+    bool enableLogging(const std::wstring& logLevel, const std::wstring& logFilePath) {
+        long idx = comp->FindMethod(L"EnableLogging");
+        if (idx < 0) { printf("FAIL: FindMethod('EnableLogging') = %ld\n", idx); return false; }
+
+        tVariant params[2];
+        tVarInit(&params[0]);
+        params[0].vt       = VTYPE_PWSTR;
+        params[0].pwstrVal = (WCHAR_T*)logLevel.c_str();
+        params[0].wstrLen  = (uint32_t)logLevel.size();
+        tVarInit(&params[1]);
+        params[1].vt       = VTYPE_PWSTR;
+        params[1].pwstrVal = (WCHAR_T*)logFilePath.c_str();
+        params[1].wstrLen  = (uint32_t)logFilePath.size();
+
+        tVariant ret;
+        tVarInit(&ret);
+        bool ok = comp->CallAsFunc(idx, &ret, params, 2);
+        if (!ok) { printf("FAIL: CallAsFunc('EnableLogging') повернув false\n"); return false; }
+        if (ret.vt != VTYPE_BOOL) { printf("FAIL: EnableLogging повернув неочікуваний тип vt=%d\n", (int)ret.vt); return false; }
+        return ret.bVal;
+    }
+
     void unload() {
         if (comp && destroy) destroy(&comp);
         comp = nullptr;
@@ -294,6 +320,12 @@ static bool readFileBytes(const std::wstring& path, std::vector<unsigned char>& 
               (ReadFile(hf, out.data(), (DWORD)out.size(), &rd, nullptr) && rd == out.size());
     CloseHandle(hf);
     return ok;
+}
+static bool readFileText(const std::wstring& path, std::string& out) {
+    std::vector<unsigned char> raw;
+    if (!readFileBytes(path, raw)) return false;
+    out.assign(raw.begin(), raw.end());
+    return true;
 }
 static std::string b64encode(const std::vector<unsigned char>& in) {
     static const char* T =
@@ -679,11 +711,56 @@ static bool case5_crossValidatePrro(const std::wstring& binDir, const std::wstri
 }
 
 // ========================================================================
+// КЕЙС 6 — пароль контейнера НЕ потрапляє у файл лога
+// ========================================================================
+// Логи пишуться через ИспользоватьЛогирование. Перевіряємо не наявність
+// маскування, а ВІДСУТНІСТЬ секрету: єдине, що справді має значення.
+static bool case6_passwordNotLogged(const std::wstring& binDir, const std::wstring& dataDir) {
+    printf("== Case 6: пароль не потрапляє в лог ==\n");
+    std::wstring dllName = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
+    std::wstring p12     = dataDir + L"\\test-diia.p12";
+    CHECK(pathExists(p12), "test-diia.p12 присутній");
+
+    wchar_t tmpDir[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tmpDir);
+    // PID у імені: паралельні прогони x86/x64 інакше затирали б лог одне одному.
+    std::wstring logPath = std::wstring(tmpDir) + L"sac_case6_" + std::to_wstring(GetCurrentProcessId()) + L".log";
+    DeleteFileW(logPath.c_str());
+
+    Component c;
+    if (!c.load(binDir + L"\\" + dllName)) return false;
+
+    CHECK(c.enableLogging(L"Trace", logPath), "лог увімкнено");
+
+    json j;
+    std::string r = c.call("INIT", buildInit(true));
+    CHECK(errCode(r, j) == 0, "INIT errorCode == 0");
+
+    r = c.call("OPEN", buildOpen(p12));     // buildOpen кладе password "testpassword"
+    printf("  OPEN: %s\n", r.c_str());
+
+    c.call("CLOSE", "");
+    c.call("DEINIT", "");
+    c.unload();                              // закрити лог перед читанням
+
+    std::string logText;
+    CHECK(readFileText(logPath, logText), "лог прочитано");
+    CHECK(!logText.empty(), "лог не порожній");
+    CHECK(logText.find("testpassword") == std::string::npos,
+          "пароль ВІДСУТНІЙ у лозі");
+    CHECK(logText.find("\"password\":\"***\"") != std::string::npos ||
+          logText.find("\"password\": \"***\"") != std::string::npos,
+          "у лозі є замаскований password");
+    DeleteFileW(logPath.c_str());
+    return true;
+}
+
+// ========================================================================
 // main / CLI
 // ========================================================================
 static void usage() {
     printf(
-        "native_host <case 1..5> [mainDll] [dataDir] [binDir] [prroDir]\n"
+        "native_host <case 1..6> [mainDll] [dataDir] [binDir] [prroDir]\n"
         "  case     : номер сценарію (окремий процес на кейс — INIT раз на процес)\n"
         "  mainDll  : шлях до головної DLL (деф.: <binDir>/SimplyAddinConnectWin"
 #ifdef _WIN64
@@ -708,7 +785,7 @@ int main() {
 
     if (argc < 2) { usage(); LocalFree(wargv); return 2; }
     int kase = _wtoi(wargv[1]);
-    if (kase < 1 || kase > 5) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
+    if (kase < 1 || kase > 6) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
 
     std::wstring binDir  = argAt(4)[0] ? std::wstring(argAt(4)) : u8to16(HOST_BIN_DIR);
     std::wstring dataDir = argAt(3)[0] ? std::wstring(argAt(3)) : u8to16(HOST_DATA_DIR);
@@ -742,6 +819,7 @@ int main() {
             case 3: pass = case3_explicitDir(binDir);              break;
             case 4: pass = case4_fullChain(binDir, dataDir);       break;
             case 5: pass = case5_crossValidatePrro(binDir, prroDir, skipped); break;
+            case 6: pass = case6_passwordNotLogged(binDir, dataDir);  break;
         }
     } catch (const std::exception& e) {
         printf("FATAL: незловлений виняток: %s\n", e.what());

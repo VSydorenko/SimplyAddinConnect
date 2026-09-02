@@ -611,7 +611,6 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
     try {
         // Логируем начало выполнения операции
         NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "Начало выполнения команды UAPKI: " + method);
-        NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper", "Параметры команды UAPKI: " + paramsString);
 
         // Формируем JSON-запрос с использованием nlohmann/json
         nlohmann::json requestJson;
@@ -664,11 +663,24 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
         // Преобразуем JSON в строку
         std::string requestStr = requestJson.dump();
 
-        // Логирование запроса (с ограничением длины для больших запросов)
-        if (requestStr.length() > 2000) {
-            NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "UAPKI Request (сокращенный): " + requestStr.substr(0, 2000) + "...");
+        // Логирование запроса (с ограничением длины для больших запросов).
+        // Для лога — ОКРЕМА замаскована копія. У process() ЗАВЖДИ йде оригінал:
+        // маскування тут не має жодного впливу на сам запит.
+        std::string logRequest = requestStr;
+        try {
+            nlohmann::json maskedReq = requestJson;
+            MaskPasswords(maskedReq);
+            logRequest = maskedReq.dump();
+        }
+        catch (const std::exception& e) {
+            // Не вдалося замаскувати — краще не логувати запит узагалі, ніж злити пароль.
+            logRequest = "<запит не залоговано: помилка маскування: " + std::string(e.what()) + ">";
+        }
+
+        if (logRequest.length() > 2000) {
+            NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "UAPKI Request (сокращенный): " + logRequest.substr(0, 2000) + "...");
         } else {
-            NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "UAPKI Request: " + requestStr);
+            NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "UAPKI Request: " + logRequest);
         }
 
         // Выполнение запроса через UAPKI API с использованием функций из библиотеки

@@ -84,15 +84,10 @@ void AddinUAPKIConnect::RegisterMethods() {
 // Метод для вызова команды UAPKI
 bool AddinUAPKIConnect::CallUapki(const std::string& method, const std::string& paramsString, std::string& jsonResponse) {
     try {
-        // Логирование вызова с ограничением длины параметров
-        std::string logParams;
-        if (paramsString.length() > 500) {
-            logParams = paramsString.substr(0, 500) + "...";
-            REPORT_DEBUG("Вызов UAPKIConnectHelper::ExecuteUapkiCommand: метод=" + method + ", сокращенные параметры=" + logParams);
-        } else {
-            REPORT_DEBUG("Вызов UAPKIConnectHelper::ExecuteUapkiCommand: метод=" + method + ", параметры=" + paramsString);
-        }
-        
+        // Параметри НЕ логуємо: вони містять password для OPEN. Нижче хелпер
+        // залогує вже замаскований запит цілком.
+        REPORT_DEBUG("Вызов UAPKIConnectHelper::ExecuteUapkiCommand: метод=" + method);
+
         // Вызываем метод UAPKIConnectHelper для выполнения команды
         bool result = UAPKIConnectHelper::ExecuteUapkiCommand(method, paramsString, jsonResponse);
         
