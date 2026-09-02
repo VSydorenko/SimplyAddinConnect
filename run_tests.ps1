@@ -11,14 +11,21 @@
             над LoopbackTransport + TCP-echo смоук). Не залежить від UAPKI —
             збирається завжди при BUILD_TESTS=ON. Задокументовані [SKIP] (напр.
             ComRoundtrip: потрібна пара com0com) — це НЕ FAIL.
-      L2/L3 — native_host.exe: e2e поверх ГОЛОВНОЇ DLL через IComponentBase (кейси 1..4),
-            крос-валідація ПРРО (кейс 5) — лише за наявності еталонів.
+      L2/L3 — native_host.exe: e2e поверх ГОЛОВНОЇ DLL через IComponentBase (кейси 1..4, 6),
+            крос-валідація ПРРО (кейс 5) — лише за наявності еталонів, реальні контейнери
+            КНЕДП (кейс 7) — лише за наявності tests/data/local-keys.json (особистий КЕП,
+            поза git). Обидва — SKIP (exit 3), не PASS, якщо вхідних даних немає.
+      L4-iit — незалежний арбітр: наш купинний підпис (кейс 8) очима нативної EUSignCP.dll
+            (iit_verify_x86.exe, ціль лише x86). Негативний контроль — еталон ЦЗО з
+            ТЕСТОВИМ ЦСК мусить бути ВІДХИЛЕНИЙ саме з code=51 ("Сертифікат не знайдено");
+            без нього зелений позитив може означати, що арбітр не піднявся й завжди каже
+            "валідно". На x64 — SKIP (арбітр лише x86), не PASS.
 
     Запуск:  powershell -ExecutionPolicy Bypass -File run_tests.ps1 [x64|x86] [-NoUapki]
     Дефолт архітектури — x64. Ненульовий код виходу, якщо будь-що впало.
 
     Режим -NoUapki: збирає/ганяє лише ядро без крипто-стеку (core_selftest L0.5 +
-    wire_selftest L0.6). Провайдер (L0.2), L1 та L2/L3 → SKIP (не FAIL); збірка
+    wire_selftest L0.6). Провайдер (L0.2), L1, L2/L3 та L4-iit → SKIP (не FAIL); збірка
     БЕЗ -DBUILD_WITH_UAPKI=ON. Головна DLL без UAPKI все одно експортує рівно 3
     символи (L0.1 лишається активним).
 
@@ -524,7 +531,10 @@ else {
     # native_host case4/5 указують UAPKI CerStore на dataDir\certs. CerStore іменує серти за
     # вмістом (thumbprint) — tests/data/certs зберігаються ВЖЕ в канонічній формі upstream,
     # тож повторне сканування ідемпотентне (не перейменовує, git-diff не зʼявляється).
-    foreach ($kase in 1..4) {
+    # Кейс 6 (пароль не в лозі) не потребує SKIP-семантики — завжди PASS/FAIL, тож іде в
+    # тому ж циклі, що й 1..4. Кейс 5 (діапазон ПРРО) навмисно НЕ в переліку: йому потрібен
+    # окремий аргумент-каталог і власне трактування exit 3, тому він — окремим блоком нижче.
+    foreach ($kase in 1,2,3,4,6) {
         $argList = @("$kase", "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"")
         $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_${kase}_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
         $p = Start-Process -FilePath $NativeHostExe -ArgumentList $argList `
@@ -557,10 +567,127 @@ else {
         else                       { Add-Result 'L2/L3' 'native_host case 5' 'FAIL' "exit=$($p.ExitCode) $lastLine" }
         Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
     }
+
+    # Кейс 7 — реальні контейнери КНЕДП. Власна SKIP-семантика (як у кейса 5): local-keys.json —
+    # особистий КЕП розробника, у git не тримається (.gitignore), тож на чужій машині його
+    # немає — exit 3 і це НЕ FAIL. Шлях у деталі SKIP навмисний: хто дивиться в таблицю,
+    # має отримати готову дію («покласти файл сюди»), а не йти в код за поясненням.
+    $localKeysPath = Join-Path $DataDir 'local-keys.json'
+    $argList = @('7', "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"")
+    $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_7_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+    $p = Start-Process -FilePath $NativeHostExe -ArgumentList $argList `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+    $txt = if (Test-Path $outF) { Get-Content -Raw $outF } else { '' }
+    $lastLine = ($txt -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 1)
+    if     ($p.ExitCode -eq 0) { Add-Result 'L2/L3' 'native_host case 7' 'PASS' $lastLine }
+    elseif ($p.ExitCode -eq 3) { Add-Result 'L2/L3' 'native_host case 7' 'SKIP' "$localKeysPath відсутній або поле password порожнє" }
+    else                       { Add-Result 'L2/L3' 'native_host case 7' 'FAIL' "exit=$($p.ExitCode) $lastLine" }
+    Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
 }
 
 # --- Прибирання тимч. каталогів ---
 foreach ($d in $cleanup) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }
+
+# =====================================================================
+# ЕТАП L4-iit: незалежний арбітр — наш підпис очима чужого двигуна
+# =====================================================================
+Section 'ЕТАП L4-iit: арбітр ІІТ'
+
+$IitVerifyExe = Join-Path $BinRelease 'iit_verify_x86.exe'
+$SigOut       = Join-Path $env:TEMP 'sac_kupyna.p7s'
+$CzoNeg       = Join-Path $DataDir 'czo\dstu-7564\enveloped\CAdES-BES\test.txt.p7s'
+
+# iit_verify друкує ОДИН рядок JSON у stdout, і в ньому кирилиця (desc/subject). Читаємо
+# явно як UTF-8 через .NET, а не Get-Content зі стандартним кодуванням PS 5.1 — інакше
+# desc у таблиці підсумку буде нечитабельним, а саме desc несе причину відхилення.
+function Invoke-IitVerify([string]$sigPath) {
+    $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("iit_verify_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+    $p = Start-Process -FilePath $IitVerifyExe -ArgumentList "`"$sigPath`"" `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+    $raw = ''
+    if (Test-Path $outF) { $raw = [System.IO.File]::ReadAllText($outF, [System.Text.Encoding]::UTF8).Trim() }
+    Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
+    $json = $null
+    try { $json = $raw | ConvertFrom-Json -ErrorAction Stop } catch {}
+    [pscustomobject]@{ ExitCode = $p.ExitCode; Raw = $raw; Json = $json }
+}
+
+if ($NoUapki) {
+    Add-Result 'L4-iit' 'арбітр ІІТ' 'SKIP' 'режим -NoUapki: підпис не створюється'
+}
+elseif (-not (Test-Path $IitVerifyExe)) {
+    Add-Result 'L4-iit' 'арбітр ІІТ' 'SKIP' 'немає iit_verify_x86.exe (ціль збирається лише в x86)'
+}
+else {
+    # --- Негативний контроль: еталон ЦЗО підписаний ТЕСТОВИМ ЦСК і має бути ВІДХИЛЕНИЙ.
+    #     Без цього "все зелено" може означати, що арбітр не піднявся й завжди каже "валідно".
+    #     Перевіряємо не лише exit 1, а й конкретний code=51 ("Сертифікат не знайдено"):
+    #     якщо тестовий ЦСК колись потрапить до довіреного бандла, цей контроль ТИХО
+    #     перевернеться на VALID — маємо це зловити, а не просто зрадіти exit-коду.
+    if (-not (Test-Path $CzoNeg)) {
+        Add-Result 'L4-iit' 'негативний контроль' 'SKIP' "немає еталона czo: $CzoNeg"
+    }
+    else {
+        $neg = Invoke-IitVerify $CzoNeg
+        $negCode = if ($neg.Json) { $neg.Json.code } else { $null }
+        $negDesc = if ($neg.Json) { $neg.Json.desc } else { $null }
+        if ($neg.ExitCode -eq 3) {
+            Add-Result 'L4-iit' 'негативний контроль' 'SKIP' "арбітр недоступний: $($neg.Raw)"
+        }
+        elseif ($neg.ExitCode -eq 1 -and $negCode -eq 51) {
+            Add-Result 'L4-iit' 'негативний контроль' 'PASS' "еталон тестового ЦСК відхилено: code=51 ($negDesc), як і має бути"
+        }
+        elseif ($neg.ExitCode -eq 1) {
+            # Відхилено, але з іншим кодом, ніж очікували (напр. 49 — інфраструктурний збій
+            # файлового сховища СВС, а не 51 — чесне "сертифікат не знайдено"). Це FAIL:
+            # негативний контроль тримається саме на code=51, розбіжність — привід розібратись.
+            Add-Result 'L4-iit' 'негативний контроль' 'FAIL' "відхилено, але code=$negCode ($negDesc) — очікувався 51: $($neg.Raw)"
+        }
+        else {
+            Add-Result 'L4-iit' 'негативний контроль' 'FAIL' "очікувався exit=1 code=51, отримано exit=$($neg.ExitCode) code=$negCode ($negDesc): $($neg.Raw)"
+        }
+    }
+
+    # --- Позитив: наш купинний підпис (кейс 8) має бути ПРИЙНЯТИЙ чужим двигуном.
+    if (-not (Test-Path $NativeHostExe)) {
+        Add-Result 'L4-iit' 'наш підпис' 'BLOCKED' "немає native_host: $NativeHostExe — зберіть build_project.ps1 -WithTests"
+    }
+    else {
+        Remove-Item $SigOut -ErrorAction SilentlyContinue
+        # argv: <case> mainDll dataDir binDir prroDir outSig — prroDir кейсу 8 не потрібен,
+        # але позиційний плейсхолдер обов'язковий, інакше outSig зʼїде на місце prroDir.
+        $argList = @('8', "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"", '""', "`"$SigOut`"")
+        $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_8_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+        $p = Start-Process -FilePath $NativeHostExe -ArgumentList $argList `
+                -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+        $signTxt = ''
+        if (Test-Path $outF) { $signTxt = Get-Content -Raw $outF }
+        Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
+        $signRc = $p.ExitCode
+        $signLastLine = ($signTxt -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 1)
+        if ($signRc -eq 3) {
+            Add-Result 'L4-iit' 'наш підпис' 'SKIP' 'немає ключа jks-kupyna у local-keys.json'
+        }
+        elseif ($signRc -ne 0 -or -not (Test-Path $SigOut)) {
+            Add-Result 'L4-iit' 'наш підпис' 'FAIL' "кейс 8 не створив підпис (exit=$signRc) $signLastLine"
+        }
+        else {
+            $pos = Invoke-IitVerify $SigOut
+            $posCode = if ($pos.Json) { $pos.Json.code } else { $null }
+            $posDesc = if ($pos.Json) { $pos.Json.desc } else { $null }
+            if ($pos.ExitCode -eq 0) {
+                Add-Result 'L4-iit' 'наш підпис' 'PASS' "ІІТ прийняв: $($pos.Raw)"
+            }
+            elseif ($pos.ExitCode -eq 3) {
+                Add-Result 'L4-iit' 'наш підпис' 'SKIP' "арбітр недоступний: $($pos.Raw)"
+            }
+            else {
+                Add-Result 'L4-iit' 'наш підпис' 'FAIL' "ІІТ відхилив: exit=$($pos.ExitCode) code=$posCode ($posDesc): $($pos.Raw)"
+            }
+        }
+        Remove-Item $SigOut -ErrorAction SilentlyContinue
+    }
+}
 
 # =====================================================================
 # ПІДСУМОК
