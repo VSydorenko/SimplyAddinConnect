@@ -350,6 +350,43 @@ static std::string b64encode(const std::vector<unsigned char>& in) {
     return out;
 }
 
+// Зворотне до b64encode: base64 -> байти. Пробіли й переноси ігноруються,
+// сторонній символ -> false (щоб зіпсована відповідь не пішла у файл мовчки).
+static bool b64decode(const std::string& b64, std::vector<unsigned char>& out) {
+    auto val = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    out.clear();
+    out.reserve((b64.size() / 4) * 3);
+    int acc = 0, nbits = 0;
+    for (char c : b64) {
+        if (c == '=' || c == '\r' || c == '\n' || c == ' ' || c == '\t') continue;
+        const int v = val(c);
+        if (v < 0) return false;
+        acc = (acc << 6) | v;
+        nbits += 6;
+        if (nbits >= 8) {
+            nbits -= 8;
+            out.push_back((unsigned char)((acc >> nbits) & 0xFF));
+        }
+    }
+    return true;
+}
+static bool writeFileBytes(const std::wstring& path, const std::vector<unsigned char>& data) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    const BOOL ok = WriteFile(h, data.data(), (DWORD)data.size(), &written, nullptr);
+    CloseHandle(h);
+    return ok != 0 && written == data.size();
+}
+
 // Макрос перевірки: провал -> друк і повернення false з кейса.
 #define CHECK(cond, msg) do { \
     if (!(cond)) { printf("  FAIL: %s\n", (msg)); return false; } \
@@ -845,11 +882,160 @@ static bool case7_realContainers(const std::wstring& binDir, const std::wstring&
 }
 
 // ========================================================================
+// КЕЙС 8 — купинний підпис + структурний контракт ПРРО
+// ========================================================================
+// ДПС забороняє: content-time-stamp, CRL/OCSP, сертифікати видавця.
+// ДПС вимагає: вкладений сертифікат підписувача, дані всередині (enveloping).
+// OID дивимось у SignerInfo, а НЕ в сертифікаті: сертифікат старого зразка
+// цілком може підписувати Купиною (живий ticket.p7s ДПС саме такий).
+static bool case8_kupynaSign(const std::wstring& binDir, const std::wstring& dataDir,
+                             const std::wstring& outSig, bool& skipped) {
+    printf("== Case 8: купинний підпис + контракт ПРРО ==\n");
+    skipped = false;
+
+    std::vector<LocalKey> keys;
+    std::string err;
+    if (!LoadLocalKeys(dataDir + L"\\local-keys.json", keys, err)) {
+        printf("FAIL: конфіг зіпсований: %s\n", err.c_str());
+        return false;                       // конфіг є -> наміри заявлені -> FAIL
+    }
+    const LocalKey* k = FindLocalKey(keys, "jks-kupyna");
+    if (!k) {
+        printf("SKIP (немає ключа 'jks-kupyna' у local-keys.json)\n");
+        skipped = true;
+        return true;
+    }
+
+    std::wstring dllName = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
+    Component c;
+    if (!c.load(binDir + L"\\" + dllName)) return false;
+
+    json j;
+    std::string r = c.call("INIT", buildInit(true));
+    CHECK(errCode(r, j) == 0, "INIT errorCode == 0");
+
+    { json op;
+      op["provider"] = "PKCS12";
+      op["storage"]  = k->path;
+      op["password"] = k->password;         // пароль НЕ друкуємо — це особистий КЕП
+      op["mode"]     = "RO";
+      r = c.call("OPEN", op.dump()); }
+    CHECK(errCode(r, j) == 0, "OPEN errorCode == 0");
+
+    // Діагностика CERT_NOT_FOUND: скільки сертифікатів контейнер віддав у cer-store.
+    // Друкуємо ЛИШЕ кількості — вміст особистого КЕП у консоль не виносимо.
+    { json lp; lp["storage"] = true;
+      std::string rs = c.call("LIST_CERTS", lp.dump());
+      json js; const long ecs = errCode(rs, js);
+      size_t inStorage = (ecs == 0 && js["result"].contains("certIds")) ? js["result"]["certIds"].size() : 0;
+      std::string rc = c.call("LIST_CERTS", "{}");
+      json jc; const long ecc = errCode(rc, jc);
+      size_t inCache = (ecc == 0 && jc["result"].contains("certIds")) ? jc["result"]["certIds"].size() : 0;
+      printf("  LIST_CERTS: у контейнері=%zu (errorCode=%ld), у кеші=%zu (errorCode=%ld)\n",
+             inStorage, ecs, inCache, ecc); }
+
+    r = c.call("KEYS", "");
+    CHECK(errCode(r, j) == 0, "KEYS errorCode == 0");
+    CHECK(j["result"].contains("keys") && j["result"]["keys"].is_array()
+          && !j["result"]["keys"].empty(), "result.keys непорожній");
+    std::string keyId  = j["result"]["keys"][0].value("id", std::string());
+    std::string keyId2 = j["result"]["keys"][0].value("keyId2", std::string());
+    CHECK(!keyId.empty(), "id ключа отримано");
+    printf("  keyId2 %s\n", keyId2.empty() ? "відсутній" : "присутній (купинний SKI)");
+
+    // ПАСТКА КУПИНИ. У ДСТУ-ключа ДВА ідентифікатори: `id` — ГОСТ-34311-геш
+    // відкритого ключа, `keyId2` — Купина-256 того самого ключа. Сертифікат
+    // нового зразка несе в розширенні SubjectKeyIdentifier саме КУПИННИЙ геш,
+    // а UAPKI шукає сертифікат підписувача рівно за тим id, яким обрано ключ
+    // (cer-store порівнює з SKI сертифіката). Тож SELECT_KEY за звичним `id`
+    // ключ обирає успішно, але сертифікат до нього НЕ знаходить — і SIGN з
+    // includeCert:true падає з CERT_NOT_FOUND (4161), хоча сертифікат лежить
+    // у контейнері й уже завантажений у кеш (див. LIST_CERTS вище).
+    // Правильний ідентифікатор для купинного ключа — keyId2.
+    auto selectKey = [&](const std::string& id) {
+        json sp; sp["id"] = id;
+        r = c.call("SELECT_KEY", sp.dump());
+        return errCode(r, j) == 0 && j["result"].contains("certId");
+    };
+    bool selected = selectKey(keyId);
+    if (!selected && !keyId2.empty()) {
+        printf("  SELECT_KEY за `id` сертифіката не дав — пробуємо купинний keyId2\n");
+        selected = selectKey(keyId2);
+    }
+    CHECK(errCode(r, j) == 0, "SELECT_KEY errorCode == 0");
+    CHECK(selected, "SELECT_KEY повернув certId (сертифікат підписувача знайдено за SKI)");
+
+    // Купинний підпис у профілі ПРРО (офлайн: без позначки часу).
+    json sp2;
+    sp2["signatureFormat"]  = "CAdES-BES";
+    sp2["signAlgo"]         = "1.2.804.2.1.1.1.1.3.6.1.1";   // ДСТУ4145 + Купина-256
+    sp2["detachedData"]     = false;                          // enveloping
+    sp2["includeCert"]      = true;
+    sp2["includeTime"]      = true;
+    sp2["includeContentTS"] = false;
+    json d; d["id"] = "doc-0"; d["bytes"] = DATA_TBS_B64;
+    json p;
+    p["signParams"] = sp2;
+    p["dataTbs"]    = json::array({ d });
+    p["options"]["ignoreCertStatus"] = true;
+
+    r = c.call("SIGN", p.dump());
+    printf("  SIGN: %s\n", r.substr(0, 300).c_str());
+    // Перший купинний підпис у проєкті: невдача цінна не менше за вдачу, тож
+    // фіксуємо відповідь ПОВНІСТЮ, а не обрізану до 300 символів.
+    if (errCode(r, j) != 0) printf("  SIGN (повна відповідь): %s\n", r.c_str());
+    CHECK(errCode(r, j) == 0, "SIGN errorCode == 0 (КУПИННИЙ ПІДПИС)");
+    std::string sig = j["result"]["signatures"][0].value("bytes", std::string());
+    CHECK(!sig.empty(), "підпис не порожній");
+
+    // VERIFY нашим двигуном — РЕГРЕСІЙНА перевірка, не доказ коректності:
+    // наш код підтверджує наш код. Доказ дає арбітр ІІТ (рівень L4-iit).
+    { json vp; vp["signature"]["bytes"] = sig; r = c.call("VERIFY", vp.dump()); }
+    printf("  VERIFY: %s\n", r.substr(0, 600).c_str());
+    CHECK(errCode(r, j) == 0, "VERIFY errorCode == 0 (регресія)");
+    auto& res = j["result"];
+    CHECK(res.contains("signatureInfos") && !res["signatureInfos"].empty(), "signatureInfos є");
+    auto& si = res["signatureInfos"][0];
+
+    // Пастка ПРРО: алгоритм СЕРТИФІКАТА не визначає алгоритм ПІДПИСУ. Дивимось
+    // саме в SignerInfo — UAPKI віддає його в signatureInfos[].
+    printf("  SignerInfo: signAlgo=%s digestAlgo=%s statusSignature=%s statusMessageDigest=%s\n",
+           si.value("signAlgo", std::string()).c_str(),
+           si.value("digestAlgo", std::string()).c_str(),
+           si.value("statusSignature", std::string()).c_str(),
+           si.value("statusMessageDigest", std::string()).c_str());
+    CHECK(si.value("statusSignature", std::string()).rfind("VALID", 0) == 0,
+          "statusSignature починається з VALID (регресія)");
+    CHECK(si.value("signAlgo",   std::string()) == "1.2.804.2.1.1.1.1.3.6.1.1",
+          "signAlgo у SignerInfo == ДСТУ4145 з Купиною-256");
+    CHECK(si.value("digestAlgo", std::string()) == "1.2.804.2.1.1.1.1.2.2.1",
+          "digestAlgo у SignerInfo == Купина-256");
+
+    // Контракт ПРРО
+    CHECK(res.contains("certIds") && !res["certIds"].empty(), "сертифікат підписувача вкладено");
+    CHECK(!si.contains("contentTS"),      "content-time-stamp ВІДСУТНІЙ (ДПС забороняє)");
+    CHECK(!si.contains("revocationRefs"), "revocationRefs відсутні (ДПС забороняє)");
+    CHECK(!si.contains("certValues"),     "certValues відсутні (ДПС забороняє)");
+    CHECK(!si.contains("certificateRefs"),"certificateRefs відсутні (ДПС забороняє)");
+
+    // Записати підпис для арбітра
+    if (!outSig.empty()) {
+        std::vector<unsigned char> raw;
+        CHECK(b64decode(sig, raw), "підпис декодовано з base64");
+        CHECK(writeFileBytes(outSig, raw), "підпис збережено для арбітра");
+        printf("  підпис записано: %s (%zu байт)\n", w2u8(outSig).c_str(), raw.size());
+    }
+
+    c.call("CLOSE", ""); c.call("DEINIT", ""); c.unload();
+    return true;
+}
+
+// ========================================================================
 // main / CLI
 // ========================================================================
 static void usage() {
     printf(
-        "native_host <case 1..7> [mainDll] [dataDir] [binDir] [prroDir]\n"
+        "native_host <case 1..8> [mainDll] [dataDir] [binDir] [prroDir] [outSig]\n"
         "  case     : номер сценарію (окремий процес на кейс — INIT раз на процес)\n"
         "  mainDll  : шлях до головної DLL (деф.: <binDir>/SimplyAddinConnectWin"
 #ifdef _WIN64
@@ -860,7 +1046,8 @@ static void usage() {
         ".dll)\n"
         "  dataDir  : каталог тест-даних test-diia.p12/certs/crls (деф. compile-time)\n"
         "  binDir   : каталог з провайдером cm-pkcs12_*.dll (деф. compile-time)\n"
-        "  prroDir  : каталог еталонів ДФС для кейса 5 (або env PRRO_DOCS_DIR)\n");
+        "  prroDir  : каталог еталонів ДФС для кейса 5 (або env PRRO_DOCS_DIR)\n"
+        "  outSig   : файл, куди кейс 8 запише створений підпис (вхід для арбітра ІІТ)\n");
 }
 
 int main() {
@@ -874,7 +1061,7 @@ int main() {
 
     if (argc < 2) { usage(); LocalFree(wargv); return 2; }
     int kase = _wtoi(wargv[1]);
-    if (kase < 1 || kase > 7) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
+    if (kase < 1 || kase > 8) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
 
     std::wstring binDir  = argAt(4)[0] ? std::wstring(argAt(4)) : u8to16(HOST_BIN_DIR);
     std::wstring dataDir = argAt(3)[0] ? std::wstring(argAt(3)) : u8to16(HOST_DATA_DIR);
@@ -889,18 +1076,20 @@ int main() {
         wchar_t buf[MAX_PATH]; DWORD n = GetEnvironmentVariableW(L"PRRO_DOCS_DIR", buf, MAX_PATH);
         if (n > 0 && n < MAX_PATH) prroDir = buf;
     }
+    // outSig: argv[6] — куди кейс 8 кладе створений підпис (необов'язковий)
+    std::wstring outSig = argAt(6);
     LocalFree(wargv);
 
     printf("native_host: case=%d\n  mainDll=%s\n  dataDir=%s\n  binDir=%s\n",
            kase, w2u8(mainDll).c_str(), w2u8(dataDir).c_str(), w2u8(binDir).c_str());
 
     if (binDir.empty() && kase != 1 && kase != 2) {
-        // кейси 3/4/5/7 вантажать DLL із binDir
+        // кейси 3/4/5/6/7/8 вантажать DLL із binDir
         if (mainDll.empty()) { printf("FAIL: не задано binDir/mainDll\n"); return 2; }
     }
 
     bool pass = false;
-    bool skipped = false;   // кейси 5 і 7: вхідних даних немає -> це НЕ покриття (exit 3)
+    bool skipped = false;   // кейси 5, 7, 8: вхідних даних немає -> це НЕ покриття (exit 3)
     try {
         switch (kase) {
             case 1: pass = case1_resourceDeploy(mainDll);          break;
@@ -910,6 +1099,7 @@ int main() {
             case 5: pass = case5_crossValidatePrro(binDir, prroDir, skipped); break;
             case 6: pass = case6_passwordNotLogged(binDir, dataDir);  break;
             case 7: pass = case7_realContainers(binDir, dataDir, skipped); break;
+            case 8: pass = case8_kupynaSign(binDir, dataDir, outSig, skipped); break;
         }
     } catch (const std::exception& e) {
         printf("FATAL: незловлений виняток: %s\n", e.what());
@@ -922,7 +1112,7 @@ int main() {
     // exit 3 = SKIPPED (кейс не виконувався через відсутність вхідних даних). Окремий код
     // потрібен, щоб оркестратор не малював PASS там, де нічого не перевірялось.
     if (skipped) {
-        printf("\n=== Case %d: SKIPPED (немає вхідних еталонів) ===\n", kase);
+        printf("\n=== Case %d: SKIPPED (немає вхідних даних) ===\n", kase);
         return 3;
     }
     printf("\n=== Case %d: %s ===\n", kase, pass ? "PASS" : "FAIL");
