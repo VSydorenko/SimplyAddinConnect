@@ -19,13 +19,19 @@
 /// BUILD_WITH_UAPKI: UAPKI цьому арбітру не потрібен — у незалежності від нашого
 /// крипто-стека весь його сенс.
 ///
-/// СТАН. Задача 5 — це КАРКАС: пошук бібліотеки, прив'язка експортів і чесний SKIP.
-/// Власне перевірка підпису — задача 6, сховище довіри — задача 7.
+/// ІЗОЛЯЦІЯ. Усі налаштування бібліотеки перенаправлено у власну гілку реєстру
+/// HKCU\Software\SimplyAddinConnect\IitVerify (EUSetSettingsRegPath ДО EUInitialize),
+/// а сховище довіри — у власний каталог %LOCALAPPDATA%\SimplyAddinConnect\iit-store.
+/// Інакше офлайн-режим і файлове сховище цього тесту приземлилися б на ІНСТАЛЯЦІЮ
+/// ІІТ КОРИСТУВАЧА: ми змінили б чужий софт побічним ефектом власного прогону.
 ///
-/// КОДИ ВИХОДУ (контракт для задач 6-11, не міняти):
+/// КОДИ ВИХОДУ (контракт для задач 8-11, не міняти):
 ///   0 — підпис валідний | 1 — підпис невалідний | 2 — помилка використання/внутрішня
 ///   3 — SKIP (немає ІІТ або сховища довіри).
-/// stdout — РІВНО ОДИН рядок JSON: {"status":...,"detail":...,"code":...}.
+/// stdout — РІВНО ОДИН рядок JSON, у двох формах:
+///   вердикт  : {"status":"VALID|INVALID","code":…,"desc":…,"subject":…,
+///               "timeStamp":true|false,"contentLen":…}
+///   службовий: {"status":"SKIP|ERROR","detail":…,"code":…}
 ///
 
 #include <windows.h>
@@ -34,7 +40,7 @@
 #include <string>
 #include <vector>
 
-#include "support/IitStore.h"  // сховище довіри ІІТ у %LOCALAPPDATA% (задача 7); виклик — задача 6
+#include "support/IitStore.h"  // сховище довіри ІІТ у %LOCALAPPDATA%: кеш бандла ЦЗО + маркер імпорту
 
 #pragma comment(lib, "shell32.lib")  // CommandLineToArgvW
 
@@ -91,8 +97,8 @@ typedef DWORD (WINAPI *PFN_SetModeSettings)(BOOL);  // настанова ІІТ
 //   BOOL bAutoDownloadCRLs, BOOL bSaveLoadedCerts, DWORD dwExpireTime).
 // ВІСІМ аргументів. Восьмий (час зберігання стану перевіреного сертифіката, секунди)
 // легко не помітити: із сімома викликана сторона зняла б зі стека 32 байти проти
-// покладених 28. Задача 7 має ставити dwExpireTime = 30 (аналог ocspResponseExpireTime
-// у віджеті ЦЗО); при bCheckCRLs=FALSE та офлайні значення ні на що не впливає, але
+// покладених 28. Ставимо dwExpireTime = 30 (аналог ocspResponseExpireTime у віджеті
+// ЦЗО); при bCheckCRLs=FALSE та офлайні значення ні на що не впливає, але
 // випадкове число тут неприйнятне.
 typedef DWORD (WINAPI *PFN_SetFileStoreSettings)(char*, BOOL, BOOL, BOOL, BOOL, BOOL, BOOL, DWORD);
 // Настанова ІІТ: EUSaveCertificates(PBYTE pbCertificates, DWORD dwCertificatesLength).
@@ -145,6 +151,24 @@ static std::string w2u8(const std::wstring& w) {
     return s;
 }
 
+/// Рядки, які ПОВЕРТАЄ бібліотека ІІТ (pszSubjCN, EUGetErrorLangDesc), — це PSTR
+/// без оголошеного кодування; на Windows-складанні вони приходять у системній
+/// ANSI-сторінці (для української локалі — CP1251), а наш вивід за контрактом
+/// UTF-8. Без перекодування кириличний опис помилки перетворився б на сміття
+/// рівно там, де він найпотрібніший: у першому вимірі реальних кодів ІІТ.
+/// Розрізняємо надійно й без здогадів: якщо байти вже валідний UTF-8 (сюди ж
+/// потрапляє чистий ASCII) — лишаємо як є, інакше читаємо їх як ANSI.
+static std::string toUtf8Loose(const char* s) {
+    if (!s || !*s) return std::string();
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, nullptr, 0) > 0)
+        return std::string(s);                      // вже валідний UTF-8
+    const int n = MultiByteToWideChar(CP_ACP, 0, s, -1, nullptr, 0);
+    if (n <= 1) return std::string(s);              // не змогли розібрати — краще як є, ніж нічого
+    std::wstring w((size_t)n - 1, L'\0');
+    MultiByteToWideChar(CP_ACP, 0, s, -1, &w[0], n);
+    return w2u8(w);
+}
+
 /// Екранування рядка для JSON: шляхи Windows містять зворотні слеші, а вони
 /// без екранування зробили б вивід невалідним JSON — і гейт (задача 9) мовчки
 /// не розібрав би вердикт арбітра.
@@ -175,6 +199,23 @@ static std::string jsonEscape(const std::string& s) {
 static void jsonOut(const char* status, const std::string& detail, long code) {
     std::printf("{\"status\":\"%s\",\"detail\":\"%s\",\"code\":%ld}\n",
                 status, jsonEscape(detail).c_str(), code);
+    std::fflush(stdout);
+}
+
+/// Вердикт арбітра — окремий, багатший рядок, ніж службовий jsonOut.
+/// Поле desc ОБОВ'ЯЗКОВЕ. Числових кодів помилок нативної бібліотеки ІІТ ми ще не
+/// знаємо: «Сертифікат не знайдено(51)» — число з ВЕБ-віджета ЦЗО, у якого власна
+/// нумерація поверх asm.js-збірки, і його тотожність нативним кодам не доведена.
+/// Тому не вгадуємо число, а робимо вивід самопояснювальним: із desc одразу видно,
+/// це чесне «сертифікат не знайдено» (немає ланцюга довіри) чи щось на кшталт
+/// «бібліотека не ініціалізована» — тобто НАША помилка, замаскована під відхилення.
+static void emitVerdict(const char* status, DWORD code, const std::string& desc,
+                        const std::string& subject, bool timeStamp, DWORD contentLen) {
+    std::printf("{\"status\":\"%s\",\"code\":%lu,\"desc\":\"%s\",\"subject\":\"%s\","
+                "\"timeStamp\":%s,\"contentLen\":%lu}\n",
+                status, (unsigned long)code, jsonEscape(desc).c_str(),
+                jsonEscape(subject).c_str(), timeStamp ? "true" : "false",
+                (unsigned long)contentLen);
     std::fflush(stdout);
 }
 
@@ -211,6 +252,93 @@ static bool readFileBytes(const std::wstring& path, std::vector<BYTE>& out) {
         if (!ok) out.clear();
     }
     CloseHandle(h);
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
+// Засів ізольованої гілки налаштувань
+//
+// ЧОМУ ЦЕ ПОТРІБНО (здобуто вимірюванням, не здогадом). Ізоляція налаштувань дає
+// нам ПОРОЖНЮ гілку реєстру, і на ній EUSaveCertificates падає з кодом 49
+// «Виникла помилка при роботі з файловим сховищем сертифікатів та СВС» — при
+// будь-якому каталозі сховища й будь-якій комбінації шести прапорців
+// EUSetFileStoreSettings (перевірено обома розгортками). Причина інша: бібліотека
+// чекає в сховищі налаштувань групи мережевих служб, і якщо групи немає — доступ
+// до файлового сховища провалюється цілком.
+//
+// Вимір «усі групи мінус одна» (еталон ЦЗО, кожен прогін із чистим сховищем):
+//   мінус CMP / FileStore / InternationalMode / Log / Mode -> працює
+//   мінус LDAP -> 49 | мінус OCSP -> 49 | мінус Proxy -> 49 | мінус TSP -> 49
+// Тобто необхідні РІВНО чотири: LDAP, OCSP, Proxy, TSP. Порожніх ключів МАЛО —
+// без значень усередині помилка 49 лишається; потрібні саме значення.
+//
+// Чому пишемо реєстр напряму, а не кличемо EUSetLDAPSettings/EUSetOCSPSettings/
+// EUSetProxySettings/EUSetTSPSettings: їхніх прототипів немає з чим звірити, а при
+// __stdcall помилка в кількості аргументів псує стек МОВЧКИ. Запис у власну
+// ізольовану гілку такого ризику не має й перевіряється очима через regedit.
+// Значення — рівно ті, що ставить інсталятор ІІТ (звірено з гілкою End User
+// робочої інсталяції), і всі вони означають «служба не використовується»: це і є
+// офлайновий профіль, який нам потрібен, лише оголошений явно, а не успадкований.
+// ---------------------------------------------------------------------------
+
+/// Ім'я ізольованої гілки — ОДНЕ на весь файл, у двох формах: широкій (реєстрові
+/// API) і вузькій (PSTR у EUSetSettingsRegPath; не const, бо PSTR = char*).
+/// Розбіжність між ними означала б, що засіваємо одну гілку, а бібліотека читає
+/// іншу, — і помилка 49 повернулась би без жодного натяку на причину.
+static const wchar_t kSettingsRegPathW[] = L"Software\\SimplyAddinConnect\\IitVerify";
+static char          kSettingsRegPathA[] =  "Software\\SimplyAddinConnect\\IitVerify";
+
+/// Один запис налаштування. Рядкові значення в цих групах у інсталятора порожні,
+/// тож окремого поля під текст не заводимо — лише прапорець «це REG_DWORD».
+struct IitSetting { const wchar_t* name; bool isDword; DWORD value; };
+
+static bool seedGroup(const std::wstring& subKey, const IitSetting* items, size_t n) {
+    HKEY k = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, subKey.c_str(), 0, nullptr,
+                        REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &k, nullptr) != ERROR_SUCCESS)
+        return false;
+    bool ok = true;
+    for (size_t i = 0; i < n; ++i) {
+        LSTATUS st;
+        if (items[i].isDword) {
+            DWORD v = items[i].value;
+            st = RegSetValueExW(k, items[i].name, 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
+        } else {
+            static const wchar_t empty[] = L"";
+            st = RegSetValueExW(k, items[i].name, 0, REG_SZ, (const BYTE*)empty, sizeof(empty));
+        }
+        if (st != ERROR_SUCCESS) ok = false;
+    }
+    RegCloseKey(k);
+    return ok;
+}
+
+/// Створює в ізольованій гілці чотири групи мережевих служб — усі вимкнені.
+/// Кличеться ДО EUInitialize: гілка має бути повною ще до того, як бібліотека
+/// візьметься за налаштування.
+static bool seedIitSettings(const std::wstring& regPath) {
+    static const IitSetting ldap[] = {
+        { L"Use", true, 0 }, { L"Address", false, 0 }, { L"Port", false, 0 },
+        { L"Anonimous", true, 1 },   // саме так, з однією «у» — орфографія самої ІІТ
+        { L"User", false, 0 }, { L"Password", false, 0 }, { L"LookupCert", true, 1 },
+    };
+    static const IitSetting ocsp[] = {
+        { L"Use", true, 0 }, { L"BeforeFStore", true, 1 },
+        { L"Address", false, 0 }, { L"Port", false, 0 },
+    };
+    static const IitSetting proxy[] = {
+        { L"Use", true, 0 }, { L"Address", false, 0 }, { L"Port", false, 0 },
+        { L"Anonymous", true, 1 },   // а тут — через «о»: у ІІТ ці два імені різні
+        { L"User", false, 0 }, { L"Password", false, 0 }, { L"SavePassword", true, 1 },
+    };
+    static const IitSetting tsp[] = {
+        { L"GetStamps", true, 0 }, { L"Address", false, 0 }, { L"Port", false, 0 },
+    };
+    bool ok = true;
+    ok &= seedGroup(regPath + L"\\LDAP",  ldap,  sizeof(ldap)  / sizeof(ldap[0]));
+    ok &= seedGroup(regPath + L"\\OCSP",  ocsp,  sizeof(ocsp)  / sizeof(ocsp[0]));
+    ok &= seedGroup(regPath + L"\\Proxy", proxy, sizeof(proxy) / sizeof(proxy[0]));
+    ok &= seedGroup(regPath + L"\\TSP",   tsp,   sizeof(tsp)   / sizeof(tsp[0]));
     return ok;
 }
 
@@ -326,19 +454,130 @@ int main() {
         return 3;
     }
 
-    // Вхідний файл читаємо вже тут, щоб широкий шлях був під навантаженням із
-    // першого дня. У КАРКАСІ результат читання на код виходу НЕ впливає:
-    // перевірки підпису ще немає, а верифікація задачі 5 навмисно кличе арбітра з
-    // неіснуючим ім'ям. Задача 6 зробить недоступний вхід твердою помилкою (exit 2).
+    // Вхідний файл читаємо ДО першого виклику ІІТ: недоступний вхід — це помилка
+    // використання (exit 2), і виявляти її треба ПЕРШ НІЖ ми ініціалізували чужу
+    // бібліотеку й потягли з мережі бандл довіри. Порядок викликів самої ІІТ це
+    // не зачіпає — читання файлу до неї не належить.
     std::vector<BYTE> sig;
-    const bool readOk = readFileBytes(sigPath, sig);
+    if (!readFileBytes(sigPath, sig) || sig.empty()) {
+        jsonOut("ERROR", "Не прочитано вхідний файл: " + w2u8(sigPath), 0);
+        FreeLibrary(eu.h);
+        return 2;
+    }
 
-    std::string detail = "bind ok (11 експортів); ІІТ: " + w2u8(eu.dir)
-                       + "; вхід: " + w2u8(sigPath) + " — "
-                       + (readOk ? (std::to_string(sig.size()) + " байт")
-                                 : std::string("не прочитано (у каркасі не критично)"));
-    jsonOut("OK", detail, 0);
+    // Гілку наповнюємо ДО того, як бібліотека візьметься її читати: на ПОРОЖНІЙ
+    // гілці файлове сховище не працює взагалі (див. блок «Засів ізольованої гілки
+    // налаштувань» — там вимір, який це показав).
+    if (!seedIitSettings(kSettingsRegPathW)) {
+        jsonOut("ERROR", "Не вдалося створити ізольовану гілку налаштувань "
+                         "HKCU\\Software\\SimplyAddinConnect\\IitVerify", 0);
+        FreeLibrary(eu.h);
+        return 2;
+    }
 
-    if (eu.h) FreeLibrary(eu.h);
-    return 0;
+    // ІЗОЛЯЦІЯ НАЛАШТУВАНЬ — ДО EUInitialize і до будь-якого іншого EUSet*.
+    // Коли шлях налаштувань порожній, на Windows бібліотека бере їх із реєстру
+    // КОРИСТУВАЧА, і EUSetModeSettings(TRUE) нижче мовчки перемкнув би інсталяцію
+    // ІІТ користувача в офлайн — він дізнався б про це, коли його ІІТ перестав би
+    // ходити в мережу. 2 = HKCU: гілка user-writable, адміністратора не потребує.
+    // Провал тут не «неточність налаштувань», а втрата ізоляції, тож — стоп.
+    if (const DWORD rc = eu.SetSettingsRegPath(2 /*HKCU*/, kSettingsRegPathA)) {
+        jsonOut("ERROR", "EUSetSettingsRegPath не вдалася — без ізоляції налаштувань "
+                         "продовжувати не можна", (long)rc);
+        FreeLibrary(eu.h);
+        return 2;
+    }
+
+    // GUI ЗАБОРОНЕНО, теж ДО Initialize: настанова — «бібліотеку буде завантажено
+    // без графічного модуля». Без цього бібліотека на помилці може відкрити діалог
+    // і підвісити автоматичний прогін НАЗАВЖДИ — класична пастка гейтів.
+    eu.SetUIMode(FALSE);
+
+    if (const DWORD rc = eu.Initialize()) {
+        jsonOut("ERROR", "EUInitialize не вдалася", (long)rc);
+        FreeLibrary(eu.h);
+        return 2;
+    }
+
+    // Після успішного Initialize кожен вихід зобов'язаний пройти через Finalize.
+    auto bail = [&](const char* status, const std::string& detail, long code, int exitCode) {
+        jsonOut(status, detail, code);
+        eu.Finalize();
+        FreeLibrary(eu.h);
+        return exitCode;
+    };
+
+    // Детермінізм: жодних звернень до серверів ЦСК. Тихого відкату немає за
+    // конструкцією бібліотеки — операція, що потребує мережі, в офлайні падає.
+    if (const DWORD rc = eu.SetModeSettings(TRUE))
+        return bail("ERROR", "EUSetModeSettings(офлайн) не вдалася", (long)rc, 2);
+
+    // Сховище довіри: власний каталог у %LOCALAPPDATA% + бандл ЦСК від ЦЗО.
+    std::string  storeDir;
+    std::wstring bundlePath;
+    bool         needImport = false;
+    if (!ensureIitStore(storeDir, bundlePath, needImport))
+        return bail("SKIP", "Сховище довіри ІІТ недоступне: немає кешу й не вдалося "
+                            "завантажити бандл ЦЗО", 0, 3);
+
+    // ВІСІМ аргументів (див. прототип вище). bAutoDownloadCRLs і bSaveLoadedCerts
+    // вимкнено НАВМИСНО: інакше сховище змінюється між прогонами й результат
+    // перестає бути відтворюваним.
+    std::vector<char> storeBuf(storeDir.begin(), storeDir.end());
+    storeBuf.push_back('\0');
+    if (const DWORD rc = eu.SetFileStoreSettings(storeBuf.data(),
+                                                 /*bCheckCRLs*/        FALSE,
+                                                 /*bAutoRefresh*/      TRUE,
+                                                 /*bOwnCRLsOnly*/      FALSE,
+                                                 /*bFullAndDeltaCRLs*/ FALSE,
+                                                 /*bAutoDownloadCRLs*/ FALSE,
+                                                 /*bSaveLoadedCerts*/  FALSE,
+                                                 /*dwExpireTime*/      30))
+        return bail("ERROR", "EUSetFileStoreSettings не вдалася: "
+                             + toUtf8Loose(eu.GetErrorLangDesc(rc, 0)), (long)rc, 2);
+
+    // НАПОВНЕННЯ сховища. Покласти CACertificates.p7b у каталог — це ЩЕ НЕ
+    // наповнити сховище: P7B є ВХІДНИМ форматом імпорту («Збереження списку
+    // сертифікатів в форматі P7B до файлового сховища»), а саме сховище бібліотека
+    // веде сама. Без цього виклику навіть валідний підпис отримав би «сертифікат
+    // не знайдено», і причину довго списували б на відсутність ланцюга довіри.
+    // EUSaveCertificatesEx тут НЕ годиться: він зберігає лише сертифікати,
+    // «перевірені з використанням довіреного сховища», тобто на порожньому
+    // сховищі імпортує НУЛЬ записів.
+    if (needImport) {
+        std::vector<BYTE> bundle;
+        if (!readFileBytes(bundlePath, bundle) || bundle.empty())
+            return bail("SKIP", "Бандл сертифікатів ЦЗО не прочитано: " + w2u8(bundlePath), 0, 3);
+        if (const DWORD rc = eu.SaveCertificates(bundle.data(), (DWORD)bundle.size()))
+            return bail("ERROR", "EUSaveCertificates не наповнила сховище довіри: "
+                                 + toUtf8Loose(eu.GetErrorLangDesc(rc, 0)), (long)rc, 2);
+        // Маркер робить імпорт одноразовим: EUSaveCertificates на бандлі ЦЗО
+        // (~1,5 МБ) дорога, і повторювати її щопрогону марно. Невдача самого
+        // маркера не є помилкою перевірки — вона лише сповільнить наступний запуск.
+        markIitStoreImported(bundlePath);
+    }
+
+    // Перший PSTR — той самий підпис у base64; «якщо параметр == 0, перевіряються
+    // дані з масиву байт», тож nullptr + байти є ШТАТНИМ задокументованим шляхом.
+    EU_SIGN_INFO info{};
+    BYTE*        content    = nullptr;
+    DWORD        contentLen = 0;
+    const DWORD  rc = eu.VerifyDataInternal(nullptr, sig.data(), (DWORD)sig.size(),
+                                            &content, &contentLen, &info);
+
+    const bool ok = (rc == 0);
+    emitVerdict(ok ? "VALID" : "INVALID", rc,
+                toUtf8Loose(eu.GetErrorLangDesc(rc, 0)),
+                (info.bFilled && info.pszSubjCN) ? toUtf8Loose(info.pszSubjCN) : std::string(),
+                info.bFilled && info.bTimeStamp != FALSE,
+                contentLen);
+
+    if (content) eu.FreeMemory(content);
+    if (info.bFilled) eu.FreeSignInfo(&info);
+    eu.Finalize();
+    FreeLibrary(eu.h);
+    // ВІДОМЕ ОБМЕЖЕННЯ: «відхилив підпис» і «не зміг перевірити» зливаються тут в
+    // один exit 1. Правило їх розрізнення ухвалюється ПІСЛЯ першого виміру реальних
+    // кодів ІІТ — саме для цього у виводі стоять code і desc.
+    return ok ? 0 : 1;
 }
