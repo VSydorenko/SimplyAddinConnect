@@ -318,7 +318,7 @@ endif()
 # викликає компоненту через IComponentBase (метод CallUapki). Крипто-ядро НЕ
 # лінкується — усе йде через головну DLL. Тому спец-лінкування тут не потрібне.
 # ---------------------------------------------------------------------------
-add_executable(native_host native_host.cpp)
+add_executable(native_host native_host.cpp support/LocalKeys.cpp)
 
 set_target_properties(native_host PROPERTIES
     CXX_STANDARD 17

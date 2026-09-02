@@ -1,0 +1,22 @@
+{
+  "keys": [
+    {
+      "id": "jks-kupyna",
+      "path": "C:\\Users\\<user>\\Desktop\\Ключі ЕЦП\\<...>\\key.jks",
+      "password": "",
+      "expect": {
+        "container": "JKS",
+        "signAlgo": "1.2.804.2.1.1.1.1.3.6.1.1"
+      }
+    },
+    {
+      "id": "zs2-gost",
+      "path": "C:\\Users\\<user>\\Desktop\\Ключі ЕЦП\\<...>\\key.ZS2",
+      "password": "",
+      "expect": {
+        "container": "PKCS12",
+        "signAlgo": "1.2.804.2.1.1.1.1.3.1.1"
+      }
+    }
+  ]
+}
