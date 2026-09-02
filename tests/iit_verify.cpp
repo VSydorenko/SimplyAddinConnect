@@ -92,6 +92,22 @@ typedef DWORD (WINAPI *PFN_SetSettingsRegPath)(DWORD, char*);
 typedef void  (WINAPI *PFN_SetUIMode)(BOOL);        // настанова ІІТ: VOID; FALSE = без діалогів
 typedef DWORD (WINAPI *PFN_Initialize)(void);       // настанова ІІТ: DWORD, без аргументів
 typedef DWORD (WINAPI *PFN_SetModeSettings)(BOOL);  // настанова ІІТ: DWORD; TRUE = офлайн
+// Групи мережевих служб. Прототипи — настанова АТ «ІІТ» (звірено контролером),
+// експорти на місці (dumpbin: EUSetLDAPSettings ord 223, EUSetOCSPSettings 229,
+// EUSetProxySettings 22C, EUSetTSPSettings 234). Кількість аргументів у кожного
+// РІЗНА (6 / 4 / 3 / 7) — при __stdcall помилка тут псує стек мовчки:
+//   EUSetLDAPSettings (BOOL bUseLDAP,   PSTR pszAddress, PSTR pszPort,
+//                      BOOL bAnonymous, PSTR pszUser,    PSTR pszPassword)          — 6
+//   EUSetOCSPSettings (BOOL bUseOCSP,   BOOL bBeforeStore, PSTR pszAddress,
+//                      PSTR pszPort)                                                — 4
+//   EUSetTSPSettings  (BOOL bGetStamps, PSTR pszAddress, PSTR pszPort)              — 3
+//   EUSetProxySettings(BOOL bUseProxy,  BOOL bAnonymous, PSTR pszAddress,
+//                      PSTR pszPort, PSTR pszUser, PSTR pszPassword,
+//                      BOOL bSavePassword)                                          — 7
+typedef DWORD (WINAPI *PFN_SetLDAPSettings)(BOOL, char*, char*, BOOL, char*, char*);
+typedef DWORD (WINAPI *PFN_SetOCSPSettings)(BOOL, BOOL, char*, char*);
+typedef DWORD (WINAPI *PFN_SetTSPSettings)(BOOL, char*, char*);
+typedef DWORD (WINAPI *PFN_SetProxySettings)(BOOL, BOOL, char*, char*, char*, char*, BOOL);
 // Настанова ІІТ: EUSetFileStoreSettings(PSTR pszPath, BOOL bCheckCRLs,
 //   BOOL bAutoRefresh, BOOL bOwnCRLsOnly, BOOL bFullAndDeltaCRLs,
 //   BOOL bAutoDownloadCRLs, BOOL bSaveLoadedCerts, DWORD dwExpireTime).
@@ -128,6 +144,10 @@ struct Eu {
     PFN_SetUIMode            SetUIMode            = nullptr;
     PFN_Initialize           Initialize           = nullptr;
     PFN_SetModeSettings      SetModeSettings      = nullptr;
+    PFN_SetLDAPSettings      SetLDAPSettings      = nullptr;
+    PFN_SetOCSPSettings      SetOCSPSettings      = nullptr;
+    PFN_SetTSPSettings       SetTSPSettings       = nullptr;
+    PFN_SetProxySettings     SetProxySettings     = nullptr;
     PFN_SetFileStoreSettings SetFileStoreSettings = nullptr;
     PFN_SaveCertificates     SaveCertificates     = nullptr;
     PFN_VerifyDataInternal   VerifyDataInternal   = nullptr;
@@ -167,6 +187,36 @@ static std::string toUtf8Loose(const char* s) {
     std::wstring w((size_t)n - 1, L'\0');
     MultiByteToWideChar(CP_ACP, 0, s, -1, &w[0], n);
     return w2u8(w);
+}
+
+/// UTF-8 -> ANSI для PSTR-аргументів ІІТ. Задача 7 віддає каталог сховища в UTF-8,
+/// але PSTR у не-Unicode API означає САМЕ ANSI: на профілі з кириличним іменем
+/// користувача (`C:\Users\Петро\...` — для української аудиторії звичайний випадок,
+/// не екзотика) бібліотека дістала б спотворений шлях. Контракт IitStore.h не
+/// чіпаємо — конвертуємо локально, тут.
+/// WC_NO_BEST_FIT_CHARS + прапорець «був підстановочний символ» ЗАБОРОНЯЮТЬ тиху
+/// заміну неконвертованого символу на '?': краще гучний ERROR із названою причиною,
+/// ніж каталог із покаліченим іменем і незрозуміла помилка сховища через крок.
+static bool u8ToAnsi(const std::string& u8, std::string& out) {
+    out.clear();
+    if (u8.empty()) return true;
+    const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, u8.c_str(), (int)u8.size(), nullptr, 0);
+    if (n <= 0) return false;
+    std::wstring w((size_t)n, L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, u8.c_str(), (int)u8.size(), &w[0], n) != n)
+        return false;
+    BOOL usedDefault = FALSE;
+    const int m = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, w.c_str(), n,
+                                      nullptr, 0, nullptr, &usedDefault);
+    if (m <= 0) return false;
+    out.resize((size_t)m);
+    if (WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, w.c_str(), n,
+                            &out[0], m, nullptr, &usedDefault) != m) {
+        out.clear();
+        return false;
+    }
+    if (usedDefault) { out.clear(); return false; }   // символ не має представлення в ANSI
+    return true;
 }
 
 /// Екранування рядка для JSON: шляхи Windows містять зворотні слеші, а вони
@@ -256,91 +306,13 @@ static bool readFileBytes(const std::wstring& path, std::vector<BYTE>& out) {
 }
 
 // ---------------------------------------------------------------------------
-// Засів ізольованої гілки налаштувань
-//
-// ЧОМУ ЦЕ ПОТРІБНО (здобуто вимірюванням, не здогадом). Ізоляція налаштувань дає
-// нам ПОРОЖНЮ гілку реєстру, і на ній EUSaveCertificates падає з кодом 49
-// «Виникла помилка при роботі з файловим сховищем сертифікатів та СВС» — при
-// будь-якому каталозі сховища й будь-якій комбінації шести прапорців
-// EUSetFileStoreSettings (перевірено обома розгортками). Причина інша: бібліотека
-// чекає в сховищі налаштувань групи мережевих служб, і якщо групи немає — доступ
-// до файлового сховища провалюється цілком.
-//
-// Вимір «усі групи мінус одна» (еталон ЦЗО, кожен прогін із чистим сховищем):
-//   мінус CMP / FileStore / InternationalMode / Log / Mode -> працює
-//   мінус LDAP -> 49 | мінус OCSP -> 49 | мінус Proxy -> 49 | мінус TSP -> 49
-// Тобто необхідні РІВНО чотири: LDAP, OCSP, Proxy, TSP. Порожніх ключів МАЛО —
-// без значень усередині помилка 49 лишається; потрібні саме значення.
-//
-// Чому пишемо реєстр напряму, а не кличемо EUSetLDAPSettings/EUSetOCSPSettings/
-// EUSetProxySettings/EUSetTSPSettings: їхніх прототипів немає з чим звірити, а при
-// __stdcall помилка в кількості аргументів псує стек МОВЧКИ. Запис у власну
-// ізольовану гілку такого ризику не має й перевіряється очима через regedit.
-// Значення — рівно ті, що ставить інсталятор ІІТ (звірено з гілкою End User
-// робочої інсталяції), і всі вони означають «служба не використовується»: це і є
-// офлайновий профіль, який нам потрібен, лише оголошений явно, а не успадкований.
+// Ім'я ізольованої гілки налаштувань. Форма РІВНО ОДНА (вузька): EUSetSettingsRegPath
+// приймає PSTR, а власного запису в реєстр ми більше не робимо — групи мережевих
+// служб виставляються документованим API. Доки форма одна, розбіжність між формами
+// неможлива за побудовою; якщо колись знадобиться широка, виводь її з цього рядка
+// препроцесором, а не набирай удруге руками.
 // ---------------------------------------------------------------------------
-
-/// Ім'я ізольованої гілки — ОДНЕ на весь файл, у двох формах: широкій (реєстрові
-/// API) і вузькій (PSTR у EUSetSettingsRegPath; не const, бо PSTR = char*).
-/// Розбіжність між ними означала б, що засіваємо одну гілку, а бібліотека читає
-/// іншу, — і помилка 49 повернулась би без жодного натяку на причину.
-static const wchar_t kSettingsRegPathW[] = L"Software\\SimplyAddinConnect\\IitVerify";
-static char          kSettingsRegPathA[] =  "Software\\SimplyAddinConnect\\IitVerify";
-
-/// Один запис налаштування. Рядкові значення в цих групах у інсталятора порожні,
-/// тож окремого поля під текст не заводимо — лише прапорець «це REG_DWORD».
-struct IitSetting { const wchar_t* name; bool isDword; DWORD value; };
-
-static bool seedGroup(const std::wstring& subKey, const IitSetting* items, size_t n) {
-    HKEY k = nullptr;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, subKey.c_str(), 0, nullptr,
-                        REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &k, nullptr) != ERROR_SUCCESS)
-        return false;
-    bool ok = true;
-    for (size_t i = 0; i < n; ++i) {
-        LSTATUS st;
-        if (items[i].isDword) {
-            DWORD v = items[i].value;
-            st = RegSetValueExW(k, items[i].name, 0, REG_DWORD, (const BYTE*)&v, sizeof(v));
-        } else {
-            static const wchar_t empty[] = L"";
-            st = RegSetValueExW(k, items[i].name, 0, REG_SZ, (const BYTE*)empty, sizeof(empty));
-        }
-        if (st != ERROR_SUCCESS) ok = false;
-    }
-    RegCloseKey(k);
-    return ok;
-}
-
-/// Створює в ізольованій гілці чотири групи мережевих служб — усі вимкнені.
-/// Кличеться ДО EUInitialize: гілка має бути повною ще до того, як бібліотека
-/// візьметься за налаштування.
-static bool seedIitSettings(const std::wstring& regPath) {
-    static const IitSetting ldap[] = {
-        { L"Use", true, 0 }, { L"Address", false, 0 }, { L"Port", false, 0 },
-        { L"Anonimous", true, 1 },   // саме так, з однією «у» — орфографія самої ІІТ
-        { L"User", false, 0 }, { L"Password", false, 0 }, { L"LookupCert", true, 1 },
-    };
-    static const IitSetting ocsp[] = {
-        { L"Use", true, 0 }, { L"BeforeFStore", true, 1 },
-        { L"Address", false, 0 }, { L"Port", false, 0 },
-    };
-    static const IitSetting proxy[] = {
-        { L"Use", true, 0 }, { L"Address", false, 0 }, { L"Port", false, 0 },
-        { L"Anonymous", true, 1 },   // а тут — через «о»: у ІІТ ці два імені різні
-        { L"User", false, 0 }, { L"Password", false, 0 }, { L"SavePassword", true, 1 },
-    };
-    static const IitSetting tsp[] = {
-        { L"GetStamps", true, 0 }, { L"Address", false, 0 }, { L"Port", false, 0 },
-    };
-    bool ok = true;
-    ok &= seedGroup(regPath + L"\\LDAP",  ldap,  sizeof(ldap)  / sizeof(ldap[0]));
-    ok &= seedGroup(regPath + L"\\OCSP",  ocsp,  sizeof(ocsp)  / sizeof(ocsp[0]));
-    ok &= seedGroup(regPath + L"\\Proxy", proxy, sizeof(proxy) / sizeof(proxy[0]));
-    ok &= seedGroup(regPath + L"\\TSP",   tsp,   sizeof(tsp)   / sizeof(tsp[0]));
-    return ok;
-}
+static char kSettingsRegPathA[] = "Software\\SimplyAddinConnect\\IitVerify";   // не const: PSTR = char*
 
 // ---------------------------------------------------------------------------
 // Пошук і прив'язка бібліотеки ІІТ
@@ -381,9 +353,9 @@ static bool findIitDir(std::wstring& out) {
     return found;
 }
 
-/// Завантаження EUSignCP.dll і прив'язка ВСІХ потрібних експортів (11 штук —
-/// разом із тими, що знадобляться задачам 6 і 7). Перелік навмисно повний саме
-/// тут: розділити його на три правки означало б ризикувати розбіжністю.
+/// Завантаження EUSignCP.dll і прив'язка ВСІХ потрібних експортів (15 штук).
+/// Перелік живе рівно тут і навмисно повний: розкидати його по місцях виклику
+/// означало б ризикувати розбіжністю.
 /// Будь-який відсутній експорт — це не «трохи менше можливостей», а неробочий
 /// арбітр, тож повертаємо false з названим іменем -> SKIP, ніколи не PASS.
 static bool bindEu(Eu& eu, std::string& err) {
@@ -414,6 +386,10 @@ static bool bindEu(Eu& eu, std::string& err) {
     BIND(SetUIMode,            "EUSetUIMode")
     BIND(Initialize,           "EUInitialize")
     BIND(SetModeSettings,      "EUSetModeSettings")
+    BIND(SetLDAPSettings,      "EUSetLDAPSettings")     // чотири групи мережевих служб:
+    BIND(SetOCSPSettings,      "EUSetOCSPSettings")     //   без них файлове сховище
+    BIND(SetTSPSettings,       "EUSetTSPSettings")      //   не працює взагалі
+    BIND(SetProxySettings,     "EUSetProxySettings")    //   (вимір — у main)
     BIND(SetFileStoreSettings, "EUSetFileStoreSettings")
     BIND(SaveCertificates,     "EUSaveCertificates")     // імпорт бандла довіри (задача 7)
     BIND(VerifyDataInternal,   "EUVerifyDataInternal")
@@ -465,16 +441,6 @@ int main() {
         return 2;
     }
 
-    // Гілку наповнюємо ДО того, як бібліотека візьметься її читати: на ПОРОЖНІЙ
-    // гілці файлове сховище не працює взагалі (див. блок «Засів ізольованої гілки
-    // налаштувань» — там вимір, який це показав).
-    if (!seedIitSettings(kSettingsRegPathW)) {
-        jsonOut("ERROR", "Не вдалося створити ізольовану гілку налаштувань "
-                         "HKCU\\Software\\SimplyAddinConnect\\IitVerify", 0);
-        FreeLibrary(eu.h);
-        return 2;
-    }
-
     // ІЗОЛЯЦІЯ НАЛАШТУВАНЬ — ДО EUInitialize і до будь-якого іншого EUSet*.
     // Коли шлях налаштувань порожній, на Windows бібліотека бере їх із реєстру
     // КОРИСТУВАЧА, і EUSetModeSettings(TRUE) нижче мовчки перемкнув би інсталяцію
@@ -512,6 +478,36 @@ int main() {
     if (const DWORD rc = eu.SetModeSettings(TRUE))
         return bail("ERROR", "EUSetModeSettings(офлайн) не вдалася", (long)rc, 2);
 
+    // ЧОТИРИ ГРУПИ МЕРЕЖЕВИХ СЛУЖБ — усі вимкнені. Це не косметика й не «про всяк
+    // випадок»: у сховищі налаштувань вони мусять БУТИ, інакше файлове сховище не
+    // працює взагалі. На порожній ізольованій гілці EUSaveCertificates падає з
+    // кодом 49 («Виникла помилка при роботі з файловим сховищем сертифікатів та
+    // СВС») — при будь-якому каталозі сховища й при всіх шести комбінаціях
+    // прапорців EUSetFileStoreSettings, які я прогнав.
+    //
+    // Вимір «усі групи мінус одна» (еталон ЦЗО, кожен прогін із чистим сховищем):
+    //   мінус CMP / FileStore / InternationalMode / Log / Mode -> працює
+    //   мінус LDAP -> 49 | мінус OCSP -> 49 | мінус Proxy -> 49 | мінус TSP -> 49
+    // Потрібні РІВНО ці чотири, і саме зі значеннями: самих порожніх ключів мало.
+    //
+    // Виставляємо їх документованим API, а не записом у реєстр: так ми не залежимо
+    // від імен значень конкретної версії ІІТ і взагалі не пишемо в чужий конфіг
+    // власними руками. Усі головні перемикачі FALSE — це і є офлайновий профіль,
+    // оголошений явно, а не успадкований від інсталяції користувача.
+    char empty[] = "";
+    if (const DWORD rc = eu.SetLDAPSettings(FALSE, empty, empty, TRUE, empty, empty))
+        return bail("ERROR", "EUSetLDAPSettings не вдалася: "
+                             + toUtf8Loose(eu.GetErrorLangDesc(rc, 0)), (long)rc, 2);
+    if (const DWORD rc = eu.SetOCSPSettings(FALSE, FALSE, empty, empty))
+        return bail("ERROR", "EUSetOCSPSettings не вдалася: "
+                             + toUtf8Loose(eu.GetErrorLangDesc(rc, 0)), (long)rc, 2);
+    if (const DWORD rc = eu.SetTSPSettings(FALSE, empty, empty))
+        return bail("ERROR", "EUSetTSPSettings не вдалася: "
+                             + toUtf8Loose(eu.GetErrorLangDesc(rc, 0)), (long)rc, 2);
+    if (const DWORD rc = eu.SetProxySettings(FALSE, TRUE, empty, empty, empty, empty, FALSE))
+        return bail("ERROR", "EUSetProxySettings не вдалася: "
+                             + toUtf8Loose(eu.GetErrorLangDesc(rc, 0)), (long)rc, 2);
+
     // Сховище довіри: власний каталог у %LOCALAPPDATA% + бандл ЦСК від ЦЗО.
     std::string  storeDir;
     std::wstring bundlePath;
@@ -523,7 +519,11 @@ int main() {
     // ВІСІМ аргументів (див. прототип вище). bAutoDownloadCRLs і bSaveLoadedCerts
     // вимкнено НАВМИСНО: інакше сховище змінюється між прогонами й результат
     // перестає бути відтворюваним.
-    std::vector<char> storeBuf(storeDir.begin(), storeDir.end());
+    std::string storeAnsi;
+    if (!u8ToAnsi(storeDir, storeAnsi))
+        return bail("ERROR", "Каталог сховища не представляється в ANSI, а PSTR у ІІТ "
+                             "означає саме ANSI: " + storeDir, 0, 2);
+    std::vector<char> storeBuf(storeAnsi.begin(), storeAnsi.end());
     storeBuf.push_back('\0');
     if (const DWORD rc = eu.SetFileStoreSettings(storeBuf.data(),
                                                  /*bCheckCRLs*/        FALSE,
