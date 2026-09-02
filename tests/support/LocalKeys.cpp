@@ -23,7 +23,12 @@ bool LoadLocalKeys(const std::wstring& jsonPath, std::vector<LocalKey>& out, std
         err = "У конфігу немає масиву keys";
         return false;
     }
+    std::vector<LocalKey> parsed;   // накопичуємо окремо: out мусить лишитись порожнім при будь-якому return false
     for (const auto& k : root["keys"]) {
+        if (!k.is_object()) {
+            err = "Запис ключа не є об'єктом JSON";
+            return false;
+        }
         LocalKey lk;
         lk.id       = k.value("id", std::string());
         lk.path     = k.value("path", std::string());
@@ -36,8 +41,9 @@ bool LoadLocalKeys(const std::wstring& jsonPath, std::vector<LocalKey>& out, std
             err = "Запис ключа без обов'язкових полів id/path";
             return false;
         }
-        out.push_back(lk);
+        parsed.push_back(lk);
     }
+    out = std::move(parsed);
     return true;
 }
 
