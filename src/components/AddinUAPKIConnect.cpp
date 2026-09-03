@@ -2,6 +2,7 @@
 #include "AddinUAPKIConnect.h"
 #include "../helpers/UAPKIConnect/UAPKIConnectHelper.h"
 #include "../helpers/ServiceTools.h"
+#include <nlohmann/json.hpp>
 
 // Регистрация компонента через статический член класса
 REGISTER_COMPONENT(u"AddinUAPKIConnect", AddinUAPKIConnect)
@@ -55,9 +56,11 @@ void AddinUAPKIConnect::RegisterMethods() {
                 return success;
             }
             catch (const std::exception& e) {
-                // Обработка исключений - возвращаем ошибку в формате JSON
+                // Обработка исключений - возвращаем ошибку в формате JSON.
+                // Через nlohmann::json + dump(), а не конкатенацией строк: текст исключения
+                // может содержать '"' и '\', и без экранирования JSON ломается на стороне 1С.
                 std::string errorMessage = e.what();
-                this->result = "{\"errorCode\":500,\"error\":\"" + errorMessage + "\"}";
+                this->result = nlohmann::json{ {"errorCode", 500}, {"error", errorMessage} }.dump();
 
                 // Логирование ошибки
                 REPORT_ERROR("Исключение C++ при вызове UAPKI: " + errorMessage);
@@ -109,7 +112,9 @@ bool AddinUAPKIConnect::CallUapki(const std::string& method, const std::string& 
     catch (const std::exception& e) {
         std::string errorMessage = e.what();
         REPORT_ERROR("Исключение при вызове метода UAPKI " + method + ": " + errorMessage);
-        jsonResponse = "{\"errorCode\":500,\"error\":\"Exception: " + errorMessage + "\"}";
+        // Через nlohmann::json + dump() — конкатенация ломает JSON, если errorMessage
+        // содержит '"' или '\' (см. аналогичный фикс в лямбде RegisterMethods выше).
+        jsonResponse = nlohmann::json{ {"errorCode", 500}, {"error", "Exception: " + errorMessage} }.dump();
         return false;
     }
     catch (...) {

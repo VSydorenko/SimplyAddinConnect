@@ -747,8 +747,11 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
         }
     }
     catch (const std::exception& e) {
-        // В случае исключения формируем JSON-ответ с сообщением об ошибке
-        responseJson = R"({"errorCode":500,"error":")" + std::string(e.what()) + R"("})";
+        // В случае исключения формируем JSON-ответ с сообщением об ошибке.
+        // Через nlohmann::json + dump(), а не конкатенацией строк: текст исключения
+        // может содержать '"' и '\' (пути, цитаты nlohmann при ошибках разбора), и
+        // конкатенация без экранирования ломает синтаксис JSON на стороне 1С.
+        responseJson = nlohmann::json{ {"errorCode", 500}, {"error", std::string(e.what())} }.dump();
 
         // Логируем ошибку
         NEUTRAL_REPORT_ERROR("UAPKIConnectHelper", "UAPKI Exception при выполнении метода " + method + ": " + std::string(e.what()));
