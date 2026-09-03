@@ -631,7 +631,17 @@ static bool case4_fullChain(const std::wstring& binDir, const std::wstring& data
     printf("  VERIFY: %s\n", r.substr(0, 400).c_str());
     CHECK(errCode(r, j) == 0, "VERIFY errorCode == 0");
 
-    // --- L3.2: структурна крос-перевірка формату підпису ПРРО ---
+    // --- L3.2: структурна перевірка ОФЛАЙН-профілю ПРРО (CAdES-BES) ---
+    // МЕЖА ПОКРИТТЯ, читай уважно:
+    //   * норматив ДПС вимагає CAdES-E-T із signature-time-stamp для онлайн-документів
+    //     («Опис АРІ фіскального сервера (ЄВПЕЗ)», розділ «Порядок засвідчення повідомлень»);
+    //   * позначка часу НЕ обов'язкова лише для документів, створених в офлайні — саме цей
+    //     профіль тут і перевіряється;
+    //   * тому signatureTS відсутній ПРАВОМІРНО, а не «так має бути завжди»;
+    //   * онлайн-шлях (похід у TSP) не покритий ЖОДНИМ тестом: код
+    //     extern/uapki/library/uapki/src/doc-sign.cpp:864-877 не виконувався ніколи.
+    // Доказом коректності самого підпису є вердикт стороннього двигуна (рівень L4-iit),
+    // а не наш власний VERIFY нижче — той є РЕГРЕСІЙНОЮ перевіркою.
     auto& res = j["result"];
     CHECK(res.contains("signatureInfos") && res["signatureInfos"].is_array()
           && !res["signatureInfos"].empty(), "result.signatureInfos присутній");
