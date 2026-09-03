@@ -95,6 +95,33 @@ static std::string fwd(const std::wstring& w) {
     return s;
 }
 
+// Екранування рядка для вставки у вручну зібраний JSON (printf-складання, не nlohmann::json).
+// Той самий підхід, що й jsonEscape у tests/iit_verify.cpp: без нього шлях із зворотними
+// слешами (звичайний Windows-шлях) робить рядок невалідним JSON — "\g" не є коректною
+// escape-послідовністю, і жоден строгий парсер (напр. ConvertFrom-Json) його не прочитає.
+static std::string jsonEscape(const std::string& s) {
+    std::string o;
+    o.reserve(s.size() + 16);
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"':  o += "\\\""; break;
+            case '\\': o += "\\\\"; break;
+            case '\n': o += "\\n";  break;
+            case '\r': o += "\\r";  break;
+            case '\t': o += "\\t";  break;
+            default:
+                if (c < 0x20) {
+                    char b[8];
+                    std::snprintf(b, sizeof(b), "\\u%04x", (unsigned)c);
+                    o += b;
+                } else {
+                    o += (char)c;
+                }
+        }
+    }
+    return o;
+}
+
 // ========================================================================
 // Емуляція платформи 1С: менеджер пам'яті та об'єкт-з'єднання
 // ========================================================================
@@ -711,20 +738,30 @@ static bool case5_crossValidatePrro(const std::wstring& binDir, const std::wstri
         const std::string st = si ? si->value("status", std::string()) : std::string();
         const std::string ss = si ? si->value("statusSignature", std::string()) : std::string();
         const bool validDig  = si ? si->value("validDigests", false) : false;
+        // signerCertId — теж частина СТРУКТУРИ підпису (без нього нема кого перевіряти),
+        // а не властивість довіри/строку дії; тому лишається в критерії FAIL поруч зі
+        // statusSignature/validDigests, як і в кейсі 5 до цієї правки.
+        const bool hasSigner = si && si->contains("signerCertId")
+                            && !si->value("signerCertId", std::string()).empty();
 
         // РАНІШЕ: errorCode 4161 (CERT_NOT_FOUND) беззастережно вважався прийнятним, бо
         // офлайн бракує сертифіката TSP-сервера. Це судження жило всередині тесту й могло
         // маскувати справжній дефект (напр., прострочений сертифікат підписувача, якого
         // STRUCT не перевіряє). Тепер вердикт друкується машинно-читно без вироку; звірку з
         // незалежним двигуном (ІІТ) на цих самих файлах робить run_tests.ps1.
-        printf("  {\"engine\":\"uapki\",\"file\":\"%s\",\"status\":\"%s\","
-               "\"statusSignature\":\"%s\",\"validDigests\":%s,\"errorCode\":%ld}\n",
-               w2u8(f).c_str(), st.c_str(), ss.c_str(), validDig ? "true" : "false", ec);
+        // file екрановано jsonEscape (не лише fwd/forward-slash): рядок мусить лишатись
+        // валідним JSON і на випадок лапок/керуючих символів у шляху, не тільки зворотних
+        // слешів — Windows-шлях без екранування ламає будь-який строгий парсер (ConvertFrom-Json).
+        printf("{\"engine\":\"uapki\",\"file\":\"%s\",\"status\":\"%s\","
+               "\"statusSignature\":\"%s\",\"validDigests\":%s,\"hasSigner\":%s,\"errorCode\":%ld}\n",
+               jsonEscape(w2u8(f)).c_str(), st.c_str(), ss.c_str(),
+               validDig ? "true" : "false", hasSigner ? "true" : "false", ec);
 
         // FAIL лишається ЛИШЕ там, де зламана САМА структура підпису (немає signatureInfos,
-        // statusSignature не починається з VALID або геші вмісту не збіглись) — це вже не
-        // властивість вхідних даних (сертифікат/TSP/CRL), а дефект нашого розбору.
-        if (!si || ss.rfind("VALID", 0) != 0 || !validDig) {
+        // statusSignature не починається з VALID, геші вмісту не збіглись або немає
+        // сертифіката підписувача) — це вже не властивість вхідних даних (довіра/TSP/CRL),
+        // а дефект нашого розбору.
+        if (!si || ss.rfind("VALID", 0) != 0 || !validDig || !hasSigner) {
             printf("  FAIL: структурна частина невалідна\n");
             allOk = false;
         }
