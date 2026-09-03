@@ -615,6 +615,27 @@ function Invoke-IitVerify([string]$sigPath) {
     [pscustomobject]@{ ExitCode = $p.ExitCode; Raw = $raw; Json = $json }
 }
 
+# Наш вердикт (кейс 9) по одному файлу — один рядок JSON у stdout. Визначено ТУТ, а не
+# всередині окремого if/elseif-блоку нижче, щоб бути доступним і матриці корпусу ЦЗО, і
+# блоку еталонів ДПС незалежно від того, який із них першим пройде свої SKIP-перевірки.
+# Відсутність рядка JSON (падіння процесу, несподіваний вивід) — це НЕ порожній рядок
+# таблиці: без видимого маркера така подія непомітно зменшила б покриття, а підсумок усе
+# одно рапортував би "зібрано" на весь список файлів. GUID-суфікс тимч. файлу — та сама
+# пастка, що й у решти рівня (SigOut/лог кейса 6): фіксоване ім'я дало б гонку при
+# паралельних прогонах x86+x64.
+function Invoke-Case9([string]$file) {
+    $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_9_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+    $argList = @('9', "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"", '""', "`"$file`"")
+    $p = Start-Process -FilePath $NativeHostExe -ArgumentList $argList `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+    $raw = ''
+    if (Test-Path $outF) { $raw = [System.IO.File]::ReadAllText($outF, [System.Text.Encoding]::UTF8) }
+    Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
+    $line = ($raw -split "`r?`n" | Where-Object { $_ -match '^\{' } | Select-Object -Last 1)
+    if (-not $line) { $line = "<немає виводу, exit=$($p.ExitCode)>" }
+    [pscustomobject]@{ ExitCode = $p.ExitCode; Raw = $line }
+}
+
 if ($NoUapki) {
     Add-Result 'L4-iit' 'арбітр ІІТ' 'SKIP' 'режим -NoUapki: підпис не створюється'
 }
@@ -735,25 +756,6 @@ elseif (-not (Test-Path $MainDll)) {
     Add-Result 'L4-iit' 'матриця вердиктів' 'SKIP' "немає головної DLL: $MainDll"
 }
 else {
-    # Наш вердикт (кейс 9) по одному файлу. GUID-суфікс тимч. файлу — та сама
-    # пастка, що й у решти рівня (SigOut/лог кейса 6): фіксоване ім'я дало б
-    # гонку при паралельних прогонах x86+x64.
-    # Відсутність рядка JSON (падіння процесу, несподіваний вивід) — це НЕ порожній
-    # рядок таблиці: без видимого маркера така подія непомітно зменшила б покриття,
-    # а підсумок усе одно рапортував би "зібрано" на весь список файлів.
-    function Invoke-Case9([string]$file) {
-        $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_9_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
-        $argList = @('9', "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"", '""', "`"$file`"")
-        $p = Start-Process -FilePath $NativeHostExe -ArgumentList $argList `
-                -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
-        $raw = ''
-        if (Test-Path $outF) { $raw = [System.IO.File]::ReadAllText($outF, [System.Text.Encoding]::UTF8) }
-        Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
-        $line = ($raw -split "`r?`n" | Where-Object { $_ -match '^\{' } | Select-Object -Last 1)
-        if (-not $line) { $line = "<немає виводу, exit=$($p.ExitCode)>" }
-        [pscustomobject]@{ ExitCode = $p.ExitCode; Raw = $line }
-    }
-
     $rows = @()
     foreach ($f in $czoFiles) {
         $rel  = $f.FullName.Substring($czoDir.Length + 1)
@@ -776,6 +778,81 @@ else {
     else {
         Add-Result 'L4-iit' 'матриця вердиктів' 'FAIL' `
             "зібрано лише $($collected.Count) з $($rows.Count) файлів — див. рядки з <немає виводу> вище"
+    }
+}
+
+# =====================================================================
+# ЕТАП L4-iit: еталони ДПС очима двох двигунів
+# =====================================================================
+# Кейс 5 (native_host case 5, C++) раніше зашивав вирок "errorCode 4161 (CERT_NOT_FOUND)
+# завжди прийнятний, бо офлайн бракує сертифіката TSP" — і друкував лише вердикт нашого
+# двигуна. Контрольний вимір (журнал 2026-09-02) на трьох еталонах ДПС показав розбіжність
+# в ОБИДВА боки: на двох файлах наш UAPKI каже INDETERMINATE/4161, а ІІТ — VALID (пояснюється
+# різницею сховищ — у ІІТ повний бандл ЦЗО, ми офлайн); але на третьому — навпаки: НАШ
+# двигун каже TOTAL-VALID/0, а ІІТ ВІДХИЛЯЄ (code=52, сертифікат прострочений — наш STRUCT
+# строку дії не перевіряє). Це критична розбіжність, і вона мусить бути видна В ГЕЙТІ, а не
+# лише в ручному журналі — тому тут вердикти обох двигунів друкуються ПАРОЮ по кожному файлу,
+# у тій самій формі, що й матриця корпусу ЦЗО вище.
+#
+# Каталог еталонів обчислюється НЕЗАЛЕЖНО від блоку L2/L3 (там $prro — локальна змінна
+# власної гілки скрипту, тягнути її звідти крихко): та сама логіка — $env:PRRO_DOCS_DIR,
+# фолбек R:/github/prro_docs.
+#
+# Свідомо БЕЗ автоматичного вироку — та сама причина, що й у матриці корпусу ЦЗО: правило
+# "яка розбіжність є дефектом, а яка властивістю вхідних даних" — відкрите питання №6
+# специфікації, рішення за користувачем, не за гейтом. PASS рахує лише кількість УСПІШНО
+# зібраних пар вердиктів; FAIL — тільки якщо вердикт зібрати не вдалось (інфраструктурний
+# збій: процес впав, немає виводу), не за ЗМІСТОМ розбіжності.
+Section 'ЕТАП L4-iit: еталони ДПС очима двох двигунів'
+
+$prroDocsDir = $env:PRRO_DOCS_DIR
+if (-not $prroDocsDir -and (Test-Path 'R:/github/prro_docs')) { $prroDocsDir = 'R:/github/prro_docs' }
+# @(...) обовʼязково — та сама пастка PS 5.1, що й у корпусі ЦЗО вище: Get-ChildItem на
+# єдиному збігу віддав би скаляр, а не масив з одним елементом.
+$prroSigned = @()
+if ($prroDocsDir -and (Test-Path $prroDocsDir)) {
+    $prroSigned = @(Get-ChildItem -Path $prroDocsDir -Recurse -Filter '*.signed' -ErrorAction SilentlyContinue | Sort-Object FullName)
+}
+
+if ($NoUapki) {
+    Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'SKIP' 'режим -NoUapki: крипто-стек UAPKI не збирається'
+}
+elseif (-not $prroDocsDir -or -not (Test-Path $prroDocsDir)) {
+    Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'SKIP' 'немає PRRO_DOCS_DIR і R:/github/prro_docs'
+}
+elseif ($prroSigned.Count -eq 0) {
+    Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'SKIP' "у $prroDocsDir немає *.signed"
+}
+elseif (-not (Test-Path $IitVerifyExe)) {
+    Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'SKIP' 'немає iit_verify_x86.exe (ціль збирається лише в x86)'
+}
+elseif (-not (Test-Path $NativeHostExe)) {
+    Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'SKIP' "немає native_host: $NativeHostExe"
+}
+elseif (-not (Test-Path $MainDll)) {
+    Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'SKIP' "немає головної DLL: $MainDll"
+}
+else {
+    $prroRows = @()
+    foreach ($s in $prroSigned) {
+        $ours    = Invoke-Case9 $s.FullName
+        $iit     = Invoke-IitVerify $s.FullName   # наявний хелпер рівня L4-iit — читає stdout як UTF-8
+        $iitLine = if ($iit.Raw) { $iit.Raw } else { "<немає виводу, exit=$($iit.ExitCode)>" }
+        $prroRows += [pscustomobject]@{ File = $s.Name; Uapki = $ours.Raw; Iit = $iitLine }
+    }
+    foreach ($row in $prroRows) {
+        Write-Host ("    {0,-40} uapki={1} iit={2}" -f $row.File, $row.Uapki, $row.Iit) -ForegroundColor DarkGray
+    }
+
+    # Той самий критерій, що й у матриці корпусу ЦЗО: підсумок рахує УСПІШНО зібрані пари
+    # (обидва рядки — реальний JSON, а не маркер відсутності), не загальну кількість файлів.
+    $prroCollected = @($prroRows | Where-Object { $_.Uapki -notmatch '^<' -and $_.Iit -notmatch '^<' })
+    if ($prroCollected.Count -eq $prroRows.Count) {
+        Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'PASS' "$($prroRows.Count) еталонів, вердикти обох двигунів зібрано"
+    }
+    else {
+        Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'FAIL' `
+            "зібрано лише $($prroCollected.Count) з $($prroRows.Count) еталонів — див. рядки з <немає виводу> вище"
     }
 }
 

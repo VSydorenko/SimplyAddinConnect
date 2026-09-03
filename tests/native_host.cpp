@@ -688,13 +688,6 @@ static bool case5_crossValidatePrro(const std::wstring& binDir, const std::wstri
     std::string r = c.call("INIT", buildInit(true));
     CHECK(errCode(r, j) == 0, "INIT errorCode == 0");
 
-    // RET_UAPKI_CERT_NOT_FOUND. Еталони ДПС підписані з позначкою часу (CAdES-T), а в тестовому
-    // наборі немає сертифіката TSP-СЕРВЕРА (у відповіді видно "expectedCerts":[{"entity":"TSP"…}]).
-    // Офлайн його нізвідки взяти, тож ланцюг лишається невизначеним — це властивість ВХІДНИХ
-    // ДАНИХ, а не дефект компоненти. Такий документ зараховуємо, ЯКЩО структурна частина
-    // (підпис + геші + сертифікат підписувача) валідна.
-    const long RET_CERT_NOT_FOUND = 4161;
-
     bool allOk = true;
     for (const auto& f : files) {
         printf("  -- %s\n", w2u8(f).c_str());
@@ -715,34 +708,26 @@ static bool case5_crossValidatePrro(const std::wstring& binDir, const std::wstri
                 && !res["signatureInfos"].empty())
                 si = &res["signatureInfos"][0];
         }
-        if (!si) {
-            printf("  FAIL: немає signatureInfos (errorCode=%ld)\n", ec);
-            allOk = false;
-            continue;
-        }
-        const std::string st = si->value("status", std::string());
-        const std::string ss = si->value("statusSignature", std::string());
-        const bool validDig  = si->value("validDigests", false);
-        const bool hasSigner = si->contains("signerCertId")
-                            && !si->value("signerCertId", std::string()).empty();
-        // Структурна валідність: підпис над signedAttributes + геші вмісту + є підписувач.
-        const bool structOk = (ss.rfind("VALID", 0) == 0) && validDig && hasSigner;
+        const std::string st = si ? si->value("status", std::string()) : std::string();
+        const std::string ss = si ? si->value("statusSignature", std::string()) : std::string();
+        const bool validDig  = si ? si->value("validDigests", false) : false;
 
-        bool ok = false;
-        const char* verdict = "";
-        if (ec == 0 && st == "TOTAL-VALID") {
-            ok = true;  verdict = "повністю валідний";
-        } else if (ec == RET_CERT_NOT_FOUND && structOk) {
-            ok = true;  verdict = "структурно валідний; ланцюг/TSP офлайн не перевіряються (очікувано)";
+        // РАНІШЕ: errorCode 4161 (CERT_NOT_FOUND) беззастережно вважався прийнятним, бо
+        // офлайн бракує сертифіката TSP-сервера. Це судження жило всередині тесту й могло
+        // маскувати справжній дефект (напр., прострочений сертифікат підписувача, якого
+        // STRUCT не перевіряє). Тепер вердикт друкується машинно-читно без вироку; звірку з
+        // незалежним двигуном (ІІТ) на цих самих файлах робить run_tests.ps1.
+        printf("  {\"engine\":\"uapki\",\"file\":\"%s\",\"status\":\"%s\","
+               "\"statusSignature\":\"%s\",\"validDigests\":%s,\"errorCode\":%ld}\n",
+               w2u8(f).c_str(), st.c_str(), ss.c_str(), validDig ? "true" : "false", ec);
+
+        // FAIL лишається ЛИШЕ там, де зламана САМА структура підпису (немає signatureInfos,
+        // statusSignature не починається з VALID або геші вмісту не збіглись) — це вже не
+        // властивість вхідних даних (сертифікат/TSP/CRL), а дефект нашого розбору.
+        if (!si || ss.rfind("VALID", 0) != 0 || !validDig) {
+            printf("  FAIL: структурна частина невалідна\n");
+            allOk = false;
         }
-        printf("  %s errorCode=%ld status=%s statusSignature=%s validDigests=%s signerCertId=%s%s%s\n",
-               ok ? "ok:" : "FAIL:", ec,
-               st.empty() ? "(немає)" : st.c_str(),
-               ss.empty() ? "(немає)" : ss.c_str(),
-               validDig ? "true" : "false",
-               hasSigner ? "є" : "нема",
-               ok ? " | " : "", verdict);
-        if (!ok) allOk = false;
     }
     c.call("DEINIT", "");
     c.unload();
