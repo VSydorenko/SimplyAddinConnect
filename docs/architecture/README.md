@@ -49,7 +49,7 @@ UAPKI — **лише одна з підсистем**, а не суть усьо
 | 03 | Драйвер ECRPrivatJSON | [ecrprivatjson.md](ecrprivatjson.md) | Платіжний термінал ПриватБанк: кодек/класифікатор, `Connect`, операції/poller/interrupt/async, фасад `ECRPrivatJSON` |
 | 04 | Драйвер LabelPrinter | [label_printer.md](label_printer.md) | Принтер етикеток (ZPL): БПО-фасад `LabelPrinter`, гібридний рендер (нативні штрихкоди + растр GDI+ у `^GF`), batch state machine, spooler-RAW/TCP:9100 |
 | 04a | Контракт БПО | [bpo-contract.md](bpo-contract.md) | «Подключаемое оборудование»: імена системних методів, які РЕАЛЬНО кличе 1С (короткі, не `Equipment-*`), **шарування фасадів** (контракт → семантика → ревізія → протокол, §2.6), три формати XML, **єдина числова таксономія помилок** (§4.3), розбіжність із ІТС |
-| 05 | UAPKI | [uapki.md](uapki.md) | ЕЦП/крипто: JSON-API `process()`, провайдер `cm-pkcs12`, потрійний пошук каталогу |
+| 05 | UAPKI | [uapki.md](uapki.md) | ЕЦП/крипто: JSON-API `process()`, провайдер `cm-pkcs12`, потрійний пошук каталогу, **межа покриття тестами й два свідомі відступи від нормативу** (§8), **дві пастки бібліотеки** — два ідентифікатори ДСТУ-ключа й `TOTAL-VALID` у `STRUCT` (§9) |
 | 06 | Збірка й пакування | [build-and-packaging.md](build-and-packaging.md) | Модульний CMake, `build_project.ps1`, ZIP + `manifest.xml`, доставка в 1С |
 
 > Прикладна інтеграція з 1С (методи, приклади коду, тестування — для 1С-розробника) винесена в

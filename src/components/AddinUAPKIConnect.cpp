@@ -2,6 +2,7 @@
 #include "AddinUAPKIConnect.h"
 #include "../helpers/UAPKIConnect/UAPKIConnectHelper.h"
 #include "../helpers/ServiceTools.h"
+#include <nlohmann/json.hpp>
 
 // Регистрация компонента через статический член класса
 REGISTER_COMPONENT(u"AddinUAPKIConnect", AddinUAPKIConnect)
@@ -55,9 +56,15 @@ void AddinUAPKIConnect::RegisterMethods() {
                 return success;
             }
             catch (const std::exception& e) {
-                // Обработка исключений - возвращаем ошибку в формате JSON
+                // Обработка исключений - возвращаем ошибку в формате JSON.
+                // Через nlohmann::json + dump(), а не конкатенацией строк: текст исключения
+                // может содержать '"' и '\', и без экранирования JSON ломается на стороне 1С.
+                // error_handler=replace: e.what() может быть невалидным UTF-8 (ANSI-текст
+                // нативной библиотеки с кириллическим путём) — без этого dump() сам кинул бы
+                // type_error(316). Тот же приём — EcrJsonCodec.cpp:10-12.
                 std::string errorMessage = e.what();
-                this->result = "{\"errorCode\":500,\"error\":\"" + errorMessage + "\"}";
+                this->result = nlohmann::json{ {"errorCode", 500}, {"error", errorMessage} }
+                    .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
                 // Логирование ошибки
                 REPORT_ERROR("Исключение C++ при вызове UAPKI: " + errorMessage);
@@ -84,15 +91,10 @@ void AddinUAPKIConnect::RegisterMethods() {
 // Метод для вызова команды UAPKI
 bool AddinUAPKIConnect::CallUapki(const std::string& method, const std::string& paramsString, std::string& jsonResponse) {
     try {
-        // Логирование вызова с ограничением длины параметров
-        std::string logParams;
-        if (paramsString.length() > 500) {
-            logParams = paramsString.substr(0, 500) + "...";
-            REPORT_DEBUG("Вызов UAPKIConnectHelper::ExecuteUapkiCommand: метод=" + method + ", сокращенные параметры=" + logParams);
-        } else {
-            REPORT_DEBUG("Вызов UAPKIConnectHelper::ExecuteUapkiCommand: метод=" + method + ", параметры=" + paramsString);
-        }
-        
+        // Параметры НЕ логируем: они содержат password для OPEN. Ниже хелпер
+        // залогирует уже замаскированный запрос целиком.
+        REPORT_DEBUG("Вызов UAPKIConnectHelper::ExecuteUapkiCommand: метод=" + method);
+
         // Вызываем метод UAPKIConnectHelper для выполнения команды
         bool result = UAPKIConnectHelper::ExecuteUapkiCommand(method, paramsString, jsonResponse);
         
@@ -114,7 +116,12 @@ bool AddinUAPKIConnect::CallUapki(const std::string& method, const std::string& 
     catch (const std::exception& e) {
         std::string errorMessage = e.what();
         REPORT_ERROR("Исключение при вызове метода UAPKI " + method + ": " + errorMessage);
-        jsonResponse = "{\"errorCode\":500,\"error\":\"Exception: " + errorMessage + "\"}";
+        // Через nlohmann::json + dump() — конкатенация ломает JSON, если errorMessage
+        // содержит '"' или '\' (см. аналогичный фикс в лямбде RegisterMethods выше).
+        // error_handler=replace: тот же приём — EcrJsonCodec.cpp:10-12 (невалидный UTF-8
+        // в errorMessage не должен ронять dump() прямо внутри catch).
+        jsonResponse = nlohmann::json{ {"errorCode", 500}, {"error", "Exception: " + errorMessage} }
+            .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
         return false;
     }
     catch (...) {

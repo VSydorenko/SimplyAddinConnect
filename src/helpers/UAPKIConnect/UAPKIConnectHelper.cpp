@@ -51,7 +51,10 @@ bool UAPKIConnectHelper::ParseParamsString(const std::string& paramsString, nloh
         bool insideQuotes = false;
         size_t pos = 0;
 
-        NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper", "Начало разбора параметров: " + paramsString);
+        // Сырую строку параметров НЕ логируем: в плоском формате "ключ=значение" здесь может
+        // быть password=<пароль контейнера> (см. OPEN), а до разбора замаскировать его надёжно
+        // нельзя. Ниже (ExecuteUapkiCommand) в лог всё равно идёт УЖЕ замаскированный запрос.
+        NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper", "Начало разбора параметров, длина строки: " + std::to_string(paramsString.size()));
 
         while (pos < paramsString.size()) {
             // Читаем ключ до знака = или конца строки
@@ -123,7 +126,10 @@ bool UAPKIConnectHelper::ParseParamsString(const std::string& paramsString, nloh
 
             // Добавляем пару ключ-значение в JSON
             paramsJson[key] = value;
-            NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper", "Добавлен параметр: " + key + " = " + value);
+            // В сам JSON кладём значение как есть, а в лог — только под маской для секретов:
+            // критерий тот же, что и в MaskPasswords (поле с именем "password").
+            NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper",
+                                 "Добавлен параметр: " + key + " = " + (key == "password" ? std::string("***") : value));
 
             // Пропускаем запятую и пробелы
             if (pos < paramsString.size() && paramsString[pos] == ',') {
@@ -611,7 +617,6 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
     try {
         // Логируем начало выполнения операции
         NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "Начало выполнения команды UAPKI: " + method);
-        NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper", "Параметры команды UAPKI: " + paramsString);
 
         // Формируем JSON-запрос с использованием nlohmann/json
         nlohmann::json requestJson;
@@ -630,6 +635,14 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
             try {
                 paramsJson = nlohmann::json::parse(paramsString);
                 NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper", "Параметры распознаны как готовый JSON-объект");
+            }
+            catch (const nlohmann::json::parse_error& e) {
+                // what() у nlohmann цитирует фрагмент разбираемой строки ("last read: ..."),
+                // а в ней может стоять password. Логируем только код ошибки и смещение —
+                // для диагностики битого JSON этого достаточно, содержимого не раскрываем.
+                responseJson = R"({"errorCode":400,"error":"Invalid JSON parameters"})";
+                NEUTRAL_REPORT_ERROR("UAPKIConnectHelper", "Не удалось разобрать параметры как JSON-объект: ошибка разбора id=" + std::to_string(e.id) + ", позиция (байт): " + std::to_string(e.byte));
+                return false;
             }
             catch (const std::exception& e) {
                 responseJson = R"({"errorCode":400,"error":"Invalid JSON parameters"})";
@@ -664,11 +677,24 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
         // Преобразуем JSON в строку
         std::string requestStr = requestJson.dump();
 
-        // Логирование запроса (с ограничением длины для больших запросов)
-        if (requestStr.length() > 2000) {
-            NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "UAPKI Request (сокращенный): " + requestStr.substr(0, 2000) + "...");
+        // Логирование запроса (с ограничением длины для больших запросов).
+        // Для лога — ОТДЕЛЬНАЯ замаскированная копия. В process() ВСЕГДА идёт оригинал:
+        // маскирование здесь никак не влияет на сам запрос.
+        std::string logRequest = requestStr;
+        try {
+            nlohmann::json maskedReq = requestJson;
+            MaskPasswords(maskedReq);
+            logRequest = maskedReq.dump();
+        }
+        catch (const std::exception& e) {
+            // Не удалось замаскировать — лучше не логировать запрос вообще, чем слить пароль.
+            logRequest = "<запрос не залогирован: ошибка маскирования: " + std::string(e.what()) + ">";
+        }
+
+        if (logRequest.length() > 2000) {
+            NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "UAPKI Request (сокращенный): " + logRequest.substr(0, 2000) + "...");
         } else {
-            NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "UAPKI Request: " + requestStr);
+            NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "UAPKI Request: " + logRequest);
         }
 
         // Выполнение запроса через UAPKI API с использованием функций из библиотеки
@@ -721,8 +747,15 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
         }
     }
     catch (const std::exception& e) {
-        // В случае исключения формируем JSON-ответ с сообщением об ошибке
-        responseJson = R"({"errorCode":500,"error":")" + std::string(e.what()) + R"("})";
+        // В случае исключения формируем JSON-ответ с сообщением об ошибке.
+        // Через nlohmann::json + dump(), а не конкатенацией строк: текст исключения
+        // может содержать '"' и '\' (пути, цитаты nlohmann при ошибках разбора), и
+        // конкатенация без экранирования ломает синтаксис JSON на стороне 1С.
+        // error_handler=replace: e.what() нативной библиотеки UAPKI может прийти в ANSI
+        // (кириллический путь к контейнеру), т.е. быть невалидным UTF-8 — без этого сам
+        // dump() кинул бы type_error(316) прямо из catch. Тот же приём — EcrJsonCodec.cpp:10-12.
+        responseJson = nlohmann::json{ {"errorCode", 500}, {"error", std::string(e.what())} }
+            .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
         // Логируем ошибку
         NEUTRAL_REPORT_ERROR("UAPKIConnectHelper", "UAPKI Exception при выполнении метода " + method + ": " + std::string(e.what()));

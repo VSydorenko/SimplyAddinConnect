@@ -43,6 +43,7 @@
 #include <mutex>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -604,6 +605,81 @@ static std::string previewText(const std::string& s, size_t maxLen) {
 
 
 // ============================================================================
+// Зовнішній суддя self-test'у: iit_verify_x86.exe окремим процесом
+// ============================================================================
+// Досі self-test замикав коло сам на себе: signData нашим стеком -> verifyCms нашим
+// же. Ця функція розмикає коло — віддає CMS НЕЗАЛЕЖНОМУ двигуну (нативна бібліотека
+// АТ «ІІТ», інша кодова база; докладніше tests/iit_verify.cpp).
+// Повертає код виходу iit_verify: 0 валідний | 1 невалідний | 2 помилка | 3 SKIP.
+// Не знайшли арбітра, не змогли записати тимчасовий файл чи запустити процес ->
+// 3 (SKIP), НІКОЛИ не мовчазний успіх.
+static int judgeByIit(const std::string& cms) {
+    wchar_t tmpDir[MAX_PATH]{};
+    if (GetTempPathW(MAX_PATH, tmpDir) == 0) return 3;
+
+    // PID + монотонний лічильник процесу: self-test кличе цю функцію мінімум двічі
+    // (good/bad) з ОДНОГО процесу, а x86- і x64-варіанти оракула самостійні процеси
+    // з різними PID, тож цього досить для унікальності імені без COM/GUID-залежності.
+    // Фіксоване ім'я тут уже кусало гонкою на паралельних прогонах (нотатка в брифі).
+    static volatile LONG s_seq = 0;
+    const LONG seq = InterlockedIncrement(&s_seq);
+    const std::wstring tmp = std::wstring(tmpDir) + L"sac_judge_"
+                           + std::to_wstring(GetCurrentProcessId()) + L"_"
+                           + std::to_wstring(seq) + L".p7s";
+
+    {
+        HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return 3;
+        DWORD w = 0;
+        const bool ok = WriteFile(h, cms.data(), (DWORD)cms.size(), &w, nullptr) != 0
+                     && w == cms.size();
+        CloseHandle(h);
+        if (!ok) { DeleteFileW(tmp.c_str()); return 3; }
+    }
+
+    // Арбітр лежить поруч з оракулом (bin/Release, ціль лише x86 — EUSignCP.dll
+    // 32-бітна). Не знайшли -> SKIP, а не мовчазний PASS.
+    const std::wstring exe = exeDir() + L"\\iit_verify_x86.exe";
+    if (GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        DeleteFileW(tmp.c_str());
+        return 3;
+    }
+
+    std::wstring cmd = L"\"" + exe + L"\" \"" + tmp + L"\"";
+    STARTUPINFOW si{ sizeof(si) };
+    si.dwFlags     = STARTF_USESHOWWINDOW;   // CREATE_NO_WINDOW + SW_HIDE: без блимання вікна
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+    buf.push_back(L'\0');
+    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        DeleteFileW(tmp.c_str());
+        return 3;
+    }
+
+    // Таймаут 120 с (як у tests/support/IitStore.cpp — холодний старт арбітра тягне
+    // бандл ЦЗО ~9 с, запас достатній). На таймауті TerminateProcess ОБОВ'ЯЗКОВИЙ:
+    // інакше завислий дочірній процес тримає tmp відкритим, і DeleteFileW нижче
+    // мовчки провалиться, лишивши тимчасовий файл (пастка вже ловилась у задачі 7).
+    int rc = 3;
+    if (WaitForSingleObject(pi.hProcess, 120000) == WAIT_TIMEOUT) {
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, INFINITE);   // доочікування звільнення tmp
+    } else {
+        DWORD ec = 3;
+        GetExitCodeProcess(pi.hProcess, &ec);
+        rc = (int)ec;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    DeleteFileW(tmp.c_str());   // прибрати на ВСІХ гілках
+    return rc;
+}
+
+
+// ============================================================================
 // --self-test (без 1С і без піднятого сервера)
 // ============================================================================
 static int runSelfTest(const Config& cfg) {
@@ -638,6 +714,56 @@ static int runSelfTest(const Config& cfg) {
     else if (bad.size() > 40)          bad[bad.size() / 2] = (char)(bad[bad.size() / 2] ^ 0x01);
     const VerifyOutcome nok = verifyCms(bad);
     check(!nok.accepted, "CMS зі зіпсованим вмістом ВІДХИЛЕНО (не accepted)");
+
+    // Замикаємо коло: досі self-test підписував нашим стеком і перевіряв нашим же
+    // (verifyCms вище). Негативні кейси цінні, але доводять лише, що НАШ верифікатор
+    // помічає псування — не що наш ПІДПИС прийнятний для СТОРОННЬОГО двигуна.
+    // Тепер той самий good/bad CMS судить iit_verify_x86.exe (нативна бібліотека
+    // АТ «ІІТ», інша кодова база за наш uapki-стек — детальніше в tests/iit_verify.cpp).
+    //
+    // ВИМІР (2026-09-03, ключ tests/data/test-diia.p12): і good, і bad CMS дають від
+    // арбітра ОДНАКОВИЙ вердикт {"status":"INVALID","code":52,
+    // "desc":"Сертифікат не чинний за строком дії або закінчився строк дії відповідного
+    // особистого ключа"} (exit=1). EUVerifyDataInternal перевіряє строк дії сертифіката
+    // РАНІШЕ за дайджести/ланцюг довіри, тож зіпсований вміст ніколи не встигає стати
+    // причиною відмови — тестовий сертифікат прострочений незалежно від вмісту CMS.
+    // Отже для ЦЬОГО ключа зовнішній суддя НЕ РОЗРІЗНЯЄ good/bad: check(accepted)
+    // тут або завжди падав би (=BLOCKED self-test на кожному прогоні), або, якби хтось
+    // послабив умову до «просто відхилено», завжди мовчки проходив би незалежно від
+    // того, чи справді підпис прийнятний, — рівно той тихий PASS, проти якого ця
+    // перевірка й задумана. Тому: НЕ стверджуємо ані «прийнято», ані «відхилено саме
+    // через довіру» — чесно рахуємо перевірку неінформативною для test-diia.p12 і
+    // віддаємо skip з названою причиною, а не вигадану умову, що завжди проходить.
+    const int jGood = judgeByIit(sig);
+    const int jBad  = judgeByIit(bad);
+    if (jGood == 3 || jBad == 3) {
+        std::printf("  skip: арбітр ІІТ недоступний — зовнішня перевірка не виконана "
+                    "(good exit=%d, bad exit=%d)\n", jGood, jBad);
+    } else if (jGood == 0) {
+        // Арбітр ПРИЙМАЄ підпис цим ключем -> перевірка інформативна, ставимо
+        // саме ті умови, заради яких цей рівень і існує.
+        check(jGood == 0, "валідний CMS ПРИЙНЯТО зовнішнім двигуном (ІІТ)");
+        // Саме ==1 (INVALID), а не !=0: exit 2 — це внутрішній збій арбітра, і зараховувати
+        // його як «відхилено зовнішнім двигуном» означало б той самий тихий PASS, проти
+        // якого ця перевірка й існує. Коди iit_verify: 0=VALID, 1=INVALID, 2=ERROR, 3=SKIP.
+        check(jBad == 1, "CMS зі зіпсованим вмістом ВІДХИЛЕНО і зовнішнім двигуном (exit=1)");
+    } else if (jGood == jBad) {
+        std::printf("  skip: арбітр ІІТ не розрізняє good/bad для ключа test-diia.p12 — "
+                    "обидва CMS дають однаковий exit=%d (сертифікат тестового ключа "
+                    "непридатний для арбітра незалежно від вмісту CMS, а не через "
+                    "довіру до ЦСК); зовнішня перевірка для цього ключа неінформативна\n",
+                    jGood);
+    } else {
+        // Позитив арбітр відхилив (ключ непридатний), але негатив дав ІНШИЙ
+        // результат — принаймні негативна гілка інформативна, позитивну чесно
+        // рахуємо неперевіреною (а не тихо зеленою).
+        std::printf("  skip: позитивна перевірка неможлива — арбітр відхилив good CMS "
+                    "(exit=%d), сертифікат test-diia.p12 непридатний для арбітра\n", jGood);
+        // Саме ==1 (INVALID), а не !=0: exit 2 — це внутрішній збій арбітра, і зараховувати
+        // його як «відхилено зовнішнім двигуном» означало б той самий тихий PASS, проти
+        // якого ця перевірка й існує. Коди iit_verify: 0=VALID, 1=INVALID, 2=ERROR, 3=SKIP.
+        check(jBad == 1, "CMS зі зіпсованим вмістом ВІДХИЛЕНО і зовнішнім двигуном (exit=1)");
+    }
 
     // --- Негатив 2: взагалі не CMS -> не accepted і без падіння ---
     const VerifyOutcome junk = verifyCms(std::string("\x01\x02\x03not-a-cms", 12));

@@ -32,6 +32,8 @@ int main() {
 
 #include <nlohmann/json.hpp>
 
+#include "support/LocalKeys.h"
+
 #pragma comment(lib, "shell32.lib")  // CommandLineToArgvW
 
 // SDK 1С (include/). types.h визначає WCHAR_T=wchar_t та ADDIN_API=__stdcall
@@ -91,6 +93,33 @@ static std::string fwd(const std::wstring& w) {
     std::string s = w2u8(w);
     std::replace(s.begin(), s.end(), '\\', '/');
     return s;
+}
+
+// Екранування рядка для вставки у вручну зібраний JSON (printf-складання, не nlohmann::json).
+// Той самий підхід, що й jsonEscape у tests/iit_verify.cpp: без нього шлях із зворотними
+// слешами (звичайний Windows-шлях) робить рядок невалідним JSON — "\g" не є коректною
+// escape-послідовністю, і жоден строгий парсер (напр. ConvertFrom-Json) його не прочитає.
+static std::string jsonEscape(const std::string& s) {
+    std::string o;
+    o.reserve(s.size() + 16);
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"':  o += "\\\""; break;
+            case '\\': o += "\\\\"; break;
+            case '\n': o += "\\n";  break;
+            case '\r': o += "\\r";  break;
+            case '\t': o += "\\t";  break;
+            default:
+                if (c < 0x20) {
+                    char b[8];
+                    std::snprintf(b, sizeof(b), "\\u%04x", (unsigned)c);
+                    o += b;
+                } else {
+                    o += (char)c;
+                }
+        }
+    }
+    return o;
 }
 
 // ========================================================================
@@ -204,6 +233,32 @@ struct Component {
         return out;
     }
 
+    // Виклик EnableLogging(logLevel, logFilePath) — базовий метод, успадкований
+    // усіма компонентами (AddInNative.cpp:90), функція з двома рядковими
+    // параметрами й bool-результатом. Від'ємний FindMethod — тихого успіху
+    // бути не може, повертаємо false.
+    bool enableLogging(const std::wstring& logLevel, const std::wstring& logFilePath) {
+        long idx = comp->FindMethod(L"EnableLogging");
+        if (idx < 0) { printf("FAIL: FindMethod('EnableLogging') = %ld\n", idx); return false; }
+
+        tVariant params[2];
+        tVarInit(&params[0]);
+        params[0].vt       = VTYPE_PWSTR;
+        params[0].pwstrVal = (WCHAR_T*)logLevel.c_str();
+        params[0].wstrLen  = (uint32_t)logLevel.size();
+        tVarInit(&params[1]);
+        params[1].vt       = VTYPE_PWSTR;
+        params[1].pwstrVal = (WCHAR_T*)logFilePath.c_str();
+        params[1].wstrLen  = (uint32_t)logFilePath.size();
+
+        tVariant ret;
+        tVarInit(&ret);
+        bool ok = comp->CallAsFunc(idx, &ret, params, 2);
+        if (!ok) { printf("FAIL: CallAsFunc('EnableLogging') повернув false\n"); return false; }
+        if (ret.vt != VTYPE_BOOL) { printf("FAIL: EnableLogging повернув неочікуваний тип vt=%d\n", (int)ret.vt); return false; }
+        return ret.bVal;
+    }
+
     void unload() {
         if (comp && destroy) destroy(&comp);
         comp = nullptr;
@@ -295,6 +350,12 @@ static bool readFileBytes(const std::wstring& path, std::vector<unsigned char>& 
     CloseHandle(hf);
     return ok;
 }
+static bool readFileText(const std::wstring& path, std::string& out) {
+    std::vector<unsigned char> raw;
+    if (!readFileBytes(path, raw)) return false;
+    out.assign(raw.begin(), raw.end());
+    return true;
+}
 static std::string b64encode(const std::vector<unsigned char>& in) {
     static const char* T =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -314,6 +375,43 @@ static std::string b64encode(const std::vector<unsigned char>& in) {
         out += '=';
     }
     return out;
+}
+
+// Зворотне до b64encode: base64 -> байти. Пробіли й переноси ігноруються,
+// сторонній символ -> false (щоб зіпсована відповідь не пішла у файл мовчки).
+static bool b64decode(const std::string& b64, std::vector<unsigned char>& out) {
+    auto val = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    out.clear();
+    out.reserve((b64.size() / 4) * 3);
+    int acc = 0, nbits = 0;
+    for (char c : b64) {
+        if (c == '=' || c == '\r' || c == '\n' || c == ' ' || c == '\t') continue;
+        const int v = val(c);
+        if (v < 0) return false;
+        acc = (acc << 6) | v;
+        nbits += 6;
+        if (nbits >= 8) {
+            nbits -= 8;
+            out.push_back((unsigned char)((acc >> nbits) & 0xFF));
+        }
+    }
+    return true;
+}
+static bool writeFileBytes(const std::wstring& path, const std::vector<unsigned char>& data) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    const BOOL ok = WriteFile(h, data.data(), (DWORD)data.size(), &written, nullptr);
+    CloseHandle(h);
+    return ok != 0 && written == data.size();
 }
 
 // Макрос перевірки: провал -> друк і повернення false з кейса.
@@ -336,6 +434,13 @@ static std::string buildOpen(const std::wstring& p12Path) {
     p["password"] = "testpassword";
     p["mode"]     = "RO";
     return p.dump();
+}
+// Той самий OPEN, але в ПЛОСКОМУ форматі "ключ=значення" — це друга гілка розбору в
+// ExecuteUapkiCommand (ParseParamsString), і саме її docs/integration-1c/uapki.md радить
+// «для простих методів без вкладень». Пароль тут іде в компоненту сирим рядком, тож
+// перевірка «пароля немає в лозі» мусить покривати обидва формати, а не лише JSON.
+static std::string buildOpenFlat(const std::wstring& p12Path) {
+    return "provider=PKCS12,storage=" + fwd(p12Path) + ",password=testpassword,mode=RO";
 }
 static std::string buildSign() {
     json sp;
@@ -533,7 +638,17 @@ static bool case4_fullChain(const std::wstring& binDir, const std::wstring& data
     printf("  VERIFY: %s\n", r.substr(0, 400).c_str());
     CHECK(errCode(r, j) == 0, "VERIFY errorCode == 0");
 
-    // --- L3.2: структурна крос-перевірка формату підпису ПРРО ---
+    // --- L3.2: структурна перевірка ОФЛАЙН-профілю ПРРО (CAdES-BES) ---
+    // МЕЖА ПОКРИТТЯ, читай уважно:
+    //   * норматив ДПС вимагає CAdES-E-T із signature-time-stamp для онлайн-документів
+    //     («Опис АРІ фіскального сервера (ЄВПЕЗ)», розділ «Порядок засвідчення повідомлень»);
+    //   * позначка часу НЕ обов'язкова лише для документів, створених в офлайні — саме цей
+    //     профіль тут і перевіряється;
+    //   * тому signatureTS відсутній ПРАВОМІРНО, а не «так має бути завжди»;
+    //   * онлайн-шлях (похід у TSP) не покритий ЖОДНИМ тестом: код
+    //     extern/uapki/library/uapki/src/doc-sign.cpp:864-877 не виконувався ніколи.
+    // Доказом коректності самого підпису є вердикт стороннього двигуна (рівень L4-iit),
+    // а не наш власний VERIFY нижче — той є РЕГРЕСІЙНОЮ перевіркою.
     auto& res = j["result"];
     CHECK(res.contains("signatureInfos") && res["signatureInfos"].is_array()
           && !res["signatureInfos"].empty(), "result.signatureInfos присутній");
@@ -617,13 +732,6 @@ static bool case5_crossValidatePrro(const std::wstring& binDir, const std::wstri
     std::string r = c.call("INIT", buildInit(true));
     CHECK(errCode(r, j) == 0, "INIT errorCode == 0");
 
-    // RET_UAPKI_CERT_NOT_FOUND. Еталони ДПС підписані з позначкою часу (CAdES-T), а в тестовому
-    // наборі немає сертифіката TSP-СЕРВЕРА (у відповіді видно "expectedCerts":[{"entity":"TSP"…}]).
-    // Офлайн його нізвідки взяти, тож ланцюг лишається невизначеним — це властивість ВХІДНИХ
-    // ДАНИХ, а не дефект компоненти. Такий документ зараховуємо, ЯКЩО структурна частина
-    // (підпис + геші + сертифікат підписувача) валідна.
-    const long RET_CERT_NOT_FOUND = 4161;
-
     bool allOk = true;
     for (const auto& f : files) {
         printf("  -- %s\n", w2u8(f).c_str());
@@ -644,34 +752,36 @@ static bool case5_crossValidatePrro(const std::wstring& binDir, const std::wstri
                 && !res["signatureInfos"].empty())
                 si = &res["signatureInfos"][0];
         }
-        if (!si) {
-            printf("  FAIL: немає signatureInfos (errorCode=%ld)\n", ec);
-            allOk = false;
-            continue;
-        }
-        const std::string st = si->value("status", std::string());
-        const std::string ss = si->value("statusSignature", std::string());
-        const bool validDig  = si->value("validDigests", false);
-        const bool hasSigner = si->contains("signerCertId")
+        const std::string st = si ? si->value("status", std::string()) : std::string();
+        const std::string ss = si ? si->value("statusSignature", std::string()) : std::string();
+        const bool validDig  = si ? si->value("validDigests", false) : false;
+        // signerCertId — теж частина СТРУКТУРИ підпису (без нього нема кого перевіряти),
+        // а не властивість довіри/строку дії; тому лишається в критерії FAIL поруч зі
+        // statusSignature/validDigests, як і в кейсі 5 до цієї правки.
+        const bool hasSigner = si && si->contains("signerCertId")
                             && !si->value("signerCertId", std::string()).empty();
-        // Структурна валідність: підпис над signedAttributes + геші вмісту + є підписувач.
-        const bool structOk = (ss.rfind("VALID", 0) == 0) && validDig && hasSigner;
 
-        bool ok = false;
-        const char* verdict = "";
-        if (ec == 0 && st == "TOTAL-VALID") {
-            ok = true;  verdict = "повністю валідний";
-        } else if (ec == RET_CERT_NOT_FOUND && structOk) {
-            ok = true;  verdict = "структурно валідний; ланцюг/TSP офлайн не перевіряються (очікувано)";
+        // РАНІШЕ: errorCode 4161 (CERT_NOT_FOUND) беззастережно вважався прийнятним, бо
+        // офлайн бракує сертифіката TSP-сервера. Це судження жило всередині тесту й могло
+        // маскувати справжній дефект (напр., прострочений сертифікат підписувача, якого
+        // STRUCT не перевіряє). Тепер вердикт друкується машинно-читно без вироку; звірку з
+        // незалежним двигуном (ІІТ) на цих самих файлах робить run_tests.ps1.
+        // file екрановано jsonEscape (не лише fwd/forward-slash): рядок мусить лишатись
+        // валідним JSON і на випадок лапок/керуючих символів у шляху, не тільки зворотних
+        // слешів — Windows-шлях без екранування ламає будь-який строгий парсер (ConvertFrom-Json).
+        printf("{\"engine\":\"uapki\",\"file\":\"%s\",\"status\":\"%s\","
+               "\"statusSignature\":\"%s\",\"validDigests\":%s,\"hasSigner\":%s,\"errorCode\":%ld}\n",
+               jsonEscape(w2u8(f)).c_str(), st.c_str(), ss.c_str(),
+               validDig ? "true" : "false", hasSigner ? "true" : "false", ec);
+
+        // FAIL лишається ЛИШЕ там, де зламана САМА структура підпису (немає signatureInfos,
+        // statusSignature не починається з VALID, геші вмісту не збіглись або немає
+        // сертифіката підписувача) — це вже не властивість вхідних даних (довіра/TSP/CRL),
+        // а дефект нашого розбору.
+        if (!si || ss.rfind("VALID", 0) != 0 || !validDig || !hasSigner) {
+            printf("  FAIL: структурна частина невалідна\n");
+            allOk = false;
         }
-        printf("  %s errorCode=%ld status=%s statusSignature=%s validDigests=%s signerCertId=%s%s%s\n",
-               ok ? "ok:" : "FAIL:", ec,
-               st.empty() ? "(немає)" : st.c_str(),
-               ss.empty() ? "(немає)" : ss.c_str(),
-               validDig ? "true" : "false",
-               hasSigner ? "є" : "нема",
-               ok ? " | " : "", verdict);
-        if (!ok) allOk = false;
     }
     c.call("DEINIT", "");
     c.unload();
@@ -679,11 +789,364 @@ static bool case5_crossValidatePrro(const std::wstring& binDir, const std::wstri
 }
 
 // ========================================================================
+// КЕЙС 6 — пароль контейнера НЕ потрапляє у файл лога
+// ========================================================================
+// Логи пишуться через ИспользоватьЛогирование. Перевіряємо не наявність
+// маскування, а ВІДСУТНІСТЬ секрету: єдине, що справді має значення.
+static bool case6_passwordNotLogged(const std::wstring& binDir, const std::wstring& dataDir) {
+    printf("== Case 6: пароль не потрапляє в лог ==\n");
+    std::wstring dllName = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
+    std::wstring p12     = dataDir + L"\\test-diia.p12";
+    CHECK(pathExists(p12), "test-diia.p12 присутній");
+
+    wchar_t tmpDir[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tmpDir);
+    // PID у імені: паралельні прогони x86/x64 інакше затирали б лог одне одному.
+    std::wstring logPath = std::wstring(tmpDir) + L"sac_case6_" + std::to_wstring(GetCurrentProcessId()) + L".log";
+    DeleteFileW(logPath.c_str());
+
+    Component c;
+    if (!c.load(binDir + L"\\" + dllName)) return false;
+
+    CHECK(c.enableLogging(L"Trace", logPath), "лог увімкнено");
+
+    json j;
+    std::string r = c.call("INIT", buildInit(true));
+    CHECK(errCode(r, j) == 0, "INIT errorCode == 0");
+
+    r = c.call("OPEN", buildOpen(p12));     // buildOpen кладе password "testpassword"
+    printf("  OPEN (JSON): %s\n", r.c_str());
+    CHECK(errCode(r, j) == 0, "OPEN (JSON) errorCode == 0");
+
+    c.call("CLOSE", "");
+
+    // Другий OPEN — плоским форматом. Окрема гілка розбору (ParseParamsString), і саме
+    // вона колись клала сирий рядок з паролем у лог; без цього прогону регресія
+    // повернулася б непоміченою.
+    r = c.call("OPEN", buildOpenFlat(p12));
+    printf("  OPEN (плоский): %s\n", r.c_str());
+    CHECK(errCode(r, j) == 0, "OPEN (плоский формат) errorCode == 0");
+
+    c.call("CLOSE", "");
+    c.call("DEINIT", "");
+    c.unload();                              // закрити лог перед читанням
+
+    std::string logText;
+    CHECK(readFileText(logPath, logText), "лог прочитано");
+    CHECK(!logText.empty(), "лог не порожній");
+    CHECK(logText.find("testpassword") == std::string::npos,
+          "пароль ВІДСУТНІЙ у лозі (обидва OPEN: JSON і плоский формат)");
+    CHECK(logText.find("\"password\":\"***\"") != std::string::npos ||
+          logText.find("\"password\": \"***\"") != std::string::npos,
+          "у лозі є замаскований password");
+    DeleteFileW(logPath.c_str());
+    return true;
+}
+
+// ========================================================================
+// КЕЙС 7 — відкриття РЕАЛЬНИХ контейнерів КНЕДП
+// ========================================================================
+// Дві різні гілки детекту в cm-pkcs12: JKS (магія 0xFEEDFEED -> decodeJks ->
+// jks_decrypt_key) і PKCS#12 (.ZS2 попри розширення є повноцінним PFX).
+// Жодного реального контейнера від КНЕДП раніше не відкривали.
+static bool case7_realContainers(const std::wstring& binDir, const std::wstring& dataDir,
+                                 bool& skipped) {
+    printf("== Case 7: реальні контейнери КНЕДП ==\n");
+    skipped = false;
+
+    std::vector<LocalKey> keys;
+    std::string err;
+    const std::wstring cfg = dataDir + L"\\local-keys.json";
+    if (!LoadLocalKeys(cfg, keys, err)) {
+        printf("FAIL: конфіг зіпсований: %s\n", err.c_str());
+        return false;                       // конфіг є -> наміри заявлені -> FAIL
+    }
+    if (keys.empty()) {
+        printf("SKIP (немає tests/data/local-keys.json — реальні ключі не налаштовані)\n");
+        skipped = true;
+        return true;
+    }
+
+    std::wstring dllName = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
+    Component c;
+    if (!c.load(binDir + L"\\" + dllName)) return false;
+
+    json j;
+    std::string r = c.call("INIT", buildInit(true));
+    CHECK(errCode(r, j) == 0, "INIT errorCode == 0");
+
+    bool allOk = true;
+    for (const auto& k : keys) {
+        printf("  -- ключ '%s'\n", k.id.c_str());
+
+        json op;
+        op["provider"] = "PKCS12";          // провайдер один: детект іде за ВМІСТОМ
+        op["storage"]  = k.path;
+        op["password"] = k.password;
+        op["mode"]     = "RO";
+        r = c.call("OPEN", op.dump());
+        if (errCode(r, j) != 0) {
+            printf("  FAIL: OPEN errorCode=%ld error=%s\n",
+                   errCode(r, j), j.value("error", std::string()).c_str());
+            allOk = false;
+            continue;
+        }
+        printf("  OPEN ok\n");
+
+        r = c.call("KEYS", "");
+        if (errCode(r, j) != 0) { printf("  FAIL: KEYS\n"); allOk = false; c.call("CLOSE", ""); continue; }
+
+        bool algoSeen = k.expectSignAlgo.empty();
+        std::string firstId;
+        if (j["result"].contains("keys") && j["result"]["keys"].is_array()) {
+            for (const auto& key : j["result"]["keys"]) {
+                if (firstId.empty()) firstId = key.value("id", std::string());
+                if (key.contains("signAlgo") && key["signAlgo"].is_array()) {
+                    for (const auto& a : key["signAlgo"])
+                        if (a.get<std::string>() == k.expectSignAlgo) algoSeen = true;
+                }
+            }
+        }
+        if (!algoSeen) {
+            printf("  FAIL: очікуваний signAlgo %s не знайдено серед можливостей ключа\n",
+                   k.expectSignAlgo.c_str());
+            allOk = false;
+        } else {
+            printf("  signAlgo %s підтверджено\n", k.expectSignAlgo.c_str());
+        }
+
+        if (!firstId.empty()) {
+            json sp; sp["id"] = firstId;
+            r = c.call("SELECT_KEY", sp.dump());
+            if (errCode(r, j) != 0) { printf("  FAIL: SELECT_KEY\n"); allOk = false; }
+        }
+        c.call("CLOSE", "");
+    }
+
+    c.call("DEINIT", "");
+    c.unload();
+    CHECK(allOk, "усі реальні контейнери відкрито й алгоритми збіглися");
+    return true;
+}
+
+// ========================================================================
+// КЕЙС 8 — купинний підпис + структурний контракт ПРРО
+// ========================================================================
+// ДПС забороняє: content-time-stamp, CRL/OCSP, сертифікати видавця.
+// ДПС вимагає: вкладений сертифікат підписувача, дані всередині (enveloping).
+// OID дивимось у SignerInfo, а НЕ в сертифікаті: сертифікат старого зразка
+// цілком може підписувати Купиною (живий ticket.p7s ДПС саме такий).
+static bool case8_kupynaSign(const std::wstring& binDir, const std::wstring& dataDir,
+                             const std::wstring& outSig, bool& skipped) {
+    printf("== Case 8: купинний підпис + контракт ПРРО ==\n");
+    skipped = false;
+
+    std::vector<LocalKey> keys;
+    std::string err;
+    if (!LoadLocalKeys(dataDir + L"\\local-keys.json", keys, err)) {
+        printf("FAIL: конфіг зіпсований: %s\n", err.c_str());
+        return false;                       // конфіг є -> наміри заявлені -> FAIL
+    }
+    const LocalKey* k = FindLocalKey(keys, "jks-kupyna");
+    if (!k) {
+        printf("SKIP (немає ключа 'jks-kupyna' у local-keys.json)\n");
+        skipped = true;
+        return true;
+    }
+
+    std::wstring dllName = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
+    Component c;
+    if (!c.load(binDir + L"\\" + dllName)) return false;
+
+    json j;
+    std::string r = c.call("INIT", buildInit(true));
+    CHECK(errCode(r, j) == 0, "INIT errorCode == 0");
+
+    { json op;
+      op["provider"] = "PKCS12";
+      op["storage"]  = k->path;
+      op["password"] = k->password;         // пароль НЕ друкуємо — це особистий КЕП
+      op["mode"]     = "RO";
+      r = c.call("OPEN", op.dump()); }
+    CHECK(errCode(r, j) == 0, "OPEN errorCode == 0");
+
+    // Діагностика CERT_NOT_FOUND: скільки сертифікатів контейнер віддав у cer-store.
+    // Друкуємо ЛИШЕ кількості — вміст особистого КЕП у консоль не виносимо.
+    { json lp; lp["storage"] = true;
+      std::string rs = c.call("LIST_CERTS", lp.dump());
+      json js; const long ecs = errCode(rs, js);
+      size_t inStorage = (ecs == 0 && js["result"].contains("certIds")) ? js["result"]["certIds"].size() : 0;
+      std::string rc = c.call("LIST_CERTS", "{}");
+      json jc; const long ecc = errCode(rc, jc);
+      size_t inCache = (ecc == 0 && jc["result"].contains("certIds")) ? jc["result"]["certIds"].size() : 0;
+      printf("  LIST_CERTS: у контейнері=%zu (errorCode=%ld), у кеші=%zu (errorCode=%ld)\n",
+             inStorage, ecs, inCache, ecc); }
+
+    r = c.call("KEYS", "");
+    CHECK(errCode(r, j) == 0, "KEYS errorCode == 0");
+    CHECK(j["result"].contains("keys") && j["result"]["keys"].is_array()
+          && !j["result"]["keys"].empty(), "result.keys непорожній");
+    std::string keyId  = j["result"]["keys"][0].value("id", std::string());
+    std::string keyId2 = j["result"]["keys"][0].value("keyId2", std::string());
+    CHECK(!keyId.empty(), "id ключа отримано");
+    printf("  keyId2 %s\n", keyId2.empty() ? "відсутній" : "присутній (купинний SKI)");
+
+    // ПАСТКА КУПИНИ. У ДСТУ-ключа ДВА ідентифікатори: `id` — ГОСТ-34311-геш
+    // відкритого ключа, `keyId2` — Купина-256 того самого ключа. Сертифікат
+    // нового зразка несе в розширенні SubjectKeyIdentifier саме КУПИННИЙ геш,
+    // а UAPKI шукає сертифікат підписувача рівно за тим id, яким обрано ключ
+    // (cer-store порівнює з SKI сертифіката). Тож SELECT_KEY за звичним `id`
+    // ключ обирає успішно, але сертифікат до нього НЕ знаходить — і SIGN з
+    // includeCert:true падає з CERT_NOT_FOUND (4161), хоча сертифікат лежить
+    // у контейнері й уже завантажений у кеш (див. LIST_CERTS вище).
+    // Правильний ідентифікатор для купинного ключа — keyId2.
+    auto selectKey = [&](const std::string& id) {
+        json sp; sp["id"] = id;
+        r = c.call("SELECT_KEY", sp.dump());
+        return errCode(r, j) == 0 && j["result"].contains("certId");
+    };
+    bool selected = selectKey(keyId);
+    if (!selected && !keyId2.empty()) {
+        printf("  SELECT_KEY за `id` сертифіката не дав — пробуємо купинний keyId2\n");
+        selected = selectKey(keyId2);
+    }
+    CHECK(errCode(r, j) == 0, "SELECT_KEY errorCode == 0");
+    CHECK(selected, "SELECT_KEY повернув certId (сертифікат підписувача знайдено за SKI)");
+
+    // Купинний підпис у профілі ПРРО (офлайн: без позначки часу).
+    json sp2;
+    sp2["signatureFormat"]  = "CAdES-BES";
+    sp2["signAlgo"]         = "1.2.804.2.1.1.1.1.3.6.1.1";   // ДСТУ4145 + Купина-256
+    sp2["detachedData"]     = false;                          // enveloping
+    sp2["includeCert"]      = true;
+    sp2["includeTime"]      = true;
+    sp2["includeContentTS"] = false;
+    json d; d["id"] = "doc-0"; d["bytes"] = DATA_TBS_B64;
+    json p;
+    p["signParams"] = sp2;
+    p["dataTbs"]    = json::array({ d });
+    p["options"]["ignoreCertStatus"] = true;
+
+    r = c.call("SIGN", p.dump());
+    printf("  SIGN: %s\n", r.substr(0, 300).c_str());
+    // Перший купинний підпис у проєкті: невдача цінна не менше за вдачу, тож
+    // фіксуємо відповідь ПОВНІСТЮ, а не обрізану до 300 символів.
+    if (errCode(r, j) != 0) printf("  SIGN (повна відповідь): %s\n", r.c_str());
+    CHECK(errCode(r, j) == 0, "SIGN errorCode == 0 (КУПИННИЙ ПІДПИС)");
+    std::string sig = j["result"]["signatures"][0].value("bytes", std::string());
+    CHECK(!sig.empty(), "підпис не порожній");
+
+    // VERIFY нашим двигуном — РЕГРЕСІЙНА перевірка, не доказ коректності:
+    // наш код підтверджує наш код. Доказ дає арбітр ІІТ (рівень L4-iit).
+    { json vp; vp["signature"]["bytes"] = sig; r = c.call("VERIFY", vp.dump()); }
+    printf("  VERIFY: %s\n", r.substr(0, 600).c_str());
+    CHECK(errCode(r, j) == 0, "VERIFY errorCode == 0 (регресія)");
+    auto& res = j["result"];
+    CHECK(res.contains("signatureInfos") && !res["signatureInfos"].empty(), "signatureInfos є");
+    auto& si = res["signatureInfos"][0];
+
+    // Пастка ПРРО: алгоритм СЕРТИФІКАТА не визначає алгоритм ПІДПИСУ. Дивимось
+    // саме в SignerInfo — UAPKI віддає його в signatureInfos[].
+    // `status` — ХОЛІСТИЧНИЙ вердикт; друкуємо його для виміру, але CHECK на нього
+    // НЕ ставимо: підпис створено offline з ignoreCertStatus, ланцюг не валідується,
+    // тож не-TOTAL-VALID тут законний (кейс 5 на еталонах ДПС дає INDETERMINATE при
+    // statusSignature=VALID). Спершу вимір — правило потім.
+    printf("  SignerInfo: signAlgo=%s digestAlgo=%s statusSignature=%s statusMessageDigest=%s status=%s\n",
+           si.value("signAlgo", std::string()).c_str(),
+           si.value("digestAlgo", std::string()).c_str(),
+           si.value("statusSignature", std::string()).c_str(),
+           si.value("statusMessageDigest", std::string()).c_str(),
+           si.value("status", std::string()).c_str());
+    CHECK(si.value("statusSignature", std::string()).rfind("VALID", 0) == 0,
+          "statusSignature починається з VALID (регресія)");
+    // Самого statusSignature НЕДОСТАТНЬО: він лишається VALID навіть при пошкодженому
+    // вмісті (docs/integration-1c/uapki.md:181, 386-388). Підміну вмісту ловить саме
+    // statusMessageDigest.
+    CHECK(si.value("statusMessageDigest", std::string()) == "VALID",
+          "statusMessageDigest == VALID (саме це ловить підміну вмісту)");
+    CHECK(si.value("signAlgo",   std::string()) == "1.2.804.2.1.1.1.1.3.6.1.1",
+          "signAlgo у SignerInfo == ДСТУ4145 з Купиною-256");
+    CHECK(si.value("digestAlgo", std::string()) == "1.2.804.2.1.1.1.1.2.2.1",
+          "digestAlgo у SignerInfo == Купина-256");
+
+    // Контракт ПРРО
+    CHECK(res.contains("certIds") && !res["certIds"].empty(), "сертифікат підписувача вкладено");
+    CHECK(!si.contains("contentTS"),      "content-time-stamp ВІДСУТНІЙ (ДПС забороняє)");
+    CHECK(!si.contains("revocationRefs"), "revocationRefs відсутні (ДПС забороняє)");
+    CHECK(!si.contains("certValues"),     "certValues відсутні (ДПС забороняє)");
+    CHECK(!si.contains("certificateRefs"),"certificateRefs відсутні (ДПС забороняє)");
+
+    // Записати підпис для арбітра
+    if (!outSig.empty()) {
+        std::vector<unsigned char> raw;
+        CHECK(b64decode(sig, raw), "підпис декодовано з base64");
+        CHECK(writeFileBytes(outSig, raw), "підпис збережено для арбітра");
+        printf("  підпис записано: %s (%zu байт)\n", w2u8(outSig).c_str(), raw.size());
+    }
+
+    c.call("CLOSE", ""); c.call("DEINIT", ""); c.unload();
+    return true;
+}
+
+// ========================================================================
+// КЕЙС 9 — вердикт НАШОГО VERIFY по одному файлу (для матриці двох двигунів)
+// ========================================================================
+// Еталони ЦЗО лежать у репозиторії з 2026-09-01 і ЖОДНОГО разу не проганялися
+// через нашу перевірку. Вердикт ІІТ для них відомий (code=51, "Сертифікат не
+// знайдено") -> будуємо матрицю: кожен файл отримує ДВА незалежні вердикти.
+// Мета — НЕ в тому, щоб обидва двигуни сказали "валідно" (еталони ЦЗО від
+// тестового ЦСК, "невалідно" від обох — очікувано), а в тому, щоб вони не
+// розходились несподівано.
+//
+// Друкує РІВНО ОДИН рядок JSON на початку рядка (без відступу): run_tests.ps1
+// фільтрує вивід за регексом ^\{, щоб дістати вердикт із решти діагностики.
+static bool case9_verifyOne(const std::wstring& binDir, const std::wstring& file) {
+    if (file.empty()) { printf("FAIL: не задано файл (шостий аргумент, argv[6])\n"); return false; }
+    std::vector<unsigned char> raw;
+    if (!readFileBytes(file, raw) || raw.empty()) { printf("FAIL: файл не прочитано\n"); return false; }
+
+    std::wstring dllName = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
+    Component c;
+    if (!c.load(binDir + L"\\" + dllName)) return false;
+
+    json j;
+    std::string r = c.call("INIT", buildInit(true));
+    if (errCode(r, j) != 0) { printf("FAIL: INIT\n"); c.unload(); return false; }
+
+    json p;
+    p["signature"]["bytes"]        = b64encode(raw);
+    p["options"]["validationType"] = "STRUCT";
+    r = c.call("VERIFY", p.dump());
+    const long ec = errCode(r, j);
+
+    // result заповнюється навіть при errorCode != 0 (див. кейс 5) — саме там
+    // лежить діагностика на кшталт CERT_NOT_FOUND.
+    std::string status          = "NO-INFO";
+    std::string statusSignature;
+    bool        validDigests = false;
+    if (j.contains("result") && j["result"].is_object()) {
+        auto& res = j["result"];
+        if (res.contains("signatureInfos") && res["signatureInfos"].is_array()
+            && !res["signatureInfos"].empty()) {
+            auto& si        = res["signatureInfos"][0];
+            status          = si.value("status", std::string("NO-STATUS"));
+            statusSignature = si.value("statusSignature", std::string());
+            validDigests    = si.value("validDigests", false);
+        }
+    }
+    printf("{\"engine\":\"uapki\",\"status\":\"%s\",\"statusSignature\":\"%s\",\"validDigests\":%s,\"errorCode\":%ld}\n",
+           status.c_str(), statusSignature.c_str(), validDigests ? "true" : "false", ec);
+
+    c.call("DEINIT", ""); c.unload();
+    return true;
+}
+
+// ========================================================================
 // main / CLI
 // ========================================================================
 static void usage() {
     printf(
-        "native_host <case 1..5> [mainDll] [dataDir] [binDir] [prroDir]\n"
+        "native_host <case 1..9> [mainDll] [dataDir] [binDir] [prroDir] [outSig]\n"
         "  case     : номер сценарію (окремий процес на кейс — INIT раз на процес)\n"
         "  mainDll  : шлях до головної DLL (деф.: <binDir>/SimplyAddinConnectWin"
 #ifdef _WIN64
@@ -694,7 +1157,9 @@ static void usage() {
         ".dll)\n"
         "  dataDir  : каталог тест-даних test-diia.p12/certs/crls (деф. compile-time)\n"
         "  binDir   : каталог з провайдером cm-pkcs12_*.dll (деф. compile-time)\n"
-        "  prroDir  : каталог еталонів ДФС для кейса 5 (або env PRRO_DOCS_DIR)\n");
+        "  prroDir  : каталог еталонів ДФС для кейса 5 (або env PRRO_DOCS_DIR)\n"
+        "  outSig   : файл, куди кейс 8 запише створений підпис (вхід для арбітра ІІТ);\n"
+        "             для кейса 9 — той самий argv[6], але як ВХІД: файл .p7s для VERIFY\n");
 }
 
 int main() {
@@ -708,7 +1173,7 @@ int main() {
 
     if (argc < 2) { usage(); LocalFree(wargv); return 2; }
     int kase = _wtoi(wargv[1]);
-    if (kase < 1 || kase > 5) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
+    if (kase < 1 || kase > 9) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
 
     std::wstring binDir  = argAt(4)[0] ? std::wstring(argAt(4)) : u8to16(HOST_BIN_DIR);
     std::wstring dataDir = argAt(3)[0] ? std::wstring(argAt(3)) : u8to16(HOST_DATA_DIR);
@@ -723,18 +1188,20 @@ int main() {
         wchar_t buf[MAX_PATH]; DWORD n = GetEnvironmentVariableW(L"PRRO_DOCS_DIR", buf, MAX_PATH);
         if (n > 0 && n < MAX_PATH) prroDir = buf;
     }
+    // outSig: argv[6] — куди кейс 8 кладе створений підпис (необов'язковий)
+    std::wstring outSig = argAt(6);
     LocalFree(wargv);
 
     printf("native_host: case=%d\n  mainDll=%s\n  dataDir=%s\n  binDir=%s\n",
            kase, w2u8(mainDll).c_str(), w2u8(dataDir).c_str(), w2u8(binDir).c_str());
 
     if (binDir.empty() && kase != 1 && kase != 2) {
-        // кейси 3/4/5 вантажать DLL із binDir
+        // кейси 3/4/5/6/7/8 вантажать DLL із binDir
         if (mainDll.empty()) { printf("FAIL: не задано binDir/mainDll\n"); return 2; }
     }
 
     bool pass = false;
-    bool skipped = false;   // лише кейс 5: еталонів немає -> це НЕ покриття (exit 3)
+    bool skipped = false;   // кейси 5, 7, 8: вхідних даних немає -> це НЕ покриття (exit 3)
     try {
         switch (kase) {
             case 1: pass = case1_resourceDeploy(mainDll);          break;
@@ -742,6 +1209,10 @@ int main() {
             case 3: pass = case3_explicitDir(binDir);              break;
             case 4: pass = case4_fullChain(binDir, dataDir);       break;
             case 5: pass = case5_crossValidatePrro(binDir, prroDir, skipped); break;
+            case 6: pass = case6_passwordNotLogged(binDir, dataDir);  break;
+            case 7: pass = case7_realContainers(binDir, dataDir, skipped); break;
+            case 8: pass = case8_kupynaSign(binDir, dataDir, outSig, skipped); break;
+            case 9: pass = case9_verifyOne(binDir, outSig);                    break;
         }
     } catch (const std::exception& e) {
         printf("FATAL: незловлений виняток: %s\n", e.what());
@@ -754,7 +1225,7 @@ int main() {
     // exit 3 = SKIPPED (кейс не виконувався через відсутність вхідних даних). Окремий код
     // потрібен, щоб оркестратор не малював PASS там, де нічого не перевірялось.
     if (skipped) {
-        printf("\n=== Case %d: SKIPPED (немає вхідних еталонів) ===\n", kase);
+        printf("\n=== Case %d: SKIPPED (немає вхідних даних) ===\n", kase);
         return 3;
     }
     printf("\n=== Case %d: %s ===\n", kase, pass ? "PASS" : "FAIL");
