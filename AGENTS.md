@@ -74,9 +74,10 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTe
 - `-WithTests` — збирає тестові консольні exe з `tests/`. **`core_selftest`, `wire_selftest`,
   `ecr_privatjson_selftest`, `ecr_terminal_emulator`, `ecr_native_host`, `label_printer_selftest`,
   `label_printer_emulator` і `label_native_host` збираються завжди при `-WithTests`** (ядрові/ECR/
-  LabelPrinter-харнеси без UAPKI); а `uapki_selftest`/`uapki_fiscal_emulator`/`native_host` —
-  **лише разом з `-WithUAPKI`** (залежать від крипто-ядра; без UAPKI ці три цілі тихо пропущено,
-  тека `tests/` на Windows конфігурується завжди).
+  LabelPrinter-харнеси без UAPKI); `iit_verify` теж **не** потребує UAPKI, але збирається **лише
+  для x86** (нативна `EUSignCP.dll` 32-бітна); а `uapki_selftest`/`uapki_fiscal_emulator`/
+  `native_host` — **лише разом з `-WithUAPKI`** (залежать від крипто-ядра; без UAPKI ці три цілі
+  тихо пропущено, тека `tests/` на Windows конфігурується завжди).
 
 Скрипт перегенеровує `version.h` (інкремент build), очищає `build_x86/`, `build_x64/`,
 `bin/Release/`, збирає обидві архітектури в Release і пакує в `bin/Release/SimplyAddinConnectWin.zip`.
@@ -97,8 +98,12 @@ TCP-емулятор термінала), `tests/label_printer_selftest.cpp` (х
 `tests/label_native_host.cpp` + `tests/label_printer_emulator.cpp` +
 `tests/support/LabelEmulator.{h,cpp}` (компонента LabelPrinter через DLL + TCP-емулятор принтера
 етикеток), `tests/uapki_fiscal_emulator.cpp` (HTTP-оракул ЕЦП — ручний тест-контур UAPKI із 1С,
-опис нижче), `tests/scenarios/*.json`
-(7 сценаріїв L1), `tests/data/` (тестовий контейнер `test-diia.p12`, сертифікати, CRL — read-only вхід).
+опис нижче), `tests/iit_verify.cpp` + `tests/support/IitStore.{h,cpp}` (арбітр L4-iit на нативній
+бібліотеці ІІТ + підготовка його сховища довіри), `tests/support/LocalKeys.{h,cpp}` (читання
+`tests/data/local-keys.json` — особисті КЕП розробника поза git, зразок —
+`tests/data/local-keys.example.json`), `tests/scenarios/*.json`
+(7 сценаріїв L1), `tests/data/` (тестовий контейнер `test-diia.p12`, сертифікати, CRL, еталони ЦЗО
+`czo/` — read-only вхід).
 
 Тестові цілі (лише Windows; окремі exe). Детальний склад перевірок кожного драйвера — у
 відповідному `docs/architecture/*` (не дублюй його тут); нижче — стабільні рівні гейта:
@@ -116,9 +121,11 @@ TCP-емулятор термінала), `tests/label_printer_selftest.cpp` (х
 | `uapki_selftest.exe` | L1 | **так** | UAPKI-ядро: JSON-сценарії `tests/scenarios/` через `process()`/`json_free()` |
 | `native_host.exe` | L2/L3 | **так** | компонента `AddinUAPKIConnect` через DLL, e2e + крос-валідація ПРРО (кейс 5 потребує `PRRO_DOCS_DIR`; шукає `*.signed` РЕКУРСИВНО, при їх відсутності віддає **exit 3 = SKIP**, а не PASS) |
 | `uapki_fiscal_emulator.exe` | — (ручний) | **так** | HTTP-оракул ЕЦП (грає сервер ДПС/ЄВПЕЗ) для тесту UAPKI з реальної 1С: VERIFY вхідного CMS + підписана квитанція + еталони (`--self-test` — вбудовані перевірки без 1С) |
+| `iit_verify_x86.exe` | L4-iit | ні (**лише x86**) | незалежний арбітр підпису на нативній `EUSignCP.dll` АТ «ІІТ»: один файл → один рядок JSON, exit `0`=VALID / `1`=INVALID / `2`=помилка / `3`=SKIP (арбітр недоступний). Деталі — `docs/architecture/uapki.md` §8.4 |
 
-Цілі без UAPKI (`core`/`wire`/`ecr_*`) збираються завжди при `BUILD_TESTS=ON`; `uapki_selftest`/
-`uapki_fiscal_emulator`/`native_host` — лише разом з `-WithUAPKI` (без UAPKI тихо пропущені).
+Цілі без UAPKI (`core`/`wire`/`ecr_*`, а також `iit_verify` — але той лише в x86) збираються
+завжди при `BUILD_TESTS=ON`; `uapki_selftest`/`uapki_fiscal_emulator`/`native_host` — лише разом
+з `-WithUAPKI` (без UAPKI тихо пропущені).
 `[SKIP]`-рядки (напр. `ComRoundtrip` без пари com0com) — НЕ FAIL: гейт дивиться лише exit-код 0.
 Виняток — `native_host` **кейс 5**: щоб відсутність вхідних еталонів не зараховувалась як покриття,
 він віддає окремий **exit 3 (SKIPPED)**, і оркестратор показує його як `SKIP`, а не `PASS`.
@@ -129,13 +136,16 @@ TCP-емулятор термінала), `tests/label_printer_selftest.cpp` (х
 L0.5 core_selftest ядра → L0.6 wire_selftest device-ядра → L0.7 ecr_privatjson_selftest драйвера →
 L2-ecr ecr_native_host компоненти ECRPrivatJSON через DLL → L-p1 label_printer_selftest драйвера
 LabelPrinter → L-p3 label_native_host компоненти LabelPrinter через DLL → L1 selftest по
-сценаріях → L2/L3 native_host; підсумкова таблиця PASS/FAIL/SKIP/BLOCKED, ненульовий exit при
-провалі). L0.5, L0.6, L0.7, L2-ecr, L-p1 і L-p3 проходять і без `-WithUAPKI`.
+сценаріях → L2/L3 native_host → L4-iit арбітр ІІТ (негативний контроль + наш підпис + матриця
+вердиктів «наш двигун проти ІІТ» на корпусі ЦЗО та еталонах ДПС); підсумкова таблиця
+PASS/FAIL/SKIP/BLOCKED, ненульовий exit при провалі). L0.5, L0.6, L0.7, L2-ecr, L-p1 і L-p3
+проходять і без `-WithUAPKI`. L4-iit іде і з x64-прогону (`iit_verify_x86.exe` — окремий процес,
+WOW64); SKIP там означає, що exe не зібрано або арбітр не піднявся, а не «не та архітектура».
 
 **Режим без UAPKI (`-NoUapki`):** ганяє ядрові/ECR/LabelPrinter-рівні (L0.5 core + L0.6 wire +
 L0.7 ecr + L2-ecr ecr_native_host + L-p1 label_printer_selftest + L-p3 label_native_host) —
-збирає з `-DBUILD_TESTS=ON` **без** `-DBUILD_WITH_UAPKI=ON`; провайдер (L0.2), L1 та L2/L3
-native_host → SKIP (не FAIL). L0.1 (рівно 3 експорти головної DLL), L2-ecr (потребує головну DLL +
+збирає з `-DBUILD_TESTS=ON` **без** `-DBUILD_WITH_UAPKI=ON`; провайдер (L0.2), L1, L2/L3
+native_host і L4-iit → SKIP (не FAIL). L0.1 (рівно 3 експорти головної DLL), L2-ecr (потребує головну DLL +
 `ecr_native_host.exe`) і L-p3 (потребує головну DLL + `label_native_host.exe`) лишаються активними.
 Швидкий гейт device-ядра+ECR+LabelPrinter без важкої статичної збірки крипто-стеку:
 `powershell -File run_tests.ps1 -NoUapki [x64|x86]`.

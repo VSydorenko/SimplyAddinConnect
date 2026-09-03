@@ -16,10 +16,13 @@
             КНЕДП (кейс 7) — лише за наявності tests/data/local-keys.json (особистий КЕП,
             поза git). Обидва — SKIP (exit 3), не PASS, якщо вхідних даних немає.
       L4-iit — незалежний арбітр: наш купинний підпис (кейс 8) очима нативної EUSignCP.dll
-            (iit_verify_x86.exe, ціль лише x86). Негативний контроль — еталон ЦЗО з
-            ТЕСТОВИМ ЦСК мусить бути ВІДХИЛЕНИЙ саме з code=51 ("Сертифікат не знайдено");
-            без нього зелений позитив може означати, що арбітр не піднявся й завжди каже
-            "валідно". На x64 — SKIP (арбітр лише x86), не PASS.
+            (iit_verify_x86.exe — ціль збирається лише в x86, але це ОКРЕМИЙ процес, тож
+            запускається й з x64-прогону через WOW64; обидві архітектури лягають у спільний
+            bin/Release). SKIP тут буває не через архітектуру, а коли iit_verify_x86.exe
+            відсутній або арбітр не піднявся (exit 3 — немає EUSignCP.dll чи сховища довіри).
+            Негативний контроль — еталон ЦЗО з ТЕСТОВИМ ЦСК мусить бути ВІДХИЛЕНИЙ саме з
+            code=51 ("Сертифікат не знайдено"); без нього зелений позитив може означати, що
+            арбітр не піднявся й завжди каже "валідно".
 
     Запуск:  powershell -ExecutionPolicy Bypass -File run_tests.ps1 [x64|x86] [-NoUapki]
     Дефолт архітектури — x64. Ненульовий код виходу, якщо будь-що впало.
@@ -63,6 +66,9 @@ $LabelSelftestExe = Join-Path $BinRelease ("label_printer_selftest" + $ArchSuffi
 $LabelNativeHostExe = Join-Path $BinRelease ("label_native_host" + $ArchSuffix + ".exe")
 $DataDir      = Join-Path $Root 'tests/data'
 $ScenDir      = Join-Path $Root 'tests/scenarios'
+# Особистий КЕП розробника (поза git). Оголошено на рівні скрипта, бо на нього посилаються
+# деталі SKIP і в блоці L2/L3 (кейс 7), і в L4-iit (кейс 8) — гілки, що виконуються незалежно.
+$LocalKeysJson = Join-Path $DataDir 'local-keys.json'
 
 # --- Збір результатів для підсумкової таблиці ---
 $Results = New-Object System.Collections.Generic.List[object]
@@ -572,7 +578,6 @@ else {
     # особистий КЕП розробника, у git не тримається (.gitignore), тож на чужій машині його
     # немає — exit 3 і це НЕ FAIL. Шлях у деталі SKIP навмисний: хто дивиться в таблицю,
     # має отримати готову дію («покласти файл сюди»), а не йти в код за поясненням.
-    $localKeysPath = Join-Path $DataDir 'local-keys.json'
     $argList = @('7', "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"")
     $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_7_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
     $p = Start-Process -FilePath $NativeHostExe -ArgumentList $argList `
@@ -580,7 +585,10 @@ else {
     $txt = if (Test-Path $outF) { Get-Content -Raw $outF } else { '' }
     $lastLine = ($txt -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 1)
     if     ($p.ExitCode -eq 0) { Add-Result 'L2/L3' 'native_host case 7' 'PASS' $lastLine }
-    elseif ($p.ExitCode -eq 3) { Add-Result 'L2/L3' 'native_host case 7' 'SKIP' "$localKeysPath відсутній або поле password порожнє" }
+    # exit 3 харнес віддає РІВНО у двох випадках: файлу немає, або в ньому порожній масив
+    # keys. Порожній password ключа сюди не веде — ключ розібрався б, а впав би OPEN, і це
+    # був би FAIL. Формулюємо те, що код справді розрізняє.
+    elseif ($p.ExitCode -eq 3) { Add-Result 'L2/L3' 'native_host case 7' 'SKIP' "$LocalKeysJson відсутній або має порожній масив keys" }
     else                       { Add-Result 'L2/L3' 'native_host case 7' 'FAIL' "exit=$($p.ExitCode) $lastLine" }
     Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
 }
@@ -690,7 +698,9 @@ else {
         $signRc = $p.ExitCode
         $signLastLine = ($signTxt -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 1)
         if ($signRc -eq 3) {
-            Add-Result 'L4-iit' 'наш підпис' 'SKIP' 'немає ключа jks-kupyna у local-keys.json'
+            # exit 3 приходить і коли файлу немає взагалі, і коли він є, але без ключа
+            # 'jks-kupyna' — харнес ці два випадки не розрізняє, тож і деталь не вигадує.
+            Add-Result 'L4-iit' 'наш підпис' 'SKIP' "$LocalKeysJson відсутній або без ключа 'jks-kupyna'"
         }
         elseif ($signRc -ne 0 -or -not (Test-Path $SigOut)) {
             Add-Result 'L4-iit' 'наш підпис' 'FAIL' "кейс 8 не створив підпис (exit=$signRc) $signLastLine"
@@ -734,6 +744,13 @@ $czoDir = Join-Path $DataDir 'czo'
 # збігу віддав би скаляр, а не масив з одним елементом. Рахуємо ДО гілки if/elseif, щоб
 # порожній (але існуючий) каталог czo можна було відрізнити від відсутнього — інакше він
 # дав би зелений PASS "0 файлів" за нуль реального покриття.
+#
+# УВАГА до складу корпусу: 4 з 8 еталонів — DETACHED (czo\dstu-*\detached\CAdES-*\test.txt.p7s),
+# тобто підписаний вміст лежить ОКРЕМО (поруч у test.txt, див. tests/data/czo/README.md).
+# Ані кейс 9, ані iit_verify цього test.txt зараз НЕ отримують, тож для detached-рядків
+# вердикт обох двигунів стосується лише СТРУКТУРИ підпису, а не звірки з даними. Такі рядки
+# позначені в колонці файлу — щоб їх не читали як повноцінну перевірку. Подавання вмісту
+# обом двигунам (для ІІТ це нова прив'язка EUVerifyDataExternal) — окрема задача.
 $czoFiles = @()
 if (Test-Path $czoDir) { $czoFiles = @(Get-ChildItem -Path $czoDir -Recurse -Filter '*.p7s' | Sort-Object FullName) }
 
@@ -750,7 +767,10 @@ elseif (-not (Test-Path $IitVerifyExe)) {
     Add-Result 'L4-iit' 'матриця вердиктів' 'SKIP' 'немає iit_verify_x86.exe (ціль збирається лише в x86)'
 }
 elseif (-not (Test-Path $NativeHostExe)) {
-    Add-Result 'L4-iit' 'матриця вердиктів' 'SKIP' "немає native_host: $NativeHostExe"
+    # BLOCKED, а не SKIP: відсутність зібраного exe — це недороблена збірка, а не відсутні
+    # вхідні дані. Той самий факт у рядку «наш підпис» (вище) і на рівнях L2-ecr/L-p3 дає
+    # BLOCKED; усі три рядки L4-iit тримаємо в одній конвенції.
+    Add-Result 'L4-iit' 'матриця вердиктів' 'BLOCKED' "немає native_host: $NativeHostExe — зберіть build_project.ps1 -WithUAPKI -WithTests"
 }
 elseif (-not (Test-Path $MainDll)) {
     Add-Result 'L4-iit' 'матриця вердиктів' 'SKIP' "немає головної DLL: $MainDll"
@@ -759,10 +779,12 @@ else {
     $rows = @()
     foreach ($f in $czoFiles) {
         $rel  = $f.FullName.Substring($czoDir.Length + 1)
+        # Позначка detached: вміст цим підписам не подано, вердикт стосується лише структури.
+        $label = if ($rel -match '(^|\\)detached(\\|$)') { "$rel  [detached: вміст не подано]" } else { $rel }
         $ours = Invoke-Case9 $f.FullName
         $iit  = Invoke-IitVerify $f.FullName   # наявний хелпер рівня L4-iit — читає stdout як UTF-8
         $iitLine = if ($iit.Raw) { $iit.Raw } else { "<немає виводу, exit=$($iit.ExitCode)>" }
-        $rows += [pscustomobject]@{ File = $rel; Uapki = $ours.Raw; Iit = $iitLine }
+        $rows += [pscustomobject]@{ File = $label; Uapki = $ours.Raw; Iit = $iitLine; IitExit = $iit.ExitCode }
     }
     foreach ($row in $rows) {
         Write-Host ("    {0,-46} uapki={1} iit={2}" -f $row.File, $row.Uapki, $row.Iit) -ForegroundColor DarkGray
@@ -771,13 +793,23 @@ else {
     # Підсумок рахує САМЕ успішно зібрані пари (обидва рядки — реальний JSON, а не
     # маркер відсутності), не загальну кількість файлів: інакше збій одного з двигунів
     # на конкретному файлі мовчки сховався б за оптимістичним числом.
-    $collected = @($rows | Where-Object { $_.Uapki -notmatch '^<' -and $_.Iit -notmatch '^<' })
-    if ($collected.Count -eq $rows.Count) {
+    # Мало «рядок не починається з <»: при недоступному ІІТ (немає EUSignCP.dll, не піднялося
+    # сховище довіри) арбітр друкує ВАЛІДНИЙ JSON {"status":"SKIP",...} і виходить із 3 —
+    # такий рядок фільтр за '^<' пропускає, і на машині без ІІТ рівень малював би PASS
+    # «вердикти обох двигунів зібрано» при НУЛЬОВОМУ покритті арбітром. Тому пара
+    # зараховується лише коли арбітр справді виніс вердикт: exit 0 (VALID) або 1 (INVALID).
+    $arbiterSkipped = @($rows | Where-Object { $_.IitExit -eq 3 })
+    $collected = @($rows | Where-Object { $_.Uapki -notmatch '^<' -and $_.Iit -notmatch '^<' -and ($_.IitExit -eq 0 -or $_.IitExit -eq 1) })
+    if ($arbiterSkipped.Count -gt 0) {
+        Add-Result 'L4-iit' 'матриця вердиктів' 'SKIP' `
+            "арбітр недоступний (exit 3) на $($arbiterSkipped.Count) з $($rows.Count) файлів: $($arbiterSkipped[0].Iit)"
+    }
+    elseif ($collected.Count -eq $rows.Count) {
         Add-Result 'L4-iit' 'матриця вердиктів' 'PASS' "$($rows.Count) файлів, вердикти обох двигунів зібрано"
     }
     else {
         Add-Result 'L4-iit' 'матриця вердиктів' 'FAIL' `
-            "зібрано лише $($collected.Count) з $($rows.Count) файлів — див. рядки з <немає виводу> вище"
+            "зібрано лише $($collected.Count) з $($rows.Count) файлів — див. рядки з <немає виводу> / SKIP-вердиктом арбітра вище"
     }
 }
 
@@ -827,7 +859,8 @@ elseif (-not (Test-Path $IitVerifyExe)) {
     Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'SKIP' 'немає iit_verify_x86.exe (ціль збирається лише в x86)'
 }
 elseif (-not (Test-Path $NativeHostExe)) {
-    Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'SKIP' "немає native_host: $NativeHostExe"
+    # BLOCKED — та сама конвенція, що й у двох інших рядках L4-iit (див. коментар вище).
+    Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'BLOCKED' "немає native_host: $NativeHostExe — зберіть build_project.ps1 -WithUAPKI -WithTests"
 }
 elseif (-not (Test-Path $MainDll)) {
     Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'SKIP' "немає головної DLL: $MainDll"
@@ -838,21 +871,29 @@ else {
         $ours    = Invoke-Case9 $s.FullName
         $iit     = Invoke-IitVerify $s.FullName   # наявний хелпер рівня L4-iit — читає stdout як UTF-8
         $iitLine = if ($iit.Raw) { $iit.Raw } else { "<немає виводу, exit=$($iit.ExitCode)>" }
-        $prroRows += [pscustomobject]@{ File = $s.Name; Uapki = $ours.Raw; Iit = $iitLine }
+        $prroRows += [pscustomobject]@{ File = $s.Name; Uapki = $ours.Raw; Iit = $iitLine; IitExit = $iit.ExitCode }
     }
     foreach ($row in $prroRows) {
         Write-Host ("    {0,-40} uapki={1} iit={2}" -f $row.File, $row.Uapki, $row.Iit) -ForegroundColor DarkGray
     }
 
     # Той самий критерій, що й у матриці корпусу ЦЗО: підсумок рахує УСПІШНО зібрані пари
-    # (обидва рядки — реальний JSON, а не маркер відсутності), не загальну кількість файлів.
-    $prroCollected = @($prroRows | Where-Object { $_.Uapki -notmatch '^<' -and $_.Iit -notmatch '^<' })
-    if ($prroCollected.Count -eq $prroRows.Count) {
+    # (обидва рядки — реальний JSON, а не маркер відсутності), не загальну кількість файлів,
+    # і додатково вимагає, щоб арбітр справді виніс вердикт (exit 0/1). Його SKIP-заглушка
+    # (exit 3) — валідний JSON, тож фільтр за '^<' її не ловить і без цієї умови рівень
+    # зеленів би при нульовому покритті арбітром.
+    $prroArbiterSkipped = @($prroRows | Where-Object { $_.IitExit -eq 3 })
+    $prroCollected = @($prroRows | Where-Object { $_.Uapki -notmatch '^<' -and $_.Iit -notmatch '^<' -and ($_.IitExit -eq 0 -or $_.IitExit -eq 1) })
+    if ($prroArbiterSkipped.Count -gt 0) {
+        Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'SKIP' `
+            "арбітр недоступний (exit 3) на $($prroArbiterSkipped.Count) з $($prroRows.Count) еталонів: $($prroArbiterSkipped[0].Iit)"
+    }
+    elseif ($prroCollected.Count -eq $prroRows.Count) {
         Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'PASS' "$($prroRows.Count) еталонів, вердикти обох двигунів зібрано"
     }
     else {
         Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'FAIL' `
-            "зібрано лише $($prroCollected.Count) з $($prroRows.Count) еталонів — див. рядки з <немає виводу> вище"
+            "зібрано лише $($prroCollected.Count) з $($prroRows.Count) еталонів — див. рядки з <немає виводу> / SKIP-вердиктом арбітра вище"
     }
 }
 
