@@ -751,7 +751,11 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
         // Через nlohmann::json + dump(), а не конкатенацией строк: текст исключения
         // может содержать '"' и '\' (пути, цитаты nlohmann при ошибках разбора), и
         // конкатенация без экранирования ломает синтаксис JSON на стороне 1С.
-        responseJson = nlohmann::json{ {"errorCode", 500}, {"error", std::string(e.what())} }.dump();
+        // error_handler=replace: e.what() нативной библиотеки UAPKI может прийти в ANSI
+        // (кириллический путь к контейнеру), т.е. быть невалидным UTF-8 — без этого сам
+        // dump() кинул бы type_error(316) прямо из catch. Тот же приём — EcrJsonCodec.cpp:10-12.
+        responseJson = nlohmann::json{ {"errorCode", 500}, {"error", std::string(e.what())} }
+            .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
         // Логируем ошибку
         NEUTRAL_REPORT_ERROR("UAPKIConnectHelper", "UAPKI Exception при выполнении метода " + method + ": " + std::string(e.what()));

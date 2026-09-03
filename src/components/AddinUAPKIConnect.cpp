@@ -59,8 +59,12 @@ void AddinUAPKIConnect::RegisterMethods() {
                 // Обработка исключений - возвращаем ошибку в формате JSON.
                 // Через nlohmann::json + dump(), а не конкатенацией строк: текст исключения
                 // может содержать '"' и '\', и без экранирования JSON ломается на стороне 1С.
+                // error_handler=replace: e.what() может быть невалидным UTF-8 (ANSI-текст
+                // нативной библиотеки с кириллическим путём) — без этого dump() сам кинул бы
+                // type_error(316). Тот же приём — EcrJsonCodec.cpp:10-12.
                 std::string errorMessage = e.what();
-                this->result = nlohmann::json{ {"errorCode", 500}, {"error", errorMessage} }.dump();
+                this->result = nlohmann::json{ {"errorCode", 500}, {"error", errorMessage} }
+                    .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
                 // Логирование ошибки
                 REPORT_ERROR("Исключение C++ при вызове UAPKI: " + errorMessage);
@@ -114,7 +118,10 @@ bool AddinUAPKIConnect::CallUapki(const std::string& method, const std::string& 
         REPORT_ERROR("Исключение при вызове метода UAPKI " + method + ": " + errorMessage);
         // Через nlohmann::json + dump() — конкатенация ломает JSON, если errorMessage
         // содержит '"' или '\' (см. аналогичный фикс в лямбде RegisterMethods выше).
-        jsonResponse = nlohmann::json{ {"errorCode", 500}, {"error", "Exception: " + errorMessage} }.dump();
+        // error_handler=replace: тот же приём — EcrJsonCodec.cpp:10-12 (невалидный UTF-8
+        // в errorMessage не должен ронять dump() прямо внутри catch).
+        jsonResponse = nlohmann::json{ {"errorCode", 500}, {"error", "Exception: " + errorMessage} }
+            .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
         return false;
     }
     catch (...) {
