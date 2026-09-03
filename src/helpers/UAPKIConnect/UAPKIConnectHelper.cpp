@@ -51,7 +51,10 @@ bool UAPKIConnectHelper::ParseParamsString(const std::string& paramsString, nloh
         bool insideQuotes = false;
         size_t pos = 0;
 
-        NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper", "Начало разбора параметров: " + paramsString);
+        // Сырую строку параметров НЕ логируем: в плоском формате "ключ=значение" здесь может
+        // быть password=<пароль контейнера> (см. OPEN), а до разбора замаскировать его надёжно
+        // нельзя. Ниже (ExecuteUapkiCommand) в лог всё равно идёт УЖЕ замаскированный запрос.
+        NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper", "Начало разбора параметров, длина строки: " + std::to_string(paramsString.size()));
 
         while (pos < paramsString.size()) {
             // Читаем ключ до знака = или конца строки
@@ -123,7 +126,10 @@ bool UAPKIConnectHelper::ParseParamsString(const std::string& paramsString, nloh
 
             // Добавляем пару ключ-значение в JSON
             paramsJson[key] = value;
-            NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper", "Добавлен параметр: " + key + " = " + value);
+            // В сам JSON кладём значение как есть, а в лог — только под маской для секретов:
+            // критерий тот же, что и в MaskPasswords (поле с именем "password").
+            NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper",
+                                 "Добавлен параметр: " + key + " = " + (key == "password" ? std::string("***") : value));
 
             // Пропускаем запятую и пробелы
             if (pos < paramsString.size() && paramsString[pos] == ',') {
@@ -629,6 +635,14 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
             try {
                 paramsJson = nlohmann::json::parse(paramsString);
                 NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper", "Параметры распознаны как готовый JSON-объект");
+            }
+            catch (const nlohmann::json::parse_error& e) {
+                // what() у nlohmann цитирует фрагмент разбираемой строки ("last read: ..."),
+                // а в ней может стоять password. Логируем только код ошибки и смещение —
+                // для диагностики битого JSON этого достаточно, содержимого не раскрываем.
+                responseJson = R"({"errorCode":400,"error":"Invalid JSON parameters"})";
+                NEUTRAL_REPORT_ERROR("UAPKIConnectHelper", "Не удалось разобрать параметры как JSON-объект: ошибка разбора id=" + std::to_string(e.id) + ", позиция (байт): " + std::to_string(e.byte));
+                return false;
             }
             catch (const std::exception& e) {
                 responseJson = R"({"errorCode":400,"error":"Invalid JSON parameters"})";

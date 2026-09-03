@@ -435,6 +435,13 @@ static std::string buildOpen(const std::wstring& p12Path) {
     p["mode"]     = "RO";
     return p.dump();
 }
+// Той самий OPEN, але в ПЛОСКОМУ форматі "ключ=значення" — це друга гілка розбору в
+// ExecuteUapkiCommand (ParseParamsString), і саме її docs/integration-1c/uapki.md радить
+// «для простих методів без вкладень». Пароль тут іде в компоненту сирим рядком, тож
+// перевірка «пароля немає в лозі» мусить покривати обидва формати, а не лише JSON.
+static std::string buildOpenFlat(const std::wstring& p12Path) {
+    return "provider=PKCS12,storage=" + fwd(p12Path) + ",password=testpassword,mode=RO";
+}
 static std::string buildSign() {
     json sp;
     sp["signatureFormat"]  = "CAdES-BES";
@@ -808,8 +815,17 @@ static bool case6_passwordNotLogged(const std::wstring& binDir, const std::wstri
     CHECK(errCode(r, j) == 0, "INIT errorCode == 0");
 
     r = c.call("OPEN", buildOpen(p12));     // buildOpen кладе password "testpassword"
-    printf("  OPEN: %s\n", r.c_str());
-    CHECK(errCode(r, j) == 0, "OPEN errorCode == 0");
+    printf("  OPEN (JSON): %s\n", r.c_str());
+    CHECK(errCode(r, j) == 0, "OPEN (JSON) errorCode == 0");
+
+    c.call("CLOSE", "");
+
+    // Другий OPEN — плоским форматом. Окрема гілка розбору (ParseParamsString), і саме
+    // вона колись клала сирий рядок з паролем у лог; без цього прогону регресія
+    // повернулася б непоміченою.
+    r = c.call("OPEN", buildOpenFlat(p12));
+    printf("  OPEN (плоский): %s\n", r.c_str());
+    CHECK(errCode(r, j) == 0, "OPEN (плоский формат) errorCode == 0");
 
     c.call("CLOSE", "");
     c.call("DEINIT", "");
@@ -819,7 +835,7 @@ static bool case6_passwordNotLogged(const std::wstring& binDir, const std::wstri
     CHECK(readFileText(logPath, logText), "лог прочитано");
     CHECK(!logText.empty(), "лог не порожній");
     CHECK(logText.find("testpassword") == std::string::npos,
-          "пароль ВІДСУТНІЙ у лозі");
+          "пароль ВІДСУТНІЙ у лозі (обидва OPEN: JSON і плоский формат)");
     CHECK(logText.find("\"password\":\"***\"") != std::string::npos ||
           logText.find("\"password\": \"***\"") != std::string::npos,
           "у лозі є замаскований password");
