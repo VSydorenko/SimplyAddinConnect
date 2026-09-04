@@ -299,7 +299,9 @@ endif()
 # підпис і повертає підписану квитанцію. Ціль ручна — бо потребує живої 1С по той
 # бік; автоматична частина покрита вбудованим режимом --self-test.
 # ---------------------------------------------------------------------------
-add_executable(uapki_fiscal_emulator uapki_fiscal_emulator.cpp)
+add_executable(uapki_fiscal_emulator uapki_fiscal_emulator.cpp
+    support/MiniHttpServer.cpp            # власний HTTP/1.1-сервер (замість ix::HttpServer)
+)
 
 set_target_properties(uapki_fiscal_emulator PROPERTIES
     CXX_STANDARD 17
@@ -308,15 +310,15 @@ set_target_properties(uapki_fiscal_emulator PROPERTIES
 )
 
 # uapki_bundle — крипто-ядро (process/json_free); parson — його JSON-залежність;
-# ixwebsocket+ws2_32 — HTTP-сервер ix::HttpServer поверх Winsock.
-target_link_libraries(uapki_fiscal_emulator PRIVATE uapki_bundle parson ixwebsocket ws2_32)
+# ws2_32 — Winsock під MiniHttpServer.
+target_link_libraries(uapki_fiscal_emulator PRIVATE uapki_bundle parson ws2_32)
 
 # uapki-інклюди НЕ потрібні: process/json_free оголошені у вихіднику власноруч
-# (extern "C"), а відповіді розбираються nlohmann-ом. IXWEBSOCKET_INCLUDE_DIR =
-# extern/ixwebsocket, тож інклюд пишеться як <ixwebsocket/IXHttpServer.h>.
+# (extern "C"), а відповіді розбираються nlohmann-ом. ${CMAKE_CURRENT_SOURCE_DIR} —
+# щоб інклюд писався як "support/MiniHttpServer.h".
 target_include_directories(uapki_fiscal_emulator PRIVATE
     ${NLOHMANN_JSON_INCLUDE_DIR}
-    ${IXWEBSOCKET_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 # HOST_DATA_DIR — дефолтний каталог тест-даних (certs/ + crls/ + test-diia.p12).

@@ -24,8 +24,8 @@
 // Коди повернення: 0 — штатно; 1 — не піднявся порт / провал self-test; 2 — CLI/bootstrap.
 //
 
-// NOMINMAX/WIN32_LEAN_AND_MEAN — до БУДЬ-ЯКИХ інклюдів: заголовки ixwebsocket тягнуть
-// winsock2/windows.h транзитивно, тож задати їх пізніше вже не вийде.
+// NOMINMAX/WIN32_LEAN_AND_MEAN — до БУДЬ-ЯКИХ інклюдів: MiniHttpServer.h тягне
+// winsock2.h, а той далі windows.h, тож задати їх пізніше вже не вийде.
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
 #endif
@@ -33,8 +33,6 @@
 #  define NOMINMAX
 #endif
 
-// Стандартні заголовки — до ixwebsocket: IXNetSystem.h перевизначає EINVAL/EAGAIN/…
-// на WSA-коди, тож STL краще підключити, поки ці макроси ще «рідні».
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -47,10 +45,10 @@
 
 #include <nlohmann/json.hpp>
 
-// Заголовки ixwebsocket — ПЕРЕД windows.h (winsock2 має потрапити раніше, інакше
-// windows.h підтягне старий winsock.h і посиплються редефініції сокет-типів).
-#include <ixwebsocket/IXNetSystem.h>
-#include <ixwebsocket/IXHttpServer.h>
+// Власний мінімальний HTTP-сервер — ПЕРЕД windows.h (winsock2 має потрапити
+// раніше, інакше windows.h підтягне старий winsock.h і посиплються редефініції
+// сокет-типів). Раніше тут стояв ix::HttpServer; ixwebsocket видалено з репозиторію.
+#include "support/MiniHttpServer.h"
 
 #include <windows.h>
 #include <shellapi.h>   // CommandLineToArgvW (windows.h не тягне його при WIN32_LEAN_AND_MEAN)
@@ -227,7 +225,8 @@ struct Config {
     bool         selfTest = false;
 };
 
-// ix::HttpServer обробляє КОЖНЕ з'єднання окремим потоком, а UAPKI має глобальний
+// MiniHttpServer обробляє КОЖНЕ з'єднання окремим потоком (як і ix::HttpServer до
+// нього), а UAPKI має глобальний
 // крипто-стан (єдине активне сховище й глобально вибраний ключ). Тому ВСІ виклики
 // process() серіалізуються цим замком — жодного прямого виклику process() повз callUapki().
 static std::mutex  g_uapkiMtx;
@@ -566,13 +565,15 @@ static const char* httpReason(int code) {
     }
 }
 
-static ix::HttpResponsePtr httpResp(int code, const std::string& ctype, const std::string& body) {
-    ix::WebSocketHttpHeaders h;
-    h["Content-Type"] = ctype;
+static minihttp::Response httpResp(int code, const std::string& ctype, const std::string& body) {
     std::printf("  → %d %s (%zu B)\n", code, httpReason(code), body.size());
     std::fflush(stdout);
-    return std::make_shared<ix::HttpResponse>(code, std::string(httpReason(code)),
-                                             ix::HttpErrorCode::Ok, h, body);
+    minihttp::Response r;
+    r.code        = code;
+    r.reason      = httpReason(code);
+    r.contentType = ctype;
+    r.body        = body;
+    return r;
 }
 
 // Значення параметра query-рядка: рівно до '&' або до кінця (не «наосліп до кінця»).
@@ -919,7 +920,7 @@ int main() {
         return rc;
     }
 
-    if (!ix::initNetSystem()) {
+    if (!minihttp::InitNetwork()) {
         std::printf("Не вдалося ініціалізувати Winsock\n");
         removeWorkDir();
         pauseIfOwnConsole();
@@ -927,28 +928,28 @@ int main() {
     }
 
     auto handler =
-        [&cfg](ix::HttpRequestPtr req, std::shared_ptr<ix::ConnectionState>) -> ix::HttpResponsePtr {
+        [&cfg](const minihttp::Request& req) -> minihttp::Response {
             // Трейс: лише метод/шлях/розмір — жодних параметрів крипто й пароля.
-            std::printf("← %s %s (%zu B)\n", req->method.c_str(), req->uri.c_str(), req->body.size());
+            std::printf("← %s %s (%zu B)\n", req.method.c_str(), req.uri.c_str(), req.body.size());
             std::fflush(stdout);
 
-            if (req->body.size() > MAX_BODY_BYTES)
+            if (req.body.size() > MAX_BODY_BYTES)
                 return httpResp(413, "text/plain; charset=utf-8", "body over 1 MiB limit");
 
             // Шлях і query — окремо; маршрутизація точним збігом шляху.
-            std::string path = req->uri;
+            std::string path = req.uri;
             std::string query;
             const size_t qm = path.find('?');
             if (qm != std::string::npos) { query = path.substr(qm + 1); path.resize(qm); }
 
-            if (req->method == "GET" && path == "/ping")
+            if (req.method == "GET" && path == "/ping")
                 return httpResp(200, "text/plain; charset=utf-8", "uapki_fiscal_emulator alive");
 
             // --- POST /doc: перевірити підпис 1С і відповісти підписаною квитанцією ---
-            if (req->method == "POST" && path == "/doc") {
-                if (req->body.empty())
+            if (req.method == "POST" && path == "/doc") {
+                if (req.body.empty())
                     return httpResp(400, "text/plain; charset=utf-8", "empty body");
-                const VerifyOutcome o = verifyCms(req->body);
+                const VerifyOutcome o = verifyCms(req.body);
                 std::string content;
                 b64decode(o.contentB64, content);
                 std::printf("  /doc: %s status=%s certEmbedded=%s signer=%s\n  вміст: %s\n",
@@ -973,10 +974,10 @@ int main() {
             }
 
             // --- POST /verify: вердикт JSON-ом (і при 200, і при 422) ---
-            if (req->method == "POST" && path == "/verify") {
-                if (req->body.empty())
+            if (req.method == "POST" && path == "/verify") {
+                if (req.body.empty())
                     return httpResp(400, "text/plain; charset=utf-8", "empty body");
-                const VerifyOutcome o = verifyCms(req->body);
+                const VerifyOutcome o = verifyCms(req.body);
                 const json out{
                     {"accepted",            o.accepted},
                     {"status",              o.status},
@@ -1001,7 +1002,7 @@ int main() {
             }
 
             // --- GET /reference: еталонний підписаний документ ---
-            if (req->method == "GET" && path == "/reference") {
+            if (req.method == "GET" && path == "/reference") {
                 std::string type = queryValue(query, "type");
                 if (type.empty()) type = "check";
                 if (type != "check" && type != "zrep" && type != "ticket")
@@ -1043,16 +1044,16 @@ int main() {
     // кліком просто працював; якщо заданий явно — поважаємо вибір і не підмінюємо його мовчки.
     // УВАГА: підміна порту означає, що обробка 1С зі своїм дефолтом стукатиме не туди, тому
     // нижче про це друкується явне попередження.
-    std::unique_ptr<ix::HttpServer> server;
+    std::unique_ptr<minihttp::Server> server;
     int         chosenPort = 0;
     std::string listenErr;
     const int   attempts = portSet ? 1 : 11;
     for (int i = 0; i < attempts; ++i) {
         const int tryPort = cfg.port + i;
         if (tryPort > 65535) break;
-        std::unique_ptr<ix::HttpServer> s(new ix::HttpServer(tryPort, "127.0.0.1"));
-        s->setOnConnectionCallback(handler);
-        const std::pair<bool, std::string> res = s->listen();
+        std::unique_ptr<minihttp::Server> s(new minihttp::Server(tryPort, "127.0.0.1"));
+        s->SetHandler(handler);
+        const std::pair<bool, std::string> res = s->Listen();
         if (res.first) { server = std::move(s); chosenPort = tryPort; break; }
         listenErr = res.second;
         if (i == 0) {
@@ -1071,12 +1072,12 @@ int main() {
                     "_x86"
 #endif
         );
-        ix::uninitNetSystem();
+        minihttp::ShutdownNetwork();
         removeWorkDir();
         pauseIfOwnConsole();
         return 1;
     }
-    server->start();
+    server->Start();
     std::printf("\nuapki_fiscal_emulator слухає 127.0.0.1:%d — Ctrl-C для виходу\n", chosenPort);
     if (chosenPort != cfg.port) {
         std::printf("УВАГА: дефолтний порт %d був зайнятий. У полі «Порт консолі» тестової обробки\n"
@@ -1085,16 +1086,17 @@ int main() {
     }
     std::fflush(stdout);
 
-    // ix::SocketServer::wait() чекає на condition_variable БЕЗ предиката, а стандарт
-    // дозволяє спурйозні пробудження — оракул тихо завершився б посеред сесії 1С.
-    // Чекаємо самі, з предикатом; прапорець виставляє ctrlHandler.
+    // Чекаємо з ПРЕДИКАТОМ: стандарт дозволяє спурйозні пробудження, і без предиката
+    // оракул тихо завершився б посеред сесії 1С. (Саме на цьому спотикався
+    // ix::SocketServer::wait(), тому чекання лишається тут, а не всередині сервера.)
+    // Прапорець виставляє ctrlHandler.
     {
         std::unique_lock<std::mutex> lk(g_stopMx);
         g_stopCv.wait(lk, [] { return g_stopRequested; });
     }
 
-    server->stop();
-    ix::uninitNetSystem();
+    server->Stop();
+    minihttp::ShutdownNetwork();
     removeWorkDir();
     return 0;
 }
