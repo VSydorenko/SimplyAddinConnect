@@ -165,7 +165,7 @@ CMake/              # модульна збірка; components.cmake — дже
 src/core/           # ядро AddInNative (міст до SDK 1С) + pch.h
 src/components/     # компоненти-фасади для 1С
 src/helpers/        # ServiceTools (логування/конвертації) + хелпери фіч
-src/transport/      # канали COM/TCP/WS-client + device-core (IFramer/NullTerminatedFramer/
+src/transport/      # канали COM/TCP/спулер + device-core (IFramer/NullTerminatedFramer/
                     #   IFrameClassifier/DeviceSession — фундамент драйверів обладнання)
 src/platform/       # платформа-каркас драйверів (ResultEnvelope — уніфікований результат операції;
                     #   JobEngine — машина асинхронного завдання)
@@ -181,14 +181,15 @@ tests/              # core_selftest (L0.5) + wire_selftest (L0.6) + ecr_privatjs
                     #   драйвер LabelPrinter) + label_native_host (L-p3, компонента через DLL) +
                     #   label_printer_emulator (standalone EXE для 1С, +support/LabelEmulator) +
                     #   uapki_selftest (L1) + native_host (L2/L3) + uapki_fiscal_emulator
-                    #   (— ручний, HTTP-оракул ЕЦП для тесту UAPKI з 1С) + scenarios/ + data/
+                    #   (— ручний, HTTP-оракул ЕЦП для тесту UAPKI з 1С, +support/MiniHttpServer
+                    #   — власний HTTP/1.1-сервер) + scenarios/ + data/
 ExtDataProcessors/  # тестова зовнішня обробка 1С у форматі platform XML (Designer) —
                     #   SimplyAddinConnect: форма з кнопками під усі компоненти + макет з DLL;
                     #   v8project.yaml описує цей 1С-воркспейс (source-set
                     #   EXTERNAL_DATA_PROCESSORS) для плагіна Unica / v8-runner
 docs/architecture/    # архітектура по підсистемах (README + 01..04)
 docs/               # специфікації протоколів (ECR/UAPKI), tasks/
-extern/             # сабмодулі: spdlog, nlohmann_json, ixwebsocket, uapki
+extern/             # сабмодулі: spdlog, nlohmann_json, pugixml, uapki
 ```
 
 ## Конвенції коду (обов'язкові)
@@ -252,6 +253,12 @@ extern/             # сабмодулі: spdlog, nlohmann_json, ixwebsocket, ua
 
 - Правки в сабмодулі `extern/uapki` (потрібні для статичної збірки) комітяться **всередині
   сабмодуля**, не з кореня — не загуби їх при `submodule update`.
+- **Сабмодулі тримаємо на ТЕГАХ, не на плаваючих гілках.** `spdlog`, `nlohmann_json`,
+  `pugixml` закріплені на релізних тегах; `extern/uapki` — виняток, він свідомо йде за
+  `main-dev` форку. Інакше збірка залежить від того, який коміт `develop`/`master` випадково
+  опинився в клоні: до 2026-09-05 `nlohmann_json` стояв на довільному комміті `develop`, а
+  `pugixml` — на HEAD `master`. Оновлюючи залежність, перемикайся `git checkout <тег>`
+  усередині сабмодуля й комить новий покажчик у корені.
 - `version.h` перегенеровується скриптом при кожній збірці — очікуваний diff.
 - У `.gitignore`: `bin/`, `build_*/` та інші build-теки (`/build`, `/build64Lin` тощо), `.vscode/`,
   `tmp/`, `manifest.xml`, `*.epf`, об'єктні файли (`*.o`, `*.d`, `*.so`).

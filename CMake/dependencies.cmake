@@ -20,59 +20,33 @@ option(SPDLOG_INSTALL "" OFF)
 # Подключаем spdlog через add_subdirectory
 add_subdirectory(${SPDLOG_DIR})
 
-# Додаємо бібліотеку ixwebsocket для роботи з WebSocket
-set(IXWEBSOCKET_DIR ${CMAKE_SOURCE_DIR}/extern/ixwebsocket)
-set(IXWEBSOCKET_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/extern/ixwebsocket)
+# ixwebsocket з проєкту ВИДАЛЕНО (сабмодуль теж). Він тягнувся в головну DLL
+# заради TransportWSClient, якого не створював жоден драйвер, а останнім його
+# споживачем лишався ручний tests/uapki_fiscal_emulator — тому HTTP-сервер там
+# замінено власним мінімальним (tests/support/MiniHttpServer.*, ~300 рядків).
+# Тримати мережеву бібліотеку й умовний механізм її підключення заради одного
+# тестового HTTP-сервера — дорожче, ніж мати цей сервер своїм.
 
-# Підготовлюємо функцію для відключення попереджень в ixwebsocket
-function(disable_warnings_for_target target_name)
-  if(MSVC)
-    # Параметри для компілятора MSVC (Visual Studio)
-    target_compile_options(${target_name} PRIVATE 
-      /wd4244   # преобразование "тип1" в "тип2", возможна потеря данных
-      /wd4267   # преобразование из "size_t" в "тип", возможна потеря данных
-      /wd4305   # усечение константы
-      /wd4996   # устаревшая функция
-    )
-  else()
-    # Параметри для GCC/Clang
-    target_compile_options(${target_name} PRIVATE 
-      -Wno-conversion
-      -Wno-sign-conversion
-      -Wno-unused-variable
-    )
-  endif()
-endfunction()
+# Статичні бібліотеки для всього проєкту (spdlog, об'єктні цілі компонент).
+# Глобальна змінна CMake, а не примха окремої залежності.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
 
-# Отключаем сборку демонстрационных примеров ixwebsocket и настраиваем статическую линковку
-option(BUILD_DEMO "" OFF)
-option(USE_TLS "" OFF)
-option(USE_OPEN_SSL "" OFF)
-option(USE_MBED_TLS "" OFF)
-option(USE_ZLIB "" OFF)
-
-# Отключаем сборку демонстрационных примеров ixwebsocket.
-# ВНИМАНИЕ: ixwebsocket НЕ читает переменные BUILD_TESTS/BUILD_EXAMPLES (их нет
-# в его CMakeLists), поэтому его примеры и так не собираются. Строку
-#   set(BUILD_TESTS OFF CACHE BOOL "Build tests" FORCE)
-# убрали намеренно: она FORCE-затирала ОДНОИМЁННУЮ опцию проекта
-# (CMake/options.cmake) и ломала -DBUILD_TESTS=ON — add_subdirectory(tests)
-# в корневом CMakeLists никогда не выполнялся.
-set(BUILD_EXAMPLES OFF CACHE BOOL "Build examples" FORCE)
-
-# Настраиваем статическую библиотеку
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE) 
-set(IXWEBSOCKET_INSTALL OFF CACHE BOOL "Enable install target" FORCE)
-
-# Устанавливаем статическую многопоточную библиотеку времени выполнения для ixwebsocket
+# --- Статичний CRT (/MT) — ПОЛІТИКА ПРОЄКТУ, а не налаштування залежності -----
+# Раніше цей блок стояв під заголовком «для ixwebsocket» і виглядав як частина
+# налаштування тієї бібліотеки. Насправді він задає CRT для ВСЬОГО проєкту:
+# зовнішня компонента 1С мусить лінкуватися статично, інакше на машині клієнта
+# вона вимагатиме встановленого VC++ Redistributable і 1С просто не завантажить
+# її («не вдалося підключити зовнішню компоненту»).
+#
+# ПОРЯДОК ВАЖЛИВИЙ: блок стоїть ПІСЛЯ add_subdirectory(spdlog) — саме так було
+# й раніше, коли він ховався під заголовком «для ixwebsocket». Не переставляти:
+# зміна порядку змінює, які цілі підхоплять прапорці, і ламається це МОВЧКИ —
+# лише на машині без Redistributable.
 if(MSVC)
-    # Принудительно отключаем использование динамических библиотек для ixwebsocket
-    set(USE_STATIC_CRT ON CACHE BOOL "Use static C runtime" FORCE)
-    
-    # Принудительно устанавливаем статическую многопоточную библиотеку
+    # Статична багатопотокова бібліотека часу виконання
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    
-    # Заменяем флаги компилятора для ixwebsocket, чтобы использовать /MT вместо /MD
+
+    # Підміна /MD -> /MT у прапорцях компілятора
     foreach(flag_var
             CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
             CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO
@@ -89,22 +63,9 @@ if(MSVC)
     add_definitions(-D_WINSOCK_DEPRECATED_NO_WARNINGS)
 endif()
 
-# Добавляем библиотеку ixwebsocket как подпроект
-add_subdirectory(${IXWEBSOCKET_DIR})
-
-# Відключаємо попередження для всіх цілей ixwebsocket після їх додавання
-disable_warnings_for_target(ixwebsocket)
-
-# Перевіряємо існування інших таргетів з бібліотеки ixwebsocket та відключаємо попередження і для них
-if(TARGET ws)
-  disable_warnings_for_target(ws)
-endif()
-
-# Якщо в проекті використовуються інші цілі з ixwebsocket,
-# їх також можна додати тут, наприклад:
-if(TARGET ixsnake)
-  disable_warnings_for_target(ixsnake)
-endif()
-if(TARGET ixcrypto)
-  disable_warnings_for_target(ixcrypto)
-endif()
+# Історична примітка (актуальна й без ixwebsocket): рядок
+#   set(BUILD_TESTS OFF CACHE BOOL "Build tests" FORCE)
+# колись стояв тут «для ixwebsocket», хоча той цю змінну не читає. Насправді він
+# FORCE-затирав ОДНОЙМЕННУ опцію проєкту (CMake/options.cmake) і ламав
+# -DBUILD_TESTS=ON: add_subdirectory(tests) у кореневому CMakeLists ніколи не
+# виконувався. Не повертати.
