@@ -23,7 +23,7 @@ ZIP. Останній розділ спирається на **емпіричн�
 ```
 base_component ─────────────┐
 helpers_component ──────────┤
-transport_component ────────┤ (+ ixwebsocket; COM/TCP/WS-client)
+transport_component ────────┤ (COM/TCP/спулер; зовнішніх залежностей не має)
 wire_component ─────────────┼─► add_library(SimplyAddinConnect SHARED ...)  →  .dll
 test_component ─────────────┤   (wire_component — device-core: framer/classifier/DeviceSession)
                             │

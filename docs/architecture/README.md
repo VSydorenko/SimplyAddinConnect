@@ -72,7 +72,7 @@ flowchart TD
         C4 --> DRV["EcrPrivatJsonDriver<br/>операції/poller/interrupt/async (JobEngine)"]
         DRV --> W["device-core (фундамент драйверів)<br/>DeviceSession → IFramer → IFrameClassifier → ITransport"]
         W --> T["ITransport"]
-        T --> T1["COM"] & T2["TCP"] & T3["WS-client"]
+        T --> T1["COM"] & T2["TCP"] & T3["RAW-спулер"]
 
         C2 --> H2["UAPKIConnectHelper<br/>(потрійний пошук каталогу провайдера)"]
         H2 -->|"process() / json_free()"| U["UAPKI ядро<br/>(uapki+uapkic+uapkif, статичний лінк)"]
@@ -103,7 +103,7 @@ flowchart TD
 | Драйвери обладнання | `src/drivers/ecr_privatjson/*` | Пілотний ECRPrivatJSON: кодек JSON, класифікатор кадрів, `Connect`, операції/poller/interrupt/async поверх `JobEngine` |
 | Компонента ECR (фасад) | `src/components/AddinECRPrivatJSON.*` | Компонента 1С `ECRPrivatJSON`: реєструє методи, делегує драйверу; poll-based стан операції (`OperationState`/`OperationResult`/`LastStatus`), `EnableTrace` — wire-трасування з наступного `Connect` |
 | Хелпери | `src/helpers/*` | Допоміжна логіка (JSON, буфери, обгортки бібліотек) |
-| Транспорт | `src/transport/*` | Канали зв'язку (COM/TCP/WebSocket-client) |
+| Транспорт | `src/transport/*` | Канали зв'язку (COM/TCP/RAW-черга спулера) |
 | Сервіси | `src/helpers/ServiceTools*` | Наскрізне логування та конвертації рядків |
 
 Компонента — **тонка**: у конструкторі логує старт і викликає `RegisterMethods()`, у
