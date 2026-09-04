@@ -6,9 +6,6 @@
 #include "../src/transport/Transport.h"
 #include "../src/transport/Transport_TCP.h"   // реальний транспорт для TCP-смоук (Task 8)
 #include "../src/transport/Transport_COM.h"   // реальний транспорт для COM-фіксів (Task 9)
-#include "../src/transport/Transport_WSClient.h"  // реальний транспорт для WS-фіксів (Task 10)
-#include "extern/ixwebsocket/ixwebsocket/IXWebSocketServer.h"  // локальний ws-echo (лише тест)
-#include "extern/ixwebsocket/ixwebsocket/IXNetSystem.h"
 #include "../src/transport/DeviceSession.h"
 #include <atomic>
 #include <chrono>
@@ -1565,44 +1562,8 @@ static void TestComRoundtripSkip() {
     std::printf("[SKIP] ComRoundtrip: потрібна пара com0com + ехо-заглушка (ручний смоук)\n");
 }
 
-// === Task 10: фікси реального TransportWSClient ===================================
-
-// --- (1) Детерміновані юніти на прапорцях (без мережі, завжди виконуються) --------
-
-// Конструктор ОБОВ'ЯЗКОВО вимикає авто-реконект ix (ним керує супервізор DeviceSession
-// через Close+Open; інакше ix-реконект ламав би exactly-once state, §9.1/§4.1).
-static void TestWsDisableAutoReconnect() {
-    TransportWSClient ws("ws://127.0.0.1:1");   // без Open — лише перевірка конструктора
-    CHECK(!ws.IsAutomaticReconnectionEnabledForTest(),
-          "WsDisableAutoReconnect: конструктор викликав disableAutomaticReconnection()");
-}
-
-// m_started (а НЕ m_isOpen) керує stop(): після remote-close з'єднання «впало»
-// (m_isOpen==false), але ix-воркер ще живий — Close ЗОБОВ'ЯЗАНИЙ його зупинити, інакше
-// наступний Open (reopen) не перепідключить. Детерміновано через stop-шов + лічильник.
-static void TestWsStartedControlsStop() {
-    TransportWSClient ws("ws://127.0.0.1:1");
-    std::atomic<int> stops{ 0 };
-    ws.SetStopHookForTest([&stops] { stops.fetch_add(1); });
-
-    // Модель стану «start() викликано, з'єднання впало remote-close»: started=true, !open.
-    ws.ForceStartedForTest(true);
-    CHECK(!ws.IsOpen(), "WsStartedControlsStop: не open (модель після remote-close)");
-
-    CHECK(ws.Close(), "WsStartedControlsStop: Close повертає true");
-    CHECK(stops.load() == 1,
-          "WsStartedControlsStop: Close викликав stop() попри !m_isOpen (m_started керує)");
-
-    // §4.1 п.1: повторний Close ідемпотентний — воркер уже зупинено, stop() не повторюється.
-    CHECK(ws.Close(), "WsStartedControlsStop: повторний Close ідемпотентний");
-    CHECK(stops.load() == 1, "WsStartedControlsStop: другий Close не викликає stop() повторно");
-}
-
-// --- (2) Локальний ws-echo (ix::WebSocketServer) для reopen/exactly-once ----------
-// Порт ефемерний: ix-сервер не оновлює _port при port=0, тож пробуємо вільний порт
-// сирим Winsock (bind(0)+getsockname), звільняємо і віддаємо ix-серверу. Якщо сервер
-// не піднявся (зайнятий/недоступний у CI) — тест SKIP, а не FAIL (ручний смоук лишається).
-
+// Вільний ефемерний порт: bind(0)+getsockname сирим Winsock, потім звільняємо.
+// Використовується TCP-тестами (напр. «мертвий» порт, який ніхто не слухає).
 static int ProbeFreePort() {
     WSADATA w;
     if (WSAStartup(MAKEWORD(2, 2), &w) != 0) return 0;
@@ -1625,109 +1586,6 @@ static int ProbeFreePort() {
     return port;
 }
 
-// Локальний ws-echo: ехо-ить кожне Message назад тому ж клієнту. nullptr при невдачі.
-static std::unique_ptr<ix::WebSocketServer> StartWsEcho(int port) {
-    auto server = std::make_unique<ix::WebSocketServer>(port, "127.0.0.1");
-    server->setOnClientMessageCallback(
-        [](std::shared_ptr<ix::ConnectionState>, ix::WebSocket& webSocket,
-           const ix::WebSocketMessagePtr& msg) {
-            if (msg->type == ix::WebSocketMessageType::Message) {
-                webSocket.send(msg->str, msg->binary);   // ехо кадру назад
-            }
-        });
-    if (!server->listenAndStart()) return nullptr;
-    return server;
-}
-
-// Reopen після Close реально перепідключає (m_started→stop() у Close дозволяє повторний
-// start()). Exactly-once state: рівно один up і один down на цикл; повторний Close — no-op.
-// #W1: Open тепер НЕблокуючий — реальний конект підтверджується АСИНХРОННО через state(true),
-// тож тест чекає up/down через бар'єр (cv), а не читає IsOpen() синхронно після Open.
-static void TestWsReopen() {
-    ix::initNetSystem();
-    const int port = ProbeFreePort();
-    if (port == 0) {
-        std::printf("[SKIP] WsReopen: не вдалося отримати вільний порт (ручний смоук)\n");
-        ix::uninitNetSystem();
-        return;
-    }
-    auto server = StartWsEcho(port);
-    if (!server) {
-        std::printf("[SKIP] WsReopen: локальний ws-сервер не піднявся на порту %d (ручний смоук)\n", port);
-        ix::uninitNetSystem();
-        return;
-    }
-
-    const std::string url = "ws://127.0.0.1:" + std::to_string(port);
-    TransportWSClient ws(url);
-    ws.SetTimeout(3);   // короткий дедлайн конекту, щоб SKIP-гілка не вішала watchdog
-
-    std::mutex m;
-    std::condition_variable cv;
-    int ups = 0, downs = 0;
-    ws.SetConnectionStateCallback([&](bool up) {
-        std::lock_guard<std::mutex> lk(m);
-        if (up) ++ups; else ++downs;
-        cv.notify_all();
-    });
-    auto waitUps = [&](int n) {
-        std::unique_lock<std::mutex> lk(m);
-        return cv.wait_for(lk, std::chrono::seconds(3), [&] { return ups >= n; });
-    };
-    auto waitDowns = [&](int n) {
-        std::unique_lock<std::mutex> lk(m);
-        return cv.wait_for(lk, std::chrono::seconds(3), [&] { return downs >= n; });
-    };
-
-    // Цикл 1: Open НЕблокуючий — повертає true одразу; факт конекту приходить через state(true).
-    CHECK(ws.Open(), "WsReopen: перший Open (неблокуючий) повернув true");
-    if (!waitUps(1)) {
-        std::printf("[SKIP] WsReopen: конект до локального ws-сервера не встановився (ручний смоук)\n");
-        ws.Close();
-        server->stop();
-        ix::uninitNetSystem();
-        return;
-    }
-    CHECK(ws.IsOpen(), "WsReopen: перший Open встановив з'єднання (state(true) прийшов)");
-    { std::lock_guard<std::mutex> lk(m); CHECK(ups == 1, "WsReopen: рівно один state(true) на перший цикл"); }
-
-    // Close → рівно один down (exactly-once, §4.1 п.5).
-    CHECK(ws.Close(), "WsReopen: перший Close повертає true");
-    CHECK(waitDowns(1), "WsReopen: state(false) доставлено на розрив");
-    { std::lock_guard<std::mutex> lk(m); CHECK(downs == 1, "WsReopen: рівно один state(false) на розрив"); }
-    CHECK(ws.Close(), "WsReopen: повторний Close ідемпотентний");
-    { std::lock_guard<std::mutex> lk(m); CHECK(downs == 1, "WsReopen: state(false) не дублюється при повторному Close"); }
-
-    // Цикл 2: Open ПІСЛЯ Close реально перепідключає (reopen через новий start()).
-    CHECK(ws.Open(), "WsReopen: reopen (неблокуючий) повернув true");
-    CHECK(waitUps(2), "WsReopen: другий цикл дав другий state(true)");
-    { std::lock_guard<std::mutex> lk(m); CHECK(ups == 2, "WsReopen: рівно два state(true) за два цикли"); }
-    CHECK(ws.IsOpen(), "WsReopen: reopen після Close реально перепідключив");
-    ws.Close();
-    CHECK(waitDowns(2), "WsReopen: другий Close дав другий state(false)");
-
-    server->stop();
-    ix::uninitNetSystem();
-}
-
-// #W1 (регрес): Open для WS — НЕблокуючий (§4.1). Проти недосяжного (black-hole) хоста
-// з ВЕЛИКИМ таймаутом хендшейка Open ЗОБОВ'ЯЗАНИЙ повернутись НЕГАЙНО. До фіксу він
-// блокувався на m_connCv до m_timeoutSecs (~30с тут), морозячи потік 1С у Start і
-// вішаючи Stop() (яка джойнить супервізор ДО Close()). RunGuarded-watchdog (10с) зловив
-// би старий блокуючий Open як FAIL. Close теж не виснe (ix скасовує connect по stop()).
-static void TestWsOpenNonBlocking() {
-    // 192.0.2.1 — RFC5737 TEST-NET-1: не маршрутизується, конект «у чорну діру» (ні RST,
-    // ні відповіді) — саме сценарій, де старий блокуючий Open висів би до таймаута.
-    TransportWSClient ws("ws://192.0.2.1:9");
-    ws.SetTimeout(30);   // великий дедлайн хендшейка: блокуючий Open висів би ~30с
-
-    std::atomic<int> ups{ 0 };
-    ws.SetConnectionStateCallback([&](bool up) { if (up) ups.fetch_add(1); });
-
-    CHECK(ws.Open(), "WsOpenNonBlocking: Open повертає true одразу (не блокує на хендшейку)");
-    CHECK(ups.load() == 0, "WsOpenNonBlocking: state(true) ще не доставлено (конект async)");
-    CHECK(ws.Close(), "WsOpenNonBlocking: Close не виснe проти недосяжного хоста");
-}
 
 // === Task 8b: регресії код-рев'ю TransportTCP (#T5/#T7/#T9/#T-sym) ================
 
@@ -1985,8 +1843,4 @@ int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     RunGuarded("TestComCloseCleansHandle", TestComCloseCleansHandle);
     RunGuarded("TestComStateUpGate", TestComStateUpGate);
     TestComRoundtripSkip();
-    RunGuarded("TestWsDisableAutoReconnect", TestWsDisableAutoReconnect);
-    RunGuarded("TestWsStartedControlsStop", TestWsStartedControlsStop);
-    RunGuarded("TestWsOpenNonBlocking", TestWsOpenNonBlocking);
-    RunGuarded("TestWsReopen", TestWsReopen, 30);
     std::printf("=== %s (failed:%d) ===\n", g_failed?"FAIL":"OK", g_failed); return g_failed?1:0; }

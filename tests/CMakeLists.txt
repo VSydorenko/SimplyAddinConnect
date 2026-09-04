@@ -53,7 +53,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_executable(wire_selftest wire_selftest.cpp
     $<TARGET_OBJECTS:wire_component>
-    $<TARGET_OBJECTS:transport_component>   # реальні TransportTCP/COM/WSClient для смоук-тестів
+    $<TARGET_OBJECTS:transport_component>   # реальні TransportTCP/COM для смоук-тестів
     $<TARGET_OBJECTS:helpers_component>
     $<TARGET_OBJECTS:base_component>
 )
@@ -65,13 +65,11 @@ set_target_properties(wire_selftest PROPERTIES
 target_include_directories(wire_selftest PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}                   # корінь: Transport_WSClient.h тягне "extern/ixwebsocket/..."
     ${SPDLOG_INCLUDE_DIR}
-    ${IXWEBSOCKET_INCLUDE_DIR}            # transport_component тягне ixwebsocket-заголовки
 )
 target_compile_definitions(wire_selftest PRIVATE _WINDOWS UNICODE _UNICODE)
-# ixwebsocket+ws2_32 — символи, які тягне transport_component (WSClient, Winsock).
-target_link_libraries(wire_selftest PRIVATE spdlog::spdlog ixwebsocket ws2_32)
+# ws2_32 — Winsock для TransportTCP із transport_component і для ProbeFreePort.
+target_link_libraries(wire_selftest PRIVATE spdlog::spdlog ws2_32)
 if(MSVC)
     target_compile_options(wire_selftest PRIVATE /utf-8)
 endif()
@@ -101,14 +99,12 @@ set_target_properties(ecr_privatjson_selftest PROPERTIES
 target_include_directories(ecr_privatjson_selftest PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}                   # корінь: Transport_WSClient.h тягне "extern/ixwebsocket/..."
     ${SPDLOG_INCLUDE_DIR}
     ${NLOHMANN_JSON_INCLUDE_DIR}
-    ${IXWEBSOCKET_INCLUDE_DIR}            # transport_component тягне ixwebsocket-заголовки
 )
 target_compile_definitions(ecr_privatjson_selftest PRIVATE _WINDOWS UNICODE _UNICODE)
-# ixwebsocket+ws2_32 — символи transport_component (WSClient, Winsock); емулятор — Winsock.
-target_link_libraries(ecr_privatjson_selftest PRIVATE spdlog::spdlog ixwebsocket ws2_32)
+# ws2_32 — Winsock: TransportTCP із transport_component і TCP-емулятор термінала.
+target_link_libraries(ecr_privatjson_selftest PRIVATE spdlog::spdlog ws2_32)
 if(MSVC)
     target_compile_options(ecr_privatjson_selftest PRIVATE /utf-8)
 endif()
@@ -126,14 +122,13 @@ target_sources(label_printer_selftest PRIVATE
     $<TARGET_OBJECTS:label_facade_component>           # БПО-фасад AddinLabelPrinter (смоук через CreateObject)
     $<TARGET_OBJECTS:driver_label_printer_component>   # LabelRaster/GfEncoder/BarcodeZpl/LabelPrinterDriver
     $<TARGET_OBJECTS:platform_component>               # ResultEnvelope (результат операції драйвера)
-    $<TARGET_OBJECTS:transport_component>              # TransportSpoolerRaw (Winspool RAW) + TCP/COM/WS
+    $<TARGET_OBJECTS:transport_component>              # TransportSpoolerRaw (Winspool RAW) + TCP/COM
     $<TARGET_OBJECTS:helpers_component>                # ServiceTools (конвертації рядків, NEUTRAL_REPORT)
     $<TARGET_OBJECTS:base_component>                   # AddInNative::MB2WCHAR/WCHAR2MB (за ServiceTools)
 )
 target_include_directories(label_printer_selftest PRIVATE
     ${CMAKE_SOURCE_DIR}/include            # SDK 1С: ComponentBase.h/IMemoryManager.h (смоук фасаду)
-    ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src ${SPDLOG_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR}
-    ${IXWEBSOCKET_INCLUDE_DIR})            # transport_component тягне ixwebsocket-заголовки (WSClient)
+    ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src ${SPDLOG_INCLUDE_DIR} ${NLOHMANN_JSON_INCLUDE_DIR})
 # _WINDOWS — критично: types.h саме за ним вмикає WCHAR_T=wchar_t і ADDIN_API=__stdcall;
 # об'єкти base_component/фасаду зібрані з _WINDOWS — ABI (vtable) мусить збігатися.
 target_compile_definitions(label_printer_selftest PRIVATE _WINDOWS UNICODE _UNICODE)
@@ -143,8 +138,8 @@ set_target_properties(label_printer_selftest PROPERTIES
     OUTPUT_NAME "label_printer_selftest${_TEST_ARCH_SUFFIX}"
 )
 # gdiplus — растр LabelRaster; ole32 — CreateStreamOnHGlobal; winspool — TransportSpoolerRaw;
-# ws2_32+ixwebsocket — TransportTCP/COM/WSClient із transport_component; spdlog — логери ServiceTools.
-target_link_libraries(label_printer_selftest PRIVATE gdiplus ole32 winspool ws2_32 ixwebsocket spdlog::spdlog)
+# ws2_32 — TransportTCP/COM із transport_component; spdlog — логери ServiceTools.
+target_link_libraries(label_printer_selftest PRIVATE gdiplus ole32 winspool ws2_32 spdlog::spdlog)
 if(MSVC)
     target_compile_options(label_printer_selftest PRIVATE /utf-8)
 endif()

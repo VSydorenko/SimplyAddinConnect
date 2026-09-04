@@ -25,7 +25,6 @@ set(HEADER_FILES
     src/transport/Transport.h
     src/transport/Transport_COM.h
     src/transport/Transport_TCP.h
-    src/transport/Transport_WSClient.h
     src/transport/Transport_SpoolerRaw.h
     # src/helpers/BPOS1Parser.h
     src/helpers/UAPKIConnect/UAPKIConnectHelper.h
@@ -58,7 +57,6 @@ set(SOURCE_FILES
     src/helpers/ServiceTools_Log.cpp
     src/transport/Transport_COM.cpp
     src/transport/Transport_TCP.cpp
-    src/transport/Transport_WSClient.cpp
     src/transport/Transport_SpoolerRaw.cpp
     # src/helpers/BPOS1Parser.cpp
     src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp
@@ -143,8 +141,6 @@ add_library(transport_component OBJECT
     src/transport/Transport_COM.cpp
     src/transport/Transport_TCP.h
     src/transport/Transport_TCP.cpp
-    src/transport/Transport_WSClient.h
-    src/transport/Transport_WSClient.cpp
     src/transport/Transport_SpoolerRaw.h
     src/transport/Transport_SpoolerRaw.cpp
 )
@@ -441,7 +437,7 @@ endif()
 # Встановлюємо явну залежність
 add_dependencies(test_component base_component spdlog)
 add_dependencies(helpers_component base_component spdlog)
-add_dependencies(transport_component base_component spdlog ixwebsocket)
+add_dependencies(transport_component base_component spdlog)
 # add_dependencies(ecrcommx_component base_component spdlog)
 # add_dependencies(ecrcommx_component helpers_component)
 # add_dependencies(posapi_component base_component spdlog)
@@ -455,16 +451,16 @@ set_target_properties(transport_component PROPERTIES
 )
 
 # Добавляем пути включения для транспортного компонента
+# ${CMAKE_SOURCE_DIR} прибрано разом з TransportWSClient: від кореня інклюдив
+# лише він ("extern/ixwebsocket/..."), решта транспортів — відносними шляхами.
 target_include_directories(transport_component PRIVATE
     include
-    ${CMAKE_SOURCE_DIR}
     src
     ${SPDLOG_INCLUDE_DIR}
-    ${IXWEBSOCKET_INCLUDE_DIR}
 )
 
 # Подключаем зависимости к транспортному компоненту
-target_link_libraries(transport_component PRIVATE interfaces_component spdlog::spdlog ixwebsocket)
+target_link_libraries(transport_component PRIVATE interfaces_component spdlog::spdlog)
 
 ## @brief Збірка DLL в правильному порядку
 add_library(${TARGET} SHARED
@@ -491,11 +487,10 @@ add_library(${TARGET} SHARED
 )
 
 # Додаємо шляхи включення та визначення компілятора для фінальної DLL
-target_include_directories(${TARGET} PRIVATE include ${NLOHMANN_JSON_INCLUDE_DIR} ${SPDLOG_INCLUDE_DIR} ${IXWEBSOCKET_INCLUDE_DIR})
+target_include_directories(${TARGET} PRIVATE include ${NLOHMANN_JSON_INCLUDE_DIR} ${SPDLOG_INCLUDE_DIR})
 target_compile_definitions(${TARGET} PRIVATE UNICODE _UNICODE)
 target_link_libraries(${TARGET} PRIVATE nlohmann_json)
 target_link_libraries(${TARGET} PRIVATE spdlog::spdlog)
-target_link_libraries(${TARGET} PRIVATE ixwebsocket)
 # Драйвер принтера етикеток: TransportSpoolerRaw (winspool), растр LabelRaster (gdiplus),
 # CreateStreamOnHGlobal у декоді картинок (ole32). Лінк — на ФІНАЛЬНУ DLL, бо збірка через
 # $<TARGET_OBJECTS> не пропагує лінк-залежності OBJECT-бібліотек.
