@@ -380,9 +380,13 @@ startMutex_` навколо всього `Start()` (три рядки, `src/plat
    наступний up=true → EnsureRecoveryRunning → джоб з кроку 0 (Ping), потім знову сюди.
    Те саме — для статусу RequestReceiptFacts у кроці 4.
 2. terminalIdle = (код == "0").
-3. MarkSynchronized() — ЛИШЕ якщо terminalIdle (сьогодні — безумовно, дефект 1.3).
-   Якщо не idle — сесія лишається в desync (якщо була), facts.code = "TERMINAL_BUSY",
-   і 1С бачить це у знімку. Компонента не оголошує канал чистим, коли термінал зайнятий.
+3. MarkSynchronized() — коли термінал у спокої (код "0") АБО після вичерпання kOutcomeIdleWaitMs.
+   Дефект 1.3 сьогодні — не в безумовності як такій, а в тому, що вона настає через 2.5 с
+   (5×500 мс), коли термінал ще веде операцію. Після 120 с без спокою термінал зависнув або в
+   нештатному стані — і лишати сесію в desync НАЗАВЖДИ (зняти більше нікому: гейт 4.6 після
+   Resolved не діє) гірше, ніж відкрити канал: наступна операція чесно отримає deviceBusy/
+   Timeout від самого термінала, подвійного руху грошей це не дає. Два шляхи різняться лише
+   знімком: terminalIdle = true / false, facts.code = "TERMINAL_BUSY" у другому.
 4. facts = RequestReceiptFacts("")  — вузький виклик, див. нижче; таймаут kOperationTimeoutMs,
    не kHandshakeTimeoutMs.
 5. Під outcomeMutex_: якщо generation збігається — state = Resolved, записати terminalIdle, facts.
@@ -433,10 +437,12 @@ void EnsureRecoveryRunning() {
 
 **(а) З `ExecuteInternal`, зв'язок живий** (таймаут/desync/`SendFailed`-без-закриття):
 ```
-MarkPending(intent, reason)                  // під outcomeMutex_, generation++
+MarkPending(intent, reason)                  // під outcomeMutex_, generation++ → gen
 EnsureRecoveryRunning()
-чекати TryGetResult bounded kOutcomeSyncWaitMs (8000 мс), крок kPollIntervalMs
-return BuildUnknownOutcome()                 // 17 з тим, що встигло з'ясуватися
+чекати bounded kOutcomeSyncWaitMs (8000 мс), крок kPollIntervalMs, вихід за ПЕРШОЮ з умов:
+    (lastOutcome_.state == Resolved && lastOutcome_.generation == gen)   // з'ясовано
+    || recoveryJob_.State() != JobState::Running                         // джоб вийшов (ABORTED тощо)
+return BuildUnknownOutcome()                 // 17 з тим, що є в lastOutcome_; TryGetResult не читаємо
 ```
 Чому чекати, якщо секція про тригери каже «повертати негайно»: там ішлося про очікування
 **реконекту** (необмежене). Тут — очікування **відповіді терміналу при живому з'єднанні**, секунди.
@@ -564,8 +570,12 @@ closing_ = false
 | `AddinECRPrivatJSON` | та сама процедура в прямому API |
 
 Драйвер **забирає** `pendingRequestId_` на вході в `ExecuteInternal` фінансового методу — одноразово,
-незалежно від результату: `intent.requestId = std::exchange(pendingRequestId_, {})` виконується **під тим
-самим `outcomeMutex_`**, що й запис у `SetRequestId` — усередині `MarkPending`, не окремо. Рядок прозорий:
+незалежно від результату — **у локальну змінну**, після гейтів 4.6/4.9.4 і перед `RequestPrimary`:
+`std::string rid; { std::lock_guard<std::mutex> lk(outcomeMutex_); rid = std::exchange(pendingRequestId_, {}); }`
+— під тим самим `outcomeMutex_`, що й запис у `SetRequestId`. При провалі `rid` передається в
+`MarkPending(intent{…, requestId = rid}, reason)`; при успіху — просто відкидається. Забір **не** в
+`MarkPending`: той кличеться лише при провалі, і після успішної оплати id лишався б і прилипав до наступної
+операції без сеттера (тест №19, друга половина). Рядок прозорий:
 не парситься, не валідується, не обрізається; порожній, GUID чи довільний — байдуже. Пастка: якщо сеттер
 викликано, а команда до драйвера не дійшла (напр. відмова принтера в 1С до виклику драйвера), id лишиться
 до наступного сеттера. Розширення кличе сеттер і команду в одній точці, тож прилипання до чужої операції
@@ -589,10 +599,16 @@ closing_ = false
 Ім'я — за конвенцією компоненти (2.4): локалізоване російське, суфікс `JSON` для рядкового результату,
 як у `РезультатОперацииJSON`.
 
-При `state == None` метод повертає `ok:true, code:"OK", payload.outcome.state:"none"`.
+При `state == None` метод повертає `ok:true, code:"OK", payload.outcome.state:"none"`. При
+`pending`/`resolved` — **той самий конверт, що й результат операції**: `ok:false, code:"UNKNOWN_OUTCOME",
+payload.outcome{…}` — щоб 1С мала один парсер на обидва джерела. `ok:false` тут означає «є питання про
+долю», не «виклик не вдався»: сам виклик завжди успішний.
 
-**Подія `outcome`** через `EmitEvent` — коли знімок готовий; слухач «одна подія `result` на операцію»
-не плутається: `result` для операції приходить рівно один раз, із кодом 17.
+**Подія `outcome`** через `EmitEvent` — коли знімок готовий; несе **лише об'єкт `outcome`** (`state`,
+`generation`, `reason`, `intent`, `terminalIdle`, `facts`, `factsOk`, `factsCode`, `channelConnected`) без
+обгортки `ok`/`code` — як `status`/`state` несуть свої дані; конверт `{ok, code, description, payload}` є
+лише в `result` і в `InquireLastOutcome`. Слухач «одна подія `result` на операцію» не плутається: `result`
+для операції приходить рівно один раз, із кодом 17.
 
 **Асинхронний шлях** (`TryGetOperationResult`/`РезультатОперацииJSON`) віддає той самий
 `ResultEnvelope` з кодом 17 — без окремої логіки.
@@ -716,6 +732,10 @@ EnsureReady():
 (без сокета Ping не піде) і фасад БПО в `CloseDevice` (`AcquiringFacadeBase.cpp:131-133`) — якби він
 повертав `false` під час `Connecting`, `Close()` не викликався б і сесія висіла б. Окремий
 `СостояниеСвязи` не додаємо — споживача немає; стан видно з `Подключен` і події.
+`EcrPrivatJsonAcquiring::IsConnected()` для БПО-фасаду — так само **сокет**, без змін: `CloseDevice` має
+закривати сесію в будь-якому стані. БПО-шлях різницю `Connecting`/`Ready` бачить не через нього, а через
+код 18 — від операцій і від `ТестУстройства` (`Probe()` = `Execute("GetTerminalInfo")`,
+`EcrPrivatJsonAcquiring.cpp:128-129` → той самий вхід `ExecuteInternal`). Навмисно, не пропуск.
 
 **Операції під час `Connecting`** (сесія є, термінал не підтвердив готовність): `ExecuteInternal` для
 **будь-якого** методу повертає новий код **`RECONNECTING`=18** з описом «Зв'язок з терміналом
@@ -775,7 +795,7 @@ heartbeat у простої не робимо: він не розв'язує (б
 
 | Файл | Тип | Що |
 |---|---|---|
-| `src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h/.cpp` | зміна | **А:** `LastOutcome` (+`requestId`), `outcomeMutex_`, `pendingRequestId_`, `recoveryJob_`, `closing_`; `kFinancialMethods`, `kOutcomeSyncWaitMs`, `kOutcomeIdleWaitMs`; `MarkPending`, `EnsureRecoveryRunning`, `RecoveryJob`, `CaptureOutcome` (з `RecoverAfterDesync`), `RequestReceiptFacts`, `RequestStatus PollStatusOnce(int&)`, `BuildUnknownOutcome`, `InquireLastOutcome` (не const), `SetRequestId`; тригер у `ExecuteInternal` за 4.2/4.4; гейт 4.6; `Disconnect()` за 4.5; `inRecovery_` прибрано. **Б:** `LinkState`, `linkMutex_`, `linkState_`, `linkEpoch_`, `SetLinkState` (+подія `connection`), `LinkEpoch()`, **`bool IsReady() const`** (публічний, для `Подключен`), `EnsureReady` (Ping-цикл 4.9.2), `kReconnectDelayMs`/`kReconnectMaxDelayMs` (дублюють дефолти `SessionConfig` навмисно); хук стану на `session_` у `Connect()` крок 3 + `Ready` до `Start()` + `EnsureRecoveryRunning` після; порядок перевірок `NOT_CONNECTED`/`RECONNECTING` на вході `ExecuteInternal` (4.9.4); `SetUnsolicitedHandler` → DEBUG-лог (4.9.6) |
+| `src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h/.cpp` | зміна | **А:** `LastOutcome` (+`requestId`), `outcomeMutex_`, `pendingRequestId_`, `recoveryJob_`, `closing_`; `kFinancialMethods`, `kOutcomeSyncWaitMs`, `kOutcomeIdleWaitMs`; `MarkPending`, `EnsureRecoveryRunning`, `RecoveryJob`, `CaptureOutcome` (з `RecoverAfterDesync`), `RequestReceiptFacts`, `RequestStatus PollStatusOnce(int&)`, `BuildUnknownOutcome`, `InquireLastOutcome` (не const), `SetRequestId`; тригер у `ExecuteInternal` за 4.2/4.4; гейт 4.6; `Disconnect()` за 4.5; `inRecovery_` прибрано. **Б:** `LinkState`, `linkMutex_`, `linkState_`, `linkEpoch_`, `SetLinkState` (+подія `connection`), `LinkEpoch()`, **`bool IsReady() const`** (публічний, для `Подключен`), `EnsureReady` (Ping-цикл 4.9.2), `kReconnectDelayMs`/`kReconnectMaxDelayMs` (дублюють дефолти `SessionConfig` навмисно); хук стану на `session_` у `Connect()` крок 3 + `Ready` до `Start()` + `EnsureRecoveryRunning` після; порядок перевірок `NOT_CONNECTED`/`RECONNECTING` на вході `ExecuteInternal` (4.9.4); `SetUnsolicitedHandler` → DEBUG-лог (4.9.6). **Тестовий шов** `SetTransportFactoryForTest(std::function<std::unique_ptr<ITransport>(const EcrConnParams&)>)` поруч із `EnableTrace`; `MakeTransport` кличе фабрику, якщо задана — для тесту №6 (стаб транспорту з `Send<0` без закриття) |
 | `src/platform/JobEngine.h/.cpp` | зміна | `startMutex_` — серіалізація `Start()` для двох викликачів (4.3) |
 | `src/transport/Transport_TCP.h/.cpp` | зміна | `SO_KEEPALIVE` + `SIO_KEEPALIVE_VALS` після `m_socket = sock` (`:240`), `#include <mstcpip.h>`; константи `kKeepAliveIdleMs`/`kKeepAliveIntervalMs` (4.9.5); тестовий шов **`SOCKET GetSocketForTest() const`** за аналогією до `SetSendFunctionForTest` — для тесту №18 |
 | `src/components/BpoFacadeBase.cpp` | зміна | `CodeToInt`: `UNKNOWN_OUTCOME` → 17, `RECONNECTING` → 18 |
@@ -810,7 +830,7 @@ heartbeat у простої не робимо: він не розв'язує (б
 
 | # | Сценарій | CHECK |
 |---|---|---|
-| 1 | **Чужий чек не зараховано** (Task 1). `Purchase` таймаутить; `GetReceiptInfo` віддає завідомо іншу суму/RRN | код 17, `ok=false`; факти під `payload.outcome.facts`, не на топ-рівні; рівно **одна** подія `result` на операцію, жодної події з чужим payload під `result` |
+| 1 | **Чужий чек не зараховано** (Task 1). `Purchase` таймаутить; `GetReceiptInfo` віддає завідомо іншу суму/RRN | код 17, `ok=false`; `payload.outcome = {state:"resolved", reason:"DESYNC", facts, factsOk, factsCode}` — саме ці п'ять ключів, факти не на топ-рівні; рівно **одна** подія `result` на операцію, жодної події з чужим payload під `result`. Task 2 лише **доповнює** об'єкт (`generation`, `intent`, `terminalIdle`, `channelConnected`) — тест не переписується |
 | 2 | `Disconnected` → 17 негайно. `Purchase` → `DropConnection()` | 17 повернуто до реконекту; `state=pending`, `facts=null` |
 | 3 | Знімок після реконекту. Продовження 2: емулятор приймає нове з'єднання, статус `10`,`10`,`0`, потім чек | `state=resolved`, `terminalIdle=true`, факти є; подія `outcome` рівно одна |
 | 4 | **Гейт у `Pending`.** Під час 3, до `resolved`, викликати `Purchase` ще раз | 17 з описом про попередню; емулятор **не отримав** другого `Purchase` (лічильник = 1) |
@@ -879,6 +899,8 @@ heartbeat у простої не робимо: він не розв'язує (б
   Fail("UNKNOWN_OUTCOME", …)`, факти — у `payload.outcome.facts`;
 - `RecoverAfterDesync` бере чек через новий `RequestReceiptFacts` (без подій), не через `ExecuteInternal`;
 - `CodeToInt`: 17;
+- форма `payload.outcome` — п'ять ключів як у тесті №1 (`state`, `reason`, `facts`, `factsOk`, `factsCode`);
+  Task 2 доповнює, не переписує;
 - тест 6.2 №1.
 Наявні 84+77 CHECK не зачіпаються (2.4).
 
@@ -904,8 +926,9 @@ PollStatusOnce(int&)`; тести №10, №11 (для №11 — тимчасо�
 `EnsureReady` (Ping-цикл, крок 0) + `CaptureOutcome` (з `RecoverAfterDesync`, крок 1, з виходом на
 `Disconnected`/`Stopped`); `RequestReceiptFacts`; `EnsureRecoveryRunning`; хук `up=true` →
 `EnsureRecoveryRunning`; `Connect()` → `EnsureRecoveryRunning` після старту; bounded очікування 4.4(а);
-`MarkSynchronized` лише при спокої; `InquireLastOutcome` з самозціленням (не const); `inRecovery_`
-прибрано; тести №6, №7, №13, №15, №16, №17, №23.
+`MarkSynchronized` при спокої або після ліміту; `InquireLastOutcome` з самозціленням (не const);
+`inRecovery_` прибрано; тестовий шов `SetTransportFactoryForTest` (для №6); тести №6, №7, №13, №15,
+№16, №17, №23.
 
 **Task 5 (життєвий цикл):** `Disconnect()` за 4.5; `generation`-guard у `CaptureOutcome`; тести №2, №3,
 №8, №9, №14.
