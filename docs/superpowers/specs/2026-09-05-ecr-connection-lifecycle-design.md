@@ -795,7 +795,7 @@ heartbeat у простої не робимо: він не розв'язує (б
 
 | Файл | Тип | Що |
 |---|---|---|
-| `src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h/.cpp` | зміна | **А:** `LastOutcome` (+`requestId`), `outcomeMutex_`, `pendingRequestId_`, `recoveryJob_`, `closing_`; `kFinancialMethods`, `kOutcomeSyncWaitMs`, `kOutcomeIdleWaitMs`; `MarkPending`, `EnsureRecoveryRunning`, `RecoveryJob`, `CaptureOutcome` (з `RecoverAfterDesync`), `RequestReceiptFacts`, `RequestStatus PollStatusOnce(int&)`, `BuildUnknownOutcome`, `InquireLastOutcome` (не const), `SetRequestId`; тригер у `ExecuteInternal` за 4.2/4.4; гейт 4.6; `Disconnect()` за 4.5; `inRecovery_` прибрано. **Б:** `LinkState`, `linkMutex_`, `linkState_`, `linkEpoch_`, `SetLinkState` (+подія `connection`), `LinkEpoch()`, **`bool IsReady() const`** (публічний, для `Подключен`), `EnsureReady` (Ping-цикл 4.9.2), `kReconnectDelayMs`/`kReconnectMaxDelayMs` (дублюють дефолти `SessionConfig` навмисно); хук стану на `session_` у `Connect()` крок 3 + `Ready` до `Start()` + `EnsureRecoveryRunning` після; порядок перевірок `NOT_CONNECTED`/`RECONNECTING` на вході `ExecuteInternal` (4.9.4); `SetUnsolicitedHandler` → DEBUG-лог (4.9.6). **Тестовий шов** `SetTransportFactoryForTest(std::function<std::unique_ptr<ITransport>(const EcrConnParams&)>)` поруч із `EnableTrace`; `MakeTransport` кличе фабрику, якщо задана — для тесту №6 (стаб транспорту з `Send<0` без закриття) |
+| `src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h/.cpp` | зміна | **А:** `LastOutcome` (+`requestId`), `outcomeMutex_`, `pendingRequestId_`, `recoveryJob_`, `closing_`; `kFinancialMethods`, `kOutcomeSyncWaitMs`, `kOutcomeIdleWaitMs`; `MarkPending`, `EnsureRecoveryRunning`, `RecoveryJob`, `CaptureOutcome` (з `RecoverAfterDesync`), `RequestReceiptFacts`, `RequestStatus PollStatusOnce(int&)`, `BuildUnknownOutcome`, `InquireLastOutcome` (не const), `SetRequestId`; тригер у `ExecuteInternal` за 4.2/4.4; гейт 4.6; `Disconnect()` за 4.5; `inRecovery_` прибрано. **Б:** `LinkState`, `linkMutex_`, `linkState_`, `linkEpoch_`, `SetLinkState` (+подія `connection`), `LinkEpoch()`, **`bool IsReady() const`** (публічний, для `Подключен`), `EnsureReady` (Ping-цикл 4.9.2), `kReconnectDelayMs`/`kReconnectMaxDelayMs` (дублюють дефолти `SessionConfig` навмисно); хук стану на `session_` у `Connect()` крок 3 + `Ready` до `Start()` + `EnsureRecoveryRunning` після; порядок перевірок `NOT_CONNECTED`/`RECONNECTING` на вході `ExecuteInternal` (4.9.4); `SetUnsolicitedHandler` → DEBUG-лог (4.9.6). **Тестові шви** (усі `…ForTest`, поруч із `EnableTrace`): `SetTransportFactoryForTest(std::function<std::unique_ptr<ITransport>(const EcrConnParams&)>)` — `MakeTransport` кличе фабрику, якщо задана (тест №6, стаб транспорту з `Send<0` без закриття); `SetOutcomeTimingForTest(int idleWaitMs, int syncWaitMs)` — `kOutcomeIdleWaitMs`/`kOutcomeSyncWaitMs` стають `std::atomic<int>` з тими самими дефолтами (тест №7: інакше двохвилинний тест у гейті); `MarkPendingForTest(method, amount, reason)` — `MarkPending` без `EnsureRecoveryRunning` (тест №13: вікно «Pending є, джоб не Running» штатним шляхом не створити); `StopSessionForTest()` — рівно `session_->Stop()` (тест №14: моделює `FinishPendingLocked(Stopped)`; справжній `Disconnect()` з іншого потоку під час `RequestPrimary` дав би UAF на `session_.reset()`, §2.4) |
 | `src/platform/JobEngine.h/.cpp` | зміна | `startMutex_` — серіалізація `Start()` для двох викликачів (4.3) |
 | `src/transport/Transport_TCP.h/.cpp` | зміна | `SO_KEEPALIVE` + `SIO_KEEPALIVE_VALS` після `m_socket = sock` (`:240`), `#include <mstcpip.h>`; константи `kKeepAliveIdleMs`/`kKeepAliveIntervalMs` (4.9.5); тестовий шов **`SOCKET GetSocketForTest() const`** за аналогією до `SetSendFunctionForTest` — для тесту №18 |
 | `src/components/BpoFacadeBase.cpp` | зміна | `CodeToInt`: `UNKNOWN_OUTCOME` → 17, `RECONNECTING` → 18 |
@@ -822,28 +822,30 @@ heartbeat у простої не робимо: він не розв'язує (б
 ### 6.1. Емулятор
 
 `TerminalEmulator::DropConnection()` — закрити `client_` з боку сценарію (сьогодні доступу до сокета з
-`Responder` немає). Емулятор уже приймає наступний `accept` після обриву — реконект моделюється без
-змін. Лічильники «на N-й виклик відповісти інакше» — локальний `std::atomic` у лямбді, як
+`Responder` немає). `TerminalEmulator::DropAfterNextResponse()` — закрити сокет **одразу після відправки
+наступної відповіді** (`shutdown(SD_SEND)` після `send`, потім `closesocket`) — для тесту №23: «відповів на
+Ping і зник» інакше недетермінований. Емулятор уже приймає наступний `accept` після обриву — реконект
+моделюється без змін. Лічильники «на N-й виклик відповісти інакше» — локальний `std::atomic` у лямбді, як
 `interruptSeen` у `TestDriverInterrupt`.
 
 ### 6.2. Сценарії (`ecr_privatjson_selftest`, драйвер напряму)
 
 | # | Сценарій | CHECK |
 |---|---|---|
-| 1 | **Чужий чек не зараховано** (Task 1). `Purchase` таймаутить; `GetReceiptInfo` віддає завідомо іншу суму/RRN | код 17, `ok=false`; `payload.outcome = {state:"resolved", reason:"DESYNC", facts, factsOk, factsCode}` — саме ці п'ять ключів, факти не на топ-рівні; рівно **одна** подія `result` на операцію, жодної події з чужим payload під `result`. Task 2 лише **доповнює** об'єкт (`generation`, `intent`, `terminalIdle`, `channelConnected`) — тест не переписується |
+| 1 | **Чужий чек не зараховано** (Task 1). `Purchase` таймаутить; `GetReceiptInfo` віддає завідомо іншу суму/RRN | код 17, `ok=false`; `payload.outcome = {state:"resolved", reason:"TIMEOUT", facts, factsOk, factsCode}` — саме ці п'ять ключів (`reason` = `"TIMEOUT"`, не `"DESYNC"`: гілка спрацьовує при `r.status == Timeout`, а за таблицею §4.2 статус має пріоритет над `IsDesynchronized()`), факти не на топ-рівні; рівно **одна** подія `result` на операцію, жодної події з чужим payload під `result`. Task 2 лише **доповнює** об'єкт (`generation`, `intent`, `terminalIdle`, `channelConnected`) — тест не переписується |
 | 2 | `Disconnected` → 17 негайно. `Purchase` → `DropConnection()` | 17 повернуто до реконекту; `state=pending`, `facts=null` |
 | 3 | Знімок після реконекту. Продовження 2: емулятор приймає нове з'єднання, статус `10`,`10`,`0`, потім чек | `state=resolved`, `terminalIdle=true`, факти є; подія `outcome` рівно одна |
 | 4 | **Гейт у `Pending`.** Під час 3, до `resolved`, викликати `Purchase` ще раз | 17 з описом про попередню; емулятор **не отримав** другого `Purchase` (лічильник = 1) |
 | 5 | Після `Resolved` гейт знято | `Purchase` проходить на дріт |
 | 6 | `SendFailed` при живому з'єднанні → з'ясування одразу (стаб транспорту з `Send<0` без закриття) | 17 із фактами в тому ж виклику; `channelConnected=true` |
-| 7 | Термінал не виходить зі стану «зайнятий» до ліміту | `terminalIdle=false`, `factsCode="TERMINAL_BUSY"`; `MarkSynchronized` **не** викликано (якщо був desync — лишається) |
+| 7 | Термінал не виходить зі стану «зайнятий» до ліміту (ліміт скорочено через `SetOutcomeTimingForTest`) | `terminalIdle=false`, `factsCode="TERMINAL_BUSY"`, `state=resolved`; `MarkSynchronized` **викликано після ліміту** — наступний primary не отримує `DESYNC` (4.3 крок 3) |
 | 8 | `Disconnect()` посеред `Pending` з активним джобом | без `terminate`/UAF; після повторного `Connect()` `lastOutcome_` збережено |
 | 9 | **Повторний обрив під час з'ясування.** `Purchase` → `DropConnection()` (gen=1) → реконект → Ping → `ready` → джоб полить статус; емулятор тримає `10` → `DropConnection()` ще раз під час полінгу → реконект | перший джоб вийшов з `ABORTED` без запису **саме через `Disconnected` від `PollStatusOnce`** (не через `generation` — той лишається 1, і не через `closing_`); після другого реконекту хук бачить `Pending`, джоб не `Running` → `EnsureRecoveryRunning` → крок 0 (Ping) → крок 1; знімок один |
 | 10 | Нефінансовий метод (`Audit`) при обриві | як сьогодні — `DISCONNECTED`, `lastOutcome_` не чіпається |
 | 11 | `InquireLastOutcome` при `None` | `ok:true`, `state:"none"` |
 | 12 | **`JobEngine::Start` з двох потоків одночасно** (юніт, без термінала): 100 ітерацій, два потоки кличуть `Start` на завершеному джобі | рівно один `true`, жодного `terminate`; без `startMutex_` тест має падати/аварійно завершуватись (негативна верифікація) |
-| 13 | **Самозцілення.** Змоделювати вікно 4.4: `Pending` є, джоб не `Running`, зв'язок є (напр. `MarkPending` без `Start`) → викликати `InquireLastOutcome` | джоб стартує; за ним `state=resolved` |
-| 14 | `Stopped` як тригер: `Disconnect()` з іншого потоку під час синхронного `Purchase` | 17, `reason="STOPPED"`, `Pending`; після `Connect()` (4.4в) — знімок |
+| 13 | **Самозцілення.** Вікно 4.4 створюється швом `MarkPendingForTest` (`Pending` є, джоб не `Running`, зв'язок є) → викликати `InquireLastOutcome` | джоб стартує; за ним `state=resolved` |
+| 14 | `Stopped` як тригер: `StopSessionForTest()` з іншого потоку під час синхронного `Purchase` (моделює `FinishPendingLocked(Stopped)`; справжній `Disconnect()` дав би UAF, §2.4) | 17, `reason="STOPPED"`, `Pending`; після `Disconnect()`+`Connect()` (4.4в) — знімок |
 | 15 | **Ping після реконекту → `Ready`.** `Connect()` → `DropConnection()` → емулятор приймає нове з'єднання і відповідає на `PingDevice` | послідовність подій `connection`: `connecting`(dropped) → `ready`; `Подключен` = `Истина` лише після `ready`; емулятор отримав рівно один `PingDevice` на новому з'єднанні (провідний `0x00` емулятор побачити не може — порожній кадр відкидається, `TerminalEmulator.cpp:53-58`; він покривається тим самим `FrameOptions{leadingDelimiter}`, що й у `Connect()`) |
 | 16 | **Silence після реконекту (монополія).** Як 15, але емулятор на нове з'єднання **не відповідає** N секунд, потім починає | `Подключен` = `Ложь` увесь час silence; `Purchase` у цей час → **`RECONNECTING`**, на дріт не пішов; Ping повторюється з backoff (лічильник ≥ 2); після першої відповіді — `ready` |
 | 17 | `deviceBusy` на Ping після реконекту (термінал веде нашу операцію) | `ready`; далі, якщо `Pending`, — з'ясування чекає спокою (тест 3) |
@@ -852,7 +854,7 @@ heartbeat у простої не робимо: він не розв'язує (б
 | 20 | `Отключить` під `Connecting` | подія `connection` `disconnected`(closed), не `dropped`; `Подключен` = `Ложь` |
 | 21 | Порядок перевірок на вході: `Pending` + `Connecting` одночасно | `Purchase` → 17 (гейт 4.6 першим), не 18 |
 | 22 | **Три стани — три коди.** (а) `Purchase` без жодного `Connect()`; (б) `Purchase` одразу після `Отключить`; (в) `Purchase` під `Connecting` (тест 16) | (а) і (б) → `NOT_CONNECTED`=1, **не** 18; (в) → 18. Без правильного порядку (а)/(б) дали б 18 — негативна верифікація |
-| 23 | **Епоха зв'язку.** Емулятор відповідає на `PingDevice` і **негайно** рве з'єднання (`DropConnection()` з responder-а після відправки) | `Ready` **не** записано (епоха змінилась); після наступного реконекту — знову Ping, тоді `ready`; послідовність подій без `ready` між двома `connecting` |
+| 23 | **Епоха зв'язку.** Емулятор відповідає на `PingDevice` і **негайно** рве з'єднання (`DropAfterNextResponse()`, 6.1) | `Ready` **не** записано (епоха змінилась); після наступного реконекту — знову Ping, тоді `ready`; послідовність подій без `ready` між двома `connecting` |
 
 ### 6.3. Через DLL (`ecr_native_host`)
 
@@ -918,8 +920,8 @@ PollStatusOnce(int&)`; тести №10, №11 (для №11 — тимчасо�
 у `Connect()` крок 3 (`up=false` → `Connecting`; `up=true` — поки що no-op, бо джоба ще немає); `Ready`
 **до** `Start()` у `Connect()`, `Disconnected` у `Disconnect()`; порядок перевірок
 `NOT_CONNECTED`/`RECONNECTING` на вході `ExecuteInternal` (4.9.4) з кодом 18 у `CodeToInt`; `Подключен`
-→ `IsReady()`; `SetUnsolicitedHandler` → DEBUG-лог; `TerminalEmulator::DropConnection()`; тести №20,
-№22. (Після цього Task зв'язок після реконекту лишається `Connecting`, доки не з'явиться Ping у Task 4 —
+→ `IsReady()`; `SetUnsolicitedHandler` → DEBUG-лог; `TerminalEmulator::DropConnection()` і
+`DropAfterNextResponse()`; тести №20, №22. (Після цього Task зв'язок після реконекту лишається `Connecting`, доки не з'явиться Ping у Task 4 —
 гейт зелений, бо тести на реконект ще не додані.)
 
 **Task 4 (фоновий джоб):** `JobEngine::startMutex_` (тест №12); `recoveryJob_` + `RecoveryJob` =
@@ -927,11 +929,11 @@ PollStatusOnce(int&)`; тести №10, №11 (для №11 — тимчасо�
 `Disconnected`/`Stopped`); `RequestReceiptFacts`; `EnsureRecoveryRunning`; хук `up=true` →
 `EnsureRecoveryRunning`; `Connect()` → `EnsureRecoveryRunning` після старту; bounded очікування 4.4(а);
 `MarkSynchronized` при спокої або після ліміту; `InquireLastOutcome` з самозціленням (не const);
-`inRecovery_` прибрано; тестовий шов `SetTransportFactoryForTest` (для №6); тести №6, №7, №13, №15,
-№16, №17, №23.
+`inRecovery_` прибрано; тестові шви `SetTransportFactoryForTest` (№6), `SetOutcomeTimingForTest` (№7),
+`MarkPendingForTest` (№13); тести №6, №7, №13, №15, №16, №17, №23.
 
-**Task 5 (життєвий цикл):** `Disconnect()` за 4.5; `generation`-guard у `CaptureOutcome`; тести №2, №3,
-№8, №9, №14.
+**Task 5 (життєвий цикл):** `Disconnect()` за 4.5; `generation`-guard у `CaptureOutcome`; тестовий шов
+`StopSessionForTest` (№14); тести №2, №3, №8, №9, №14.
 
 **Task 6:** гейт 4.6 (першим на вході, із самозціленням); тести №4, №5, №21.
 
