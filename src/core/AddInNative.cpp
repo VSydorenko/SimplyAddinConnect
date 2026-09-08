@@ -525,6 +525,8 @@ std::wstring AddInNative::WCHAR2WC(std::basic_string_view<WCHAR_T> src) {
 	return std::wstring(src.begin(), src.end());
 }
 
+// Прапорці 0 і явна довжина — з тих самих міркувань, що й у WCHAR2MB вище
+// (підстановка U+FFFD замість винятка; MB_ERR_INVALID_CHARS не ставимо).
 std::u16string AddInNative::MB2WCHAR(std::string_view src) {
 	if (src.empty()) return std::u16string();
 	const int srcLen = static_cast<int>(src.size());
