@@ -57,36 +57,61 @@ protected:
 	private:
 		tVariant* pvar = nullptr;
 		AddInNative* addin = nullptr;
-		PropDesc* prop = nullptr;
-		MethDesc* meth = nullptr;
+		// Контекст ЛИШЕ для тексту помилки: чиє це значення. Не володіє нічим.
+		const PropDesc* prop = nullptr;
+		const MethDesc* meth = nullptr;
 		long number = -1;
-	private:
-		std::exception error(TYPEVAR vt) const;
 	public:
-		void AllocMemory(unsigned long size);
 		VariantHelper(const VariantHelper& va) :pvar(va.pvar), addin(va.addin), prop(va.prop), meth(va.meth), number(va.number) {}
 		VariantHelper(tVariant* pvar, AddInNative* addin) :pvar(pvar), addin(addin) {}
-		VariantHelper(tVariant* pvar, AddInNative* addin, PropDesc* prop) :pvar(pvar), addin(addin), prop(prop) {}
-		VariantHelper(tVariant* pvar, AddInNative* addin, MethDesc* meth, long number) :pvar(pvar), addin(addin), meth(meth), number(number) {}
+		VariantHelper(tVariant* pvar, AddInNative* addin, const PropDesc* prop) :pvar(pvar), addin(addin), prop(prop) {}
+		VariantHelper(tVariant* pvar, AddInNative* addin, const MethDesc* meth, long number) :pvar(pvar), addin(addin), meth(meth), number(number) {}
 		VariantHelper& operator<<(const VariantHelper& va) { pvar = va.pvar; addin = va.addin; prop = va.prop; meth = va.meth; number = va.number; return *this; }
+		// Рибіндинг result: копіювальне присвоєння лишається ЗАБОРОНЕНИМ — навмисний
+		// guard Етапу 0 (без нього this->result = f(...) у WrapRet міг би мовчки
+		// рибіндити result замість присвоїти значення). Рибіндинг — лише через operator<<.
 		VariantHelper& operator=(const VariantHelper& va) = delete;
+
+		// Ядро адаптера: уся робота з tVariant іде через ці два явні методи;
+		// оператори нижче — тонкі inline-обгортки над ними. Спеціалізації визначені
+		// у .cpp; прототипи — одразу після класу AddInNative, у просторі імен
+		// (щоб їх бачила кожна TU, яка підключає цей заголовок, — компоненти теж).
+		template <typename T> T    Get() const;
+		template <typename T> void Set(const T& value);
+
+		void     AllocMemory(unsigned long size);
+		uint32_t size();
+		TYPEVAR  type();
+		char*    data();
+		void     clear();
+
+		// Тіла — тонкі обгортки над Set<T>()/Get<T>(), визначені в .cpp (НЕ inline
+		// у тілі класу): виклик Get<T>()/Set<T>() з функції, визначеної ВСЕРЕДИНІ
+		// класу, компілюється в "complete-class context" одразу після закриття
+		// VariantHelper — тобто ДО того, як компілятор побачить explicit-спеціалізації,
+		// оголошені за межами класу AddInNative (вони й фізично не можуть стояти
+		// раніше — explicit-спеціалізація вкладеного шаблону методу мусить бути в
+		// просторі імен, а AddInNative ще не закрився). Наслідок — компілятор мовчки
+		// створює екземпляр primary-шаблону РАНІШЕ оголошення спеціалізації, і MSVC
+		// падає з C2908 "явная специализация; уже создан экземпляр". Тому тут —
+		// лише декларації.
 		VariantHelper& operator=(const std::string& str);
 		VariantHelper& operator=(const std::wstring& str);
 		VariantHelper& operator=(const std::u16string& str);
 		VariantHelper& operator=(int64_t value);
 		VariantHelper& operator=(double value);
 		VariantHelper& operator=(bool value);
-		operator std::string() const;
-		operator std::wstring() const;
+
+		operator std::string()    const;
+		operator std::wstring()   const;
 		operator std::u16string() const;
-		operator int64_t() const;
-		operator double() const;
-		operator bool() const;
-		operator int() const;
-		uint32_t size();
-		TYPEVAR type();
-		char* data();
-		void clear();
+		operator int64_t()        const;
+		operator double()         const;
+		operator bool()           const;
+		operator int()            const;
+
+	private:
+		std::exception TypeError(TYPEVAR expected) const;
 	};
 
 	using VH = VariantHelper;
@@ -344,6 +369,27 @@ private:
 	// Захищає m_iConnect від гонки між фоновими PostExternalEvent/AddError і Done().
 	std::mutex connectMutex_;
 };
+
+// Явні спеціалізації VariantHelper::Get<T>()/Set<T>() — визначення в AddInNative.cpp.
+// Прототип тут ОБОВ'ЯЗКОВИЙ: inline-оператори у тілі класу (вище) викликають Get<T>()/
+// Set<T>() у КОЖНІЙ одиниці трансляції, що підключає цей заголовок (компоненти в
+// src/components теж). Без прототипу компілятор шукав би визначення primary-шаблону
+// (якого немає — лише декларація в класі) і впав би лінк-помилкою, що для explicit-
+// спеціалізацій вкладеного шаблону методу класична пастка: "не визначено" лише для
+// типів, першими використаних без видимого прототипу.
+template <> std::string    AddInNative::VariantHelper::Get<std::string>() const;
+template <> std::wstring   AddInNative::VariantHelper::Get<std::wstring>() const;
+template <> std::u16string AddInNative::VariantHelper::Get<std::u16string>() const;
+template <> int64_t        AddInNative::VariantHelper::Get<int64_t>() const;
+template <> double         AddInNative::VariantHelper::Get<double>() const;
+template <> bool           AddInNative::VariantHelper::Get<bool>() const;
+
+template <> void AddInNative::VariantHelper::Set<std::string>(const std::string& value);
+template <> void AddInNative::VariantHelper::Set<std::wstring>(const std::wstring& value);
+template <> void AddInNative::VariantHelper::Set<std::u16string>(const std::u16string& value);
+template <> void AddInNative::VariantHelper::Set<int64_t>(const int64_t& value);
+template <> void AddInNative::VariantHelper::Set<double>(const double& value);
+template <> void AddInNative::VariantHelper::Set<bool>(const bool& value);
 
 // Реєстрація компоненти в реєстрі DLL + захист від відкидання лінкером.
 // Клас мусить оголосити: static std::vector<std::u16string> names;

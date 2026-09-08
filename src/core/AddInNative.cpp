@@ -582,30 +582,15 @@ TYPEVAR AddInNative::VariantHelper::type()
 uint32_t AddInNative::VariantHelper::size()
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
-	if (pvar->vt != VTYPE_BLOB) throw this->error(VTYPE_BLOB);
+	if (pvar->vt != VTYPE_BLOB) throw this->TypeError(VTYPE_BLOB);
 	return pvar->strLen;
 }
 
 char* AddInNative::VariantHelper::data()
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
-	if (pvar->vt != VTYPE_BLOB) throw this->error(VTYPE_BLOB);
+	if (pvar->vt != VTYPE_BLOB) throw this->TypeError(VTYPE_BLOB);
 	return pvar->pstrVal;
-}
-
-AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::string& str)
-{
-	return operator=(AddInNative::MB2WCHAR(str));
-}
-
-AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::wstring& str)
-{
-	if (sizeof(wchar_t) == 2) {
-		return operator=(std::u16string(reinterpret_cast<const char16_t*>(str.data()), str.size()));
-	}
-	else {
-		return operator=(WC2MB(str));
-	}
 }
 
 void AddInNative::VariantHelper::clear()
@@ -618,59 +603,6 @@ void AddInNative::VariantHelper::clear()
 		break;
 	}
 	tVarInit(pvar);
-}
-
-AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(int64_t value)
-{
-	// Присвоєння у відʼєднаний result (CallAsProc навмисно обнуляє pvar, коли
-	// функцію викликано як процедуру — результат не потрібен) — тихе відкидання,
-	// а не bad_variant_access через clear() на nullptr
-	if (pvar == nullptr) return *this;
-	clear();
-	if (INT32_MIN <= value && value <= INT32_MAX) {
-		TV_VT(pvar) = VTYPE_I4;
-		TV_I4(pvar) = (int32_t)value;
-	}
-	else {
-		TV_VT(pvar) = VTYPE_R8;
-		TV_R8(pvar) = (double)value;
-	}
-	return *this;
-}
-
-AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(double value)
-{
-	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння
-	if (pvar == nullptr) return *this;
-	clear();
-	TV_VT(pvar) = VTYPE_R8;
-	TV_R8(pvar) = value;
-	return *this;
-}
-
-AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(bool value)
-{
-	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння
-	if (pvar == nullptr) return *this;
-	clear();
-	TV_VT(pvar) = VTYPE_BOOL;
-	TV_BOOL(pvar) = value;
-	return *this;
-}
-
-AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::u16string& str)
-{
-	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння
-	if (pvar == nullptr) return *this;
-	clear();
-	TV_VT(pvar) = VTYPE_PWSTR;
-	pvar->pwstrVal = nullptr;
-	size_t size = (str.size() + 1) * sizeof(char16_t);
-	if (!addin->AllocMemory(reinterpret_cast<void**>(&pvar->pwstrVal), size)) throw std::bad_alloc();
-	memcpy(pvar->pwstrVal, str.c_str(), size);
-	pvar->wstrLen = str.size();
-	while (pvar->wstrLen && pvar->pwstrVal[pvar->wstrLen - 1] == 0) pvar->wstrLen--;
-	return *this;
 }
 
 bool AddInNative::AddError(const std::u16string& descr, long scode)
@@ -710,7 +642,7 @@ static std::u16string typeinfo(TYPEVAR vt, bool alias)
 	}
 }
 
-std::exception AddInNative::VariantHelper::error(TYPEVAR vt) const
+std::exception AddInNative::VariantHelper::TypeError(TYPEVAR expected) const
 {
 	std::basic_stringstream<char16_t, std::char_traits<char16_t>, std::allocator<char16_t>> ss;
 	if (addin && addin->alias) {
@@ -718,7 +650,7 @@ std::exception AddInNative::VariantHelper::error(TYPEVAR vt) const
 		if (prop) ss << u" при обращении к свойству <" << prop->nameRu << ">";
 		if (meth) ss << u" при вызове метода <" << meth->nameRu << ">";
 		if (number >= 0) ss << u" параметр <" << number + 1 << ">";
-		ss << u" ожидается <" + typeinfo(vt, true) << u">";
+		ss << u" ожидается <" + typeinfo(expected, true) << u">";
 		if (pvar) ss << u" фактически <" + typeinfo(pvar->vt, true) << u">";
 	}
 	else {
@@ -726,33 +658,44 @@ std::exception AddInNative::VariantHelper::error(TYPEVAR vt) const
 		if (prop) ss << u" of property <" << prop->nameEn << ">";
 		if (meth) ss << u" when calling method <" << meth->nameEn << ">";
 		if (number >= 0) ss << u" parameter <" << number + 1 << ">";
-		ss << u" expected <" + typeinfo(vt, false) << u">";
+		ss << u" expected <" + typeinfo(expected, false) << u">";
 		if (pvar) ss << u" actual value <" + typeinfo(pvar->vt, false) << u">";
 	}
 	if (addin) addin->AddError(ss.str());
 	return std::bad_typeid();
 }
 
-AddInNative::VariantHelper::operator std::string() const
-{
-	std::u16string str(*this);
-	return WCHAR2MB((WCHAR_T*)str.c_str());
-}
+// ---- Get<T>(): читання tVariant. Null pvar -> bad_variant_access (протилежно
+// до Set<T>, де відʼєднаний result — тихий no-op; див. коментар у Set нижче). ----
 
-AddInNative::VariantHelper::operator std::wstring() const
-{
-	std::u16string str(*this);
-	return WCHAR2WC((WCHAR_T*)str.c_str());
-}
-
-AddInNative::VariantHelper::operator std::u16string() const
+template <>
+std::u16string AddInNative::VariantHelper::Get<std::u16string>() const
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
-	if (pvar->vt != VTYPE_PWSTR) throw error(VTYPE_PWSTR);
+	if (pvar->vt != VTYPE_PWSTR) throw TypeError(VTYPE_PWSTR);
+	// Апаратнення: NUL-термінований покажчик, а не (pwstrVal, wstrLen). Порожній
+	// pwstrVal (не мало би траплятись за коректного VTYPE_PWSTR) -> визначена
+	// поведінка (порожній рядок) замість розіменування нуля.
+	if (pvar->pwstrVal == nullptr) return std::u16string();
 	return reinterpret_cast<char16_t*>(pvar->pwstrVal);
 }
 
-AddInNative::VariantHelper::operator int64_t() const
+template <>
+std::string AddInNative::VariantHelper::Get<std::string>() const
+{
+	std::u16string str = Get<std::u16string>();
+	return WCHAR2MB((WCHAR_T*)str.c_str());
+}
+
+template <>
+std::wstring AddInNative::VariantHelper::Get<std::wstring>() const
+{
+	std::u16string str = Get<std::u16string>();
+	return WCHAR2WC((WCHAR_T*)str.c_str());
+}
+
+template <>
+int64_t AddInNative::VariantHelper::Get<int64_t>() const
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
 	switch (TV_VT(pvar)) {
@@ -765,28 +708,12 @@ AddInNative::VariantHelper::operator int64_t() const
 	case VTYPE_R8:
 		return (int64_t)pvar->dblVal;
 	default:
-		throw error(VTYPE_I4);
+		throw TypeError(VTYPE_I4);
 	}
 }
 
-AddInNative::VariantHelper::operator int() const
-{
-	if (pvar == nullptr) throw std::bad_variant_access();
-	switch (TV_VT(pvar)) {
-	case VTYPE_I2:
-	case VTYPE_I4:
-	case VTYPE_UI1:
-	case VTYPE_ERROR:
-		return (int)pvar->lVal;
-	case VTYPE_R4:
-	case VTYPE_R8:
-		return (int)pvar->dblVal;
-	default:
-		throw error(VTYPE_I4);
-	}
-}
-
-AddInNative::VariantHelper::operator double() const
+template <>
+double AddInNative::VariantHelper::Get<double>() const
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
 	switch (TV_VT(pvar)) {
@@ -799,11 +726,12 @@ AddInNative::VariantHelper::operator double() const
 	case VTYPE_R8:
 		return (double)pvar->dblVal;
 	default:
-		throw error(VTYPE_R4);
+		throw TypeError(VTYPE_R4);
 	}
 }
 
-AddInNative::VariantHelper::operator bool() const
+template <>
+bool AddInNative::VariantHelper::Get<bool>() const
 {
 	if (pvar == nullptr) throw std::bad_variant_access();
 	switch (TV_VT(pvar)) {
@@ -815,8 +743,80 @@ AddInNative::VariantHelper::operator bool() const
 	case VTYPE_ERROR:
 		return (bool)pvar->lVal;
 	default:
-		throw error(VTYPE_BOOL);
+		throw TypeError(VTYPE_BOOL);
 	}
+}
+
+// ---- Set<T>(): запис у tVariant. Null pvar -> тихий no-op (протилежно до Get<T>).
+// CallAsProc навмисно відʼєднує result.pvar, коли функцію викликано як процедуру —
+// результат нікуди писати не треба; без цього guard-а clear() кинула б
+// bad_variant_access і виклик провалився б попри виконану дію (TestRetViaCallAsProc). ----
+
+template <>
+void AddInNative::VariantHelper::Set<std::u16string>(const std::u16string& value)
+{
+	if (pvar == nullptr) return;
+	clear();
+	TV_VT(pvar) = VTYPE_PWSTR;
+	pvar->pwstrVal = nullptr;
+	size_t size = (value.size() + 1) * sizeof(char16_t);
+	if (!addin->AllocMemory(reinterpret_cast<void**>(&pvar->pwstrVal), size)) throw std::bad_alloc();
+	memcpy(pvar->pwstrVal, value.c_str(), size);
+	pvar->wstrLen = value.size();
+	while (pvar->wstrLen && pvar->pwstrVal[pvar->wstrLen - 1] == 0) pvar->wstrLen--;
+}
+
+template <>
+void AddInNative::VariantHelper::Set<std::string>(const std::string& value)
+{
+	Set<std::u16string>(AddInNative::MB2WCHAR(value));
+}
+
+template <>
+void AddInNative::VariantHelper::Set<std::wstring>(const std::wstring& value)
+{
+	if (sizeof(wchar_t) == 2) {
+		Set<std::u16string>(std::u16string(reinterpret_cast<const char16_t*>(value.data()), value.size()));
+	}
+	else {
+		Set<std::string>(WC2MB(value));
+	}
+}
+
+template <>
+void AddInNative::VariantHelper::Set<int64_t>(const int64_t& value)
+{
+	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння.
+	if (pvar == nullptr) return;
+	clear();
+	if (INT32_MIN <= value && value <= INT32_MAX) {
+		TV_VT(pvar) = VTYPE_I4;
+		TV_I4(pvar) = (int32_t)value;
+	}
+	else {
+		TV_VT(pvar) = VTYPE_R8;
+		TV_R8(pvar) = (double)value;
+	}
+}
+
+template <>
+void AddInNative::VariantHelper::Set<double>(const double& value)
+{
+	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння.
+	if (pvar == nullptr) return;
+	clear();
+	TV_VT(pvar) = VTYPE_R8;
+	TV_R8(pvar) = value;
+}
+
+template <>
+void AddInNative::VariantHelper::Set<bool>(const bool& value)
+{
+	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння.
+	if (pvar == nullptr) return;
+	clear();
+	TV_VT(pvar) = VTYPE_BOOL;
+	TV_BOOL(pvar) = value;
 }
 
 void AddInNative::VariantHelper::AllocMemory(unsigned long size)
@@ -826,6 +826,24 @@ void AddInNative::VariantHelper::AllocMemory(unsigned long size)
 	TV_VT(pvar) = VTYPE_BLOB;
 	pvar->strLen = size;
 }
+
+// ---- Оператори: тонкі обгортки над Set<T>()/Get<T>() (див. коментар у заголовку
+// про те, чому вони НЕ inline-визначення в тілі класу). ----
+
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::string& str)    { Set(str); return *this; }
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::wstring& str)   { Set(str); return *this; }
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::u16string& str) { Set(str); return *this; }
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(int64_t value)             { Set(value); return *this; }
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(double value)              { Set(value); return *this; }
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(bool value)                { Set(value); return *this; }
+
+AddInNative::VariantHelper::operator std::string()    const { return Get<std::string>(); }
+AddInNative::VariantHelper::operator std::wstring()   const { return Get<std::wstring>(); }
+AddInNative::VariantHelper::operator std::u16string() const { return Get<std::u16string>(); }
+AddInNative::VariantHelper::operator int64_t()        const { return Get<int64_t>(); }
+AddInNative::VariantHelper::operator double()         const { return Get<double>(); }
+AddInNative::VariantHelper::operator bool()           const { return Get<bool>(); }
+AddInNative::VariantHelper::operator int()            const { return static_cast<int>(Get<int64_t>()); }
 
 // Копія рядка в пам'яті менеджера 1С — примітив алокації, спільний з W() нижче.
 // nullptr, якщо менеджера ще немає або алокація провалилась (на відміну від
