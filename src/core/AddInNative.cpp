@@ -180,14 +180,24 @@ const WCHAR_T* AddInNative::GetPropName(long lPropNum, long lPropAlias)
 	return nullptr;
 }
 
+bool AddInNative::IsPropReadable(const long lPropNum)
+{
+	return lPropNum >= 0 && static_cast<size_t>(lPropNum) < props_.size()
+	    && bool(props_[lPropNum].getter);
+}
+
+bool AddInNative::IsPropWritable(const long lPropNum)
+{
+	return lPropNum >= 0 && static_cast<size_t>(lPropNum) < props_.size()
+	    && bool(props_[lPropNum].setter);
+}
+
 bool AddInNative::GetPropVal(const long lPropNum, tVariant* pvarPropVal)
 {
-	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= props_.size()) return false;
-	auto it = std::next(props_.begin(), lPropNum);
-	if (it == props_.end()) return false;
-	if (!it->getter) return false;
+	if (!IsPropReadable(lPropNum) || !pvarPropVal) return false;
+	PropDesc& p = props_[lPropNum];
 	try {
-		it->getter(VA(pvarPropVal, &(*it)));
+		p.getter(VA(pvarPropVal, &p));
 		return true;
 	}
 	catch (const std::u16string& msg) {
@@ -201,12 +211,10 @@ bool AddInNative::GetPropVal(const long lPropNum, tVariant* pvarPropVal)
 
 bool AddInNative::SetPropVal(const long lPropNum, tVariant* pvarPropVal)
 {
-	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= props_.size()) return false;
-	auto it = std::next(props_.begin(), lPropNum);
-	if (it == props_.end()) return false;
-	if (!it->setter) return false;
+	if (!IsPropWritable(lPropNum) || !pvarPropVal) return false;
+	PropDesc& p = props_[lPropNum];
 	try {
-		it->setter(VA(pvarPropVal, &(*it)));
+		p.setter(VA(pvarPropVal, &p));
 		return true;
 	}
 	catch (const std::u16string& msg) {
@@ -216,22 +224,6 @@ bool AddInNative::SetPropVal(const long lPropNum, tVariant* pvarPropVal)
 	catch (...) {
 		return false;
 	}
-}
-
-bool AddInNative::IsPropReadable(const long lPropNum)
-{
-	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= props_.size()) return false;
-	auto it = std::next(props_.begin(), lPropNum);
-	if (it == props_.end()) return false;
-	return (bool)it->getter;
-}
-
-bool AddInNative::IsPropWritable(const long lPropNum)
-{
-	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= props_.size()) return false;
-	auto it = std::next(props_.begin(), lPropNum);
-	if (it == props_.end()) return false;
-	return (bool)it->setter;
 }
 
 long AddInNative::GetNMethods()
@@ -259,40 +251,43 @@ const WCHAR_T* AddInNative::GetMethodName(const long lMethodNum, const long lMet
 long AddInNative::GetNParams(const long lMethodNum)
 {
 	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= meths_.size()) return 0;
-	auto it = std::next(meths_.begin(), lMethodNum);
-	if (it == meths_.end()) return 0;
+	const MethFunction& handler = meths_[lMethodNum].handler;
 	// Альтернативи MethFunction упорядковані за арністю (MethFunctionN на позиції N),
 	// тож індекс variant-а і Є кількістю параметрів. Інваріант закріплено static_assert-ами.
-	if (it->handler.valueless_by_exception()) return 0;
-	return static_cast<long>(it->handler.index());
+	if (handler.valueless_by_exception()) return 0;
+	return static_cast<long>(handler.index());
+}
+
+// DefaultHelper стоїть у заголовку ПЕРЕД AddInNative (потрібен йому для MethDefaults/
+// ParamSpec), тож не міг оголосити параметр типу AddInNative::VariantHelper напряму —
+// той вкладений тип іще не існував у точці його власного оголошення. Тут, у .cpp,
+// AddInNative вже повністю визначений, а дружба (friend class DefaultHelper в
+// AddInNative.h) відкриває доступ до protected VariantHelper.
+void DefaultHelper::Apply(tVariant* pvar, AddInNative* addin) const
+{
+	AddInNative::VariantHelper vh(pvar, addin);
+	switch (variant.index()) {
+	case 1: vh = std::get<std::u16string>(variant); break;
+	case 2: vh = std::get<int64_t>(variant);        break;
+	case 3: vh = std::get<double>(variant);         break;
+	case 4: vh = std::get<bool>(variant);           break;
+	default: break;   // EmptyValue (index 0) -> нічого не пишемо, комірка вже VTYPE_EMPTY
+	}
 }
 
 bool AddInNative::GetParamDefValue(const long lMethodNum, const long lParamNum, tVariant* pvarParamDefValue)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= meths_.size()) return true;
+	if (!pvarParamDefValue) return false;
 	try {
+		// Очищення — БЕЗУМОВНО, до перевірки меж методу: викликач передає комірку
+		// під "немає дефолту", і вона мусить лишитись валідним VTYPE_EMPTY навіть
+		// коли метод/параметр не знайдено, а не чужим сміттям з попереднього виклику.
 		VA(pvarParamDefValue).clear();
-		auto it = std::next(meths_.begin(), lMethodNum);
-		if (it == meths_.end()) return true;
-		auto p = it->defaults.find(lParamNum);
-		if (p == it->defaults.end()) return true;
-		auto var = &p->second.variant;
-		if (auto value = std::get_if<std::u16string>(var)) {
-			VA(pvarParamDefValue) = *value;
-			return true;
-		}
-		if (auto value = std::get_if<int64_t>(var)) {
-			VA(pvarParamDefValue) = *value;
-			return true;
-		}
-		if (auto value = std::get_if<double>(var)) {
-			VA(pvarParamDefValue) = *value;
-			return true;
-		}
-		if (auto value = std::get_if<bool>(var)) {
-			VA(pvarParamDefValue) = *value;
-			return true;
-		}
+		if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= meths_.size()) return true;
+		const MethDesc& m = meths_[lMethodNum];
+		const auto it = m.defaults.find(lParamNum);
+		if (it == m.defaults.end()) return true;   // немає дефолту -> лишається VTYPE_EMPTY
+		it->second.Apply(pvarParamDefValue, this);
 		return true;
 	}
 	catch (const std::u16string& msg) {
@@ -306,15 +301,8 @@ bool AddInNative::GetParamDefValue(const long lMethodNum, const long lParamNum, 
 
 bool AddInNative::HasRetVal(const long lMethodNum)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= meths_.size()) return false;
-	try {
-		auto it = std::next(meths_.begin(), lMethodNum);
-		if (it == meths_.end()) return false;
-		return it->hasRetVal;
-	}
-	catch (...) {
-		return false;
-	}
+	return lMethodNum >= 0 && static_cast<size_t>(lMethodNum) < meths_.size()
+	    && meths_[lMethodNum].hasRetVal;
 }
 
 bool AddInNative::CallMethod(MethFunction* func, tVariant* p, MethDesc* m, const long lSizeArray)
@@ -341,15 +329,18 @@ bool AddInNative::CallMethod(MethFunction* func, tVariant* p, MethDesc* m, const
 	    || TryCallArity<16, MethFunction16>(func, p, m, lSizeArray);
 }
 
-bool AddInNative::CallAsProc(const long lMethodNum, tVariant* paParams, const long lSizeArray)
+// Спільне тіло CallAsProc/CallAsFunc: межі індексу методу, ValidateParams (наш
+// механізм ParamSpec, ДО try — як і в чинному коді) і сам виклик у try/catch.
+// CallAsFunc НЕ будується поверх CallAsProc — той відв'язує result на вході, і
+// композиція «bind -> CallAsProc -> unbind» стерла б прив'язку до комірки
+// повернення раніше, ніж Ret() встиг би в неї щось записати.
+bool AddInNative::Dispatch(const long n, tVariant* paParams, const long lSizeArray)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= meths_.size()) return false;
-	auto it = std::next(meths_.begin(), lMethodNum);
-	if (it == meths_.end()) return false;
-	if (!ValidateParams(*it, paParams, lSizeArray)) return false;
+	if (n < 0 || static_cast<size_t>(n) >= meths_.size()) return false;
+	MethDesc& m = meths_[n];
+	if (!ValidateParams(m, paParams, lSizeArray)) return false;
 	try {
-		result << VA(nullptr);
-		return CallMethod(&it->handler, paParams, &(*it), lSizeArray);
+		return CallMethod(&m.handler, paParams, &m, lSizeArray);
 	}
 	catch (const std::u16string& msg) {
 		AddError(msg);
@@ -360,26 +351,25 @@ bool AddInNative::CallAsProc(const long lMethodNum, tVariant* paParams, const lo
 	}
 }
 
+bool AddInNative::CallAsProc(const long lMethodNum, tVariant* paParams, const long lSizeArray)
+{
+	// Функцію викликано як процедуру: результат нікуди не писати. Відв'язуємо
+	// result ДО диспетчеризації — інакше Ret()-хендлер писав би в комірку від
+	// попереднього CallAsFunc (TestRetViaCallAsProc).
+	result << VA(nullptr);
+	return Dispatch(lMethodNum, paParams, lSizeArray);
+}
+
 bool AddInNative::CallAsFunc(const long lMethodNum, tVariant* pvarRetValue, tVariant* paParams, const long lSizeArray)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= meths_.size()) return false;
-	auto it = std::next(meths_.begin(), lMethodNum);
-	if (it == meths_.end()) return false;
-	if (!ValidateParams(*it, paParams, lSizeArray)) return false;
-	try {
-		result << VA(pvarRetValue);
-		bool ok = CallMethod(&it->handler, paParams, &(*it), lSizeArray);
-		result << VA(nullptr);
-		return ok;
-	}
-	catch (const std::u16string& msg) {
-		AddError(msg);
-		return false;
-	}
-	catch (...) {
-		result << VA(nullptr);
-		return false;
-	}
+	// result вказує на комірку повернення на час диспетчеризації, а після —
+	// завжди відв'язується: і за успіху, і за відмови ValidateParams/меж, і за
+	// винятку. Інакше хендлер, викликаний згодом як процедура, писав би у
+	// звільнену пам'ять caller-а попереднього виклику.
+	result << VA(pvarRetValue);
+	const bool ok = Dispatch(lMethodNum, paParams, lSizeArray);
+	result << VA(nullptr);
+	return ok;
 }
 
 void AddInNative::SetLocale(const WCHAR_T* locale)

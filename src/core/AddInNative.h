@@ -43,6 +43,17 @@ public:
 		if (value) variant = std::u16string(value);
 		else variant = EmptyValue();
 	}
+
+	// Записує збережений дефолт у tVariant через адаптер AddInNative::VariantHelper.
+	// Порожній дефолт (EmptyValue) нічого не пише — виклик очікує, що pvar уже
+	// приведений до VTYPE_EMPTY викликачем (GetParamDefValue).
+	// Сигнатура навмисно береться через (tVariant*, AddInNative*), а не через
+	// AddInNative::VariantHelper напряму: DefaultHelper стоїть ПЕРЕД AddInNative
+	// (потрібен для MethDefaults/ParamSpec усередині нього), тож AddInNative тут
+	// іще лише forward-declared — його вкладений тип не можна назвати. Означення —
+	// у .cpp, де AddInNative вже повністю визначений і дружба (friend) відкриває
+	// доступ до protected VariantHelper.
+	void Apply(tVariant* pvar, AddInNative* addin) const;
 };
 
 using CompFunction = std::function<AddInNative* ()>;
@@ -276,6 +287,13 @@ private:
 
 	bool CallMethod(MethFunction* function, tVariant* paParams, MethDesc* meth, const long lSizeArray);
 
+	// Спільне тіло CallAsProc/CallAsFunc: межі індексу методу, ValidateParams (наш
+	// механізм, ДО try — як і раніше) і виклик CallMethod у try/catch. CallAsFunc
+	// НЕ будується поверх CallAsProc (той відв'язує result на самому вході — така
+	// композиція стерла б прив'язку до комірки повернення); замість цього обидва
+	// entry point у .cpp самі керують result навколо виклику Dispatch.
+	bool Dispatch(const long n, tVariant* paParams, const long lSizeArray);
+
 	// Розгортає виклик хендлера довільної арності: індекси параметрів беруться з
 	// index_sequence, тож списки VA(...) для арностей 0..16 не виписуються руками
 	// (17 рукописних списків — надто ласий грунт для описки в індексі).
@@ -286,13 +304,22 @@ private:
 	}
 
 	// Одна гілка диспетчера CallMethod: якщо у variant лежить саме Fn — перевірити
-	// кількість фактичних параметрів і викликати. false = «це не та альтернатива».
+	// кількість фактичних параметрів і викликати. false = «це не та альтернатива,
+	// або ця альтернатива не змогла виконатися» (в обох випадках CallMethod має
+	// йти далі/повернути false — коротке замикання || коректне і без throw).
 	template <size_t N, typename Fn>
 	bool TryCallArity(MethFunction* function, tVariant* paParams, MethDesc* meth, const long lSizeArray)
 	{
 		auto handler = std::get_if<Fn>(function);
 		if (!handler) return false;
-		if (lSizeArray < static_cast<long>(N)) throw std::bad_function_call();
+		if (lSizeArray < static_cast<long>(N)) {
+			// 1С передала менше параметрів, ніж арність хендлера. Раніше тут летів
+			// голий std::bad_function_call(), який зовнішній catch(...) мовчки гасив
+			// у false — без жодного AddError 1С-розробнику. Явна перевірка з іменем
+			// методу лишає той самий false, але з діагностикою.
+			AddError(u"Невідповідність кількості параметрів методу " + meth->nameEn);
+			return false;
+		}
 		InvokeHandler(*handler, paParams, meth, std::make_index_sequence<N>{});
 		return true;
 	}
@@ -314,6 +341,12 @@ private:
 
 	friend const WCHAR_T* GetClassNames();
 	friend long GetClassObject(const WCHAR_T*, IComponentBase**);
+
+	// Дає DefaultHelper::Apply доступ до protected VariantHelper. DefaultHelper
+	// живе ПЕРЕД AddInNative (потрібен йому для MethDefaults/ParamSpec), тож не
+	// може ні назвати AddInNative::VariantHelper у власній сигнатурі, ні
+	// сконструювати її без цієї дружби.
+	friend class DefaultHelper;
 
 	// Реєстр компонент — функціо-локальний статик (Meyers singleton): будується
 	// при першому виклику, тому файло-рівнева реєстрація (REGISTER_COMPONENT) не
