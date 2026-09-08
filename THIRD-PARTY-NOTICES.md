@@ -10,9 +10,43 @@ distributed under its own license; the full texts are reproduced verbatim.
 spdlog лінкуються **статично** — тобто їхній код фізично присутній у DLL, і
 вимога зберігати текст ліцензії поширюється на бінарник, а не лише на репозиторій.
 
-Заголовки SDK 1С у `include/` третьою стороною в цьому переліку **не є** — вони
-власність фірми «1С» і не мають окремої ліцензії; про них див. `LICENSE`, розділ
-«SCOPE / МЕЖІ ДІЇ».
+## Межі дії ліцензії проєкту / Scope of the project license
+
+`LICENSE` (MIT) поширюється на вихідний код **цього** репозиторію. Він **не**
+поширюється на перелічене нижче — воно включене для складання й лишається
+власністю відповідних правовласників.
+
+The MIT license in `LICENSE` covers the source code of **this** repository only.
+It does **not** cover the following, included for build purposes:
+
+**1. `include/*.h` — 1C:Enterprise Native Component SDK headers**
+
+`AddInDefBase.h`, `ComponentBase.h`, `IMemoryManager.h`, `com.h`, `types.h`.
+
+Ці заголовки є частиною технології зовнішніх компонент 1С:Підприємство і є
+власністю фірми «1С». Вони поширюються на умовах їхнього правовласника, а не за
+MIT. Їх включено, щоб компоненту можна було зібрати; жодних прав на них не
+заявляється. Вони позначені `Warning!!! DO NOT ALTER THIS FILE` і не змінювались.
+
+These headers belong to 1C Company and are distributed on the terms of their
+rights holder. No ownership over them is claimed.
+
+**2. `extern/*` — сабмодулі третіх сторін**
+
+Їхні ліцензії наведені повністю нижче.
+
+**3. `tests/data/*` — тестові вектори**
+
+Опубліковані еталонні дані Центрального засвідчувального органу (czo.gov.ua) і
+КНЕДП «Дія». Ключ `tests/data/test-diia.p12` — офіційний **тестовий** ключ
+ДП «ДІЯ» (`CN=ДП ДІЯ (Тестування)`), прострочений 2024-04-05, без будь-якої
+продуктивної цінності. Його пароль публічний **навмисно**: `testpassword`.
+Це тестовий вектор, а не витік.
+
+The test key is an official **test** key issued by SE "DIIA", expired
+2024-04-05; its password is intentionally public.
+
+---
 
 ## Зведення
 
