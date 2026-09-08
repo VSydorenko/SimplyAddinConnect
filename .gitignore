@@ -5,10 +5,7 @@
 /build32
 /build
 /build_tests
-/tools/*
-!/tools/*.py
-!/tools/*.md
-!/tools/*.txt
+/tools
 /bin
 /.vc
 /.vs
