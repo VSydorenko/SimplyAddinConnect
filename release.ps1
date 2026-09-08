@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Публікує реліз SimplyAddinConnect: збірка -> гейт -> тег -> GitHub Release.
 
