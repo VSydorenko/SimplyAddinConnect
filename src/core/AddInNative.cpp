@@ -13,7 +13,6 @@
 #endif
 
 #include <wchar.h>
-#include <iterator>
 #include <sstream>
 
 #include "AddInNative.h"
@@ -42,24 +41,28 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD  ul_reason_for_call, LPVOID lpReserv
 
 const WCHAR_T* GetClassNames()
 {
-	static const std::u16string names(AddInNative::getComponentNames());
-	return (const WCHAR_T*)names.c_str();
+	// Статичний буфер: платформа читає рядок одразу після повернення з виклику,
+	// тож він мусить пережити цей стековий фрейм.
+	static const std::u16string names = AddInNative::getComponentNames();
+	return reinterpret_cast<const WCHAR_T*>(names.c_str());
 }
 
 long GetClassObject(const WCHAR_T* wsName, IComponentBase** pInterface)
 {
-	if (*pInterface) return 0;
-	auto cls_name = std::u16string(reinterpret_cast<const char16_t*>(wsName));
-	*pInterface = AddInNative::CreateObject(cls_name);
-	// Контракт 1С: ненульове значення = успіх. Повертаємо 1 замість адреси,
-	// бо приведення 64-бітного вказівника до long усікає його (UB на x64).
+	// pInterface — обов'язковий OUT-параметр контракту; ненульовий *pInterface
+	// означає, що виклик уже когось туди поклав, і ми його не перетираємо.
+	if (!pInterface || *pInterface) return 0;
+	const auto className = std::u16string(reinterpret_cast<const char16_t*>(wsName));
+	*pInterface = AddInNative::CreateObject(className);
+	// Контракт 1С: ненульове значення = успіх. Саме 1, а не адреса — приведення
+	// 64-бітного вказівника до long усікає його (UB на x64).
 	return *pInterface ? 1 : 0;
 }
 
 long DestroyObject(IComponentBase** pInterface)
 {
-	if (!*pInterface) return -1;
-	delete* pInterface;
+	if (!pInterface || !*pInterface) return -1;
+	delete *pInterface;
 	*pInterface = nullptr;
 	return 0;
 }
@@ -93,25 +96,32 @@ std::string AddInNative::version()
 
 bool AddInNative::Init(void* pConnection)
 {
+	// pConnection — міст назад у 1С (IAddInDefBase); без нього AddError/
+	// PostExternalEvent не мають кому доставляти повідомлення.
 	std::lock_guard<std::mutex> lock(connectMutex_);
 	m_iConnect = static_cast<IAddInDefBase*>(pConnection);
-	if (m_iConnect) m_iConnect->SetEventBufferDepth(100);
-	return m_iConnect != nullptr;
+	if (!m_iConnect) return false;
+	m_iConnect->SetEventBufferDepth(100);
+	return true;
 }
 
 bool AddInNative::setMemManager(void* memory)
 {
+	// Повертаємо саме результат присвоєння: успіх ініціалізації = менеджер не nullptr.
 	return m_iMemory = static_cast<IMemoryManager*>(memory);
 }
 
 long AddInNative::GetInfo()
 {
+	// Версія компонентної технології, якої вимагає платформа 1С від зовнішньої компоненти.
 	return 2000;
 }
 
 void AddInNative::Done()
 {
-	// Зв'язок з 1С далі недійсний: відсікаємо фонові PostExternalEvent/AddError
+	// З цього моменту зв'язок з 1С недійсний: під тим самим м'ютексом, що й
+	// AddError/PostExternalEvent, обнуляємо m_iConnect, щоб фонові потоки
+	// транспортів припинили постити події в уже завершений хост.
 	std::lock_guard<std::mutex> lock(connectMutex_);
 	m_iConnect = nullptr;
 }
@@ -132,7 +142,9 @@ bool AddInNative::PostExternalEvent(const std::u16string& message, const std::u1
 
 bool AddInNative::RegisterExtensionAs(WCHAR_T** wsLanguageExt)
 {
-	*wsLanguageExt = W(this->name.c_str());
+	// Платформа знає розширення мови під іменем компоненти; W() при відмові
+	// виділення пам'яті кидає bad_alloc, тож порожній результат сюди не долітає.
+	*wsLanguageExt = W(name.c_str());
 	return *wsLanguageExt != nullptr;
 }
 
@@ -341,19 +353,24 @@ bool AddInNative::CallAsFunc(const long lMethodNum, tVariant* pvarRetValue, tVar
 
 void AddInNative::SetLocale(const WCHAR_T* locale)
 {
-	std::string loc = WCHAR2MB(locale);
-	this->alias = loc.substr(0, 3) == "rus";
+	// alias перемикає РУ/EN мову кожного тексту помилки нижче й у ValidateParams:
+	// локаль, що починається з "rus", означає російську.
+	const std::string loc = WCHAR2MB(locale);
+	alias = loc.compare(0, 3, "rus") == 0;
 }
 
 std::u16string AddInNative::getComponentNames() {
-	const char16_t* const delim = u"|";
-	std::vector<std::u16string> names;
-	for (auto it = components().begin(); it != components().end(); ++it) names.push_back(it->first);
-	std::basic_ostringstream<char16_t, std::char_traits<char16_t>, std::allocator<char16_t>> imploded;
-	std::copy(names.begin(), names.end(), std::ostream_iterator<std::u16string, char16_t, std::char_traits<char16_t>>(imploded, delim));
-	std::u16string result = imploded.str();
-	result.pop_back();
-	return result;
+	// Порожній реєстр -> порожній рядок, а не UB: старий код будував рядок
+	// через ostream_iterator і завжди відрізав останній символ pop_back()-ом,
+	// що на порожньому контейнері читає з-за меж рядка. Тут роздільник
+	// додається ПЕРЕД кожним іменем, крім першого, — трейлінгового символу
+	// просто немає, і pop_back() не потрібен.
+	std::u16string joined;
+	for (const auto& entry : components()) {
+		if (!joined.empty()) joined += u'|';
+		joined += entry.first;
+	}
+	return joined;
 }
 
 std::u16string AddInNative::AddComponent(const std::u16string& name, CompFunction creator)
@@ -543,39 +560,40 @@ void AddInNative::VariantHelper::clear()
 
 bool AddInNative::AddError(const std::u16string& descr, long scode)
 {
-	std::u16string info = u"AddIn." + name;
+	// Джерело помилки для 1С — префікс "AddIn." + ім'я конкретної компоненти.
+	const std::u16string source = u"AddIn." + name;
 	// Синхронізація з Done()/фоновими потоками: читання m_iConnect під тим самим
-	// м'ютексом (жоден шлях не викликає AddError, тримаючи connectMutex_)
+	// м'ютексом (жоден шлях не викликає AddError, тримаючи connectMutex_).
 	std::lock_guard<std::mutex> lock(connectMutex_);
-	return m_iConnect && m_iConnect->AddError(ADDIN_E_IMPORTANT, (WCHAR_T*)info.c_str(), (WCHAR_T*)descr.c_str(), scode);
+	if (!m_iConnect) return false;
+	return m_iConnect->AddError(ADDIN_E_IMPORTANT, (WCHAR_T*)source.c_str(), (WCHAR_T*)descr.c_str(), scode);
 }
 
-static std::u16string typeinfo(TYPEVAR vt, bool alias)
+// Людські назви типів для тексту помилки. Пара {EN, RU} на тип — рядки НЕ
+// змінюються при переписуванні (їх бачить 1С-розробник у власному коді);
+// змінюється лише структура (таблиця замість switch). Цілочисельні різновиди
+// 1С показує користувачеві однаково — «Целое число»; невідомий тип, як і
+// раніше, віддає Undefined/Неопределено.
+static std::u16string TypeName(TYPEVAR vt, bool alias)
 {
-	switch (vt) {
-	case VTYPE_EMPTY:
-		return alias ? u"Неопределено" : u"Undefined";
-	case VTYPE_I2:
-	case VTYPE_I4:
-	case VTYPE_ERROR:
-	case VTYPE_UI1:
-		return alias ? u"Целое число" : u"Integer";
-	case VTYPE_BOOL:
-		return alias ? u"Булево" : u"Boolean";
-	case VTYPE_R4:
-	case VTYPE_R8:
-		return alias ? u"Число" : u"Float";
-	case VTYPE_DATE:
-	case VTYPE_TM:
-		return alias ? u"Дата" : u"Date";
-	case VTYPE_PSTR:
-	case VTYPE_PWSTR:
-		return alias ? u"Строка" : u"String";
-	case VTYPE_BLOB:
-		return alias ? u"Двоичные данные" : u"Binary";
-	default:
-		return alias ? u"Неопределено" : u"Undefined";
-	}
+	static const std::map<TYPEVAR, std::pair<const char16_t*, const char16_t*>> table = {
+		{ VTYPE_EMPTY, { u"Undefined", u"Неопределено"    } },
+		{ VTYPE_I2,    { u"Integer",   u"Целое число"     } },
+		{ VTYPE_I4,    { u"Integer",   u"Целое число"     } },
+		{ VTYPE_UI1,   { u"Integer",   u"Целое число"     } },
+		{ VTYPE_ERROR, { u"Integer",   u"Целое число"     } },
+		{ VTYPE_R4,    { u"Float",     u"Число"           } },
+		{ VTYPE_R8,    { u"Float",     u"Число"           } },
+		{ VTYPE_BOOL,  { u"Boolean",   u"Булево"          } },
+		{ VTYPE_PSTR,  { u"String",    u"Строка"          } },
+		{ VTYPE_PWSTR, { u"String",    u"Строка"          } },
+		{ VTYPE_DATE,  { u"Date",      u"Дата"            } },
+		{ VTYPE_TM,    { u"Date",      u"Дата"            } },
+		{ VTYPE_BLOB,  { u"Binary",    u"Двоичные данные" } },
+	};
+	const auto it = table.find(vt);
+	if (it == table.end()) return alias ? u"Неопределено" : u"Undefined";
+	return alias ? it->second.second : it->second.first;
 }
 
 std::exception AddInNative::VariantHelper::TypeError(TYPEVAR expected) const
@@ -586,16 +604,16 @@ std::exception AddInNative::VariantHelper::TypeError(TYPEVAR expected) const
 		if (prop) ss << u" при обращении к свойству <" << prop->nameRu << ">";
 		if (meth) ss << u" при вызове метода <" << meth->nameRu << ">";
 		if (number >= 0) ss << u" параметр <" << number + 1 << ">";
-		ss << u" ожидается <" + typeinfo(expected, true) << u">";
-		if (pvar) ss << u" фактически <" + typeinfo(pvar->vt, true) << u">";
+		ss << u" ожидается <" + TypeName(expected, true) << u">";
+		if (pvar) ss << u" фактически <" + TypeName(pvar->vt, true) << u">";
 	}
 	else {
 		ss << u"Error getting value";
 		if (prop) ss << u" of property <" << prop->nameEn << ">";
 		if (meth) ss << u" when calling method <" << meth->nameEn << ">";
 		if (number >= 0) ss << u" parameter <" << number + 1 << ">";
-		ss << u" expected <" + typeinfo(expected, false) << u">";
-		if (pvar) ss << u" actual value <" + typeinfo(pvar->vt, false) << u">";
+		ss << u" expected <" + TypeName(expected, false) << u">";
+		if (pvar) ss << u" actual value <" + TypeName(pvar->vt, false) << u">";
 	}
 	if (addin) addin->AddError(ss.str());
 	return std::bad_typeid();
