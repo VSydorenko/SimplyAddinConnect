@@ -575,28 +575,65 @@ static void TestCaseInsensitiveLookup() {
 }
 
 // GetParamDefValue живить механізм необов'язкових параметрів 1С.
-// Перевіряємо кожен тип дефолту, бо переписування зачіпає саме розбір.
+// Спека (docs/superpowers/specs/2026-09-07-core-rewrite-design.md §7) вимагає покриття
+// «для всіх типів дефолту (рядок, ціле, дійсне, булеве, дата, порожній)». Дата серед
+// альтернатив DefaultHelper::variant відсутня (EmptyValue/u16string/int64_t/double/bool —
+// рівно 5, контракт заморожений), тож дату НЕ покриваємо; решту — так, і саме через
+// TV_VT (тип), а не лише через значення, бо збіг вмісту union'а міг би пройти випадково.
 static void TestParamDefaultsAllTypes() {
     class Probe : public AddInNative {
     public:
         Probe() {
-            AddFunction(u"F", u"Ф", Ret([](VH a, VH b, VH c, VH d) { return int64_t(0); }),
+            // Параметр 4 навмисно БЕЗ запису в MethDefaults — «порожній» дефолт зі спеки.
+            AddFunction(u"F", u"Ф",
+                        Ret([](VH a, VH b, VH c, VH d, VH e) {
+                            (void)a; (void)b; (void)c; (void)d; (void)e;
+                            return int64_t(0);
+                        }),
                         { {0, DefaultHelper(u"text")}, {1, DefaultHelper(int64_t(42))},
                           {2, DefaultHelper(3.5)},     {3, DefaultHelper(true)} });
         }
     };
     Probe p;
+    // Рядковий дефолт пише через VariantHelper::operator=(u16string), яка алокує
+    // через addin->AllocMemory — без менеджера пам'яті кине bad_alloc, GetParamDefValue
+    // його проковтне й поверне false замість реальної перевірки.
+    MockMemory memory;
+    p.setMemManager(&memory);
     const long m = p.FindMethod((const WCHAR_T*)u"F");
     CHECK(m >= 0, "Метод зареєстровано");
-    CHECK(p.GetNParams(m) == 4, "Арність 4");
+    CHECK(p.GetNParams(m) == 5, "Арність 5");
 
+    // Рядок (index 0)
     tVariant v; memset(&v, 0, sizeof(v));
+    CHECK(p.GetParamDefValue(m, 0, &v), "Дефолт string читається");
+    CHECK(TV_VT(&v) == VTYPE_PWSTR, "Дефолт string має тип VTYPE_PWSTR");
+    CHECK(std::u16string(reinterpret_cast<char16_t*>(TV_WSTR(&v)), v.wstrLen) == u"text",
+          "Дефолт string == \"text\"");
+    memory.FreeMemory(reinterpret_cast<void**>(&v.pwstrVal));
+
+    // Ціле (index 1)
+    memset(&v, 0, sizeof(v));
     CHECK(p.GetParamDefValue(m, 1, &v), "Дефолт int читається");
+    CHECK(TV_VT(&v) == VTYPE_I4, "Дефолт int має тип VTYPE_I4");
     CHECK(TV_INT(&v) == 42, "Дефолт int == 42");
 
+    // Дійсне (index 2)
+    memset(&v, 0, sizeof(v));
+    CHECK(p.GetParamDefValue(m, 2, &v), "Дефолт double читається");
+    CHECK(TV_VT(&v) == VTYPE_R8, "Дефолт double має тип VTYPE_R8");
+    CHECK(TV_R8(&v) == 3.5, "Дефолт double == 3.5");
+
+    // Булеве (index 3)
     memset(&v, 0, sizeof(v));
     CHECK(p.GetParamDefValue(m, 3, &v), "Дефолт bool читається");
+    CHECK(TV_VT(&v) == VTYPE_BOOL, "Дефолт bool має тип VTYPE_BOOL");
     CHECK(TV_BOOL(&v) == true, "Дефолт bool == true");
+
+    // Без дефолту (index 4): true + VTYPE_EMPTY — «порожній» тип зі спеки §7
+    memset(&v, 0, sizeof(v));
+    CHECK(p.GetParamDefValue(m, 4, &v), "Параметр без дефолту -> true");
+    CHECK(TV_VT(&v) == VTYPE_EMPTY, "Параметр без дефолту лишає VTYPE_EMPTY");
 }
 
 // Властивість лише для читання не має приймати запис, і навпаки.
