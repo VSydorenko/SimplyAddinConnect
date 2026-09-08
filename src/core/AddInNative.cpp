@@ -705,8 +705,13 @@ int64_t AddInNative::VariantHelper::Get<int64_t>() const
 	case VTYPE_ERROR:
 		return (int64_t)pvar->lVal;
 	case VTYPE_R4:
+		// fltVal і dblVal — РІЗНІ члени union'а (include/types.h:179-180). VTYPE_R4
+		// зберігає float САМЕ у fltVal; читання його як dblVal інтерпретує 4 байти
+		// float-мантиси/експоненти як частину 8-байтового double — сміття, а не
+		// значення (виправлена вада, TestFloatR4Conversion).
+		return (int64_t)TV_R4(pvar);
 	case VTYPE_R8:
-		return (int64_t)pvar->dblVal;
+		return (int64_t)TV_R8(pvar);
 	default:
 		throw TypeError(VTYPE_I4);
 	}
@@ -723,8 +728,10 @@ double AddInNative::VariantHelper::Get<double>() const
 	case VTYPE_ERROR:
 		return (double)pvar->lVal;
 	case VTYPE_R4:
+		// Див. коментар у Get<int64_t>() вище: fltVal != dblVal.
+		return (double)TV_R4(pvar);
 	case VTYPE_R8:
-		return (double)pvar->dblVal;
+		return (double)TV_R8(pvar);
 	default:
 		throw TypeError(VTYPE_R4);
 	}

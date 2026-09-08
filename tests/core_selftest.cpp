@@ -681,6 +681,70 @@ static void TestNamesByIndex() {
     CHECK(std::u16string((const char16_t*)ru) == u"Альфа", "RU-ім'я збігається");
 }
 
+// ---- VTYPE_R4 читається зі свого члена union'а (fltVal), а не з dblVal ----
+// include/types.h:179-180: TV_R4(X) -> fltVal (float, 4 байти), TV_R8(X) -> dblVal
+// (double, 8 байтів) — РІЗНІ поля. Стара реалізація Get<int64_t>()/Get<double>()
+// на VTYPE_R4 читала dblVal: перші 4 байти union'а — бітовий образ float-значення,
+// решта 4 — нулі (memset), і той самий шматок пам'яті інтерпретувався як 8-байтовий
+// double. Для 2.5f/100.5f/1.5f це дає денормалізоване число, близьке до нуля, —
+// ГРУБО відмінне від правильного значення (а не похибка округлення), тож регрес
+// на старій реалізації тут гарантовано ловиться.
+static double g_r4AsDouble = 0.0;
+static int64_t g_r4AsInt64 = 0;
+static int g_r4AsInt = 0;
+static double g_r8AsDouble = 0.0;
+static void TestFloatR4Conversion() {
+    struct FloatProbe : public AddInNative {
+        FloatProbe() {
+            AddProcedure(u"ReadR4Double", u"ЧитатиR4Дійсне",
+                MethFunction(std::function<void(VH)>([](VH v) { g_r4AsDouble = (double)v; })));
+            AddProcedure(u"ReadR4Int64", u"ЧитатиR4Int64",
+                MethFunction(std::function<void(VH)>([](VH v) { g_r4AsInt64 = (int64_t)v; })));
+            AddProcedure(u"ReadR4Int", u"ЧитатиR4Int",
+                MethFunction(std::function<void(VH)>([](VH v) { g_r4AsInt = (int)v; })));
+            AddProcedure(u"ReadR8Double", u"ЧитатиR8Дійсне",
+                MethFunction(std::function<void(VH)>([](VH v) { g_r8AsDouble = (double)v; })));
+        }
+    };
+    AddInNative::AddComponent(u"FloatProbe", []() -> AddInNative* { return new FloatProbe; });
+    AddInNative* comp = AddInNative::CreateObject(u"FloatProbe");
+    MockConnect connect; MockMemory memory;
+    comp->Init(&connect); comp->setMemManager(&memory);
+
+    // VTYPE_R4 = 2.5f -> double
+    tVariant v{}; std::memset(&v, 0, sizeof(v));
+    TV_VT(&v) = VTYPE_R4; TV_R4(&v) = 2.5f;
+    long mD = comp->FindMethod((WCHAR_T*)u"ReadR4Double");
+    CHECK(mD >= 0, "FindMethod(ReadR4Double)");
+    CHECK(comp->CallAsProc(mD, &v, 1), "CallAsProc(ReadR4Double)");
+    CHECK(g_r4AsDouble > 2.4999 && g_r4AsDouble < 2.5001,
+          "VTYPE_R4=2.5f читається як double 2.5 (з fltVal, не з dblVal)");
+
+    // VTYPE_R4 = 100.5f -> int64_t (дробова частина відкидається, ціла має бути 100)
+    std::memset(&v, 0, sizeof(v));
+    TV_VT(&v) = VTYPE_R4; TV_R4(&v) = 100.5f;
+    long mI64 = comp->FindMethod((WCHAR_T*)u"ReadR4Int64");
+    CHECK(comp->CallAsProc(mI64, &v, 1), "CallAsProc(ReadR4Int64)");
+    CHECK(g_r4AsInt64 == 100, "VTYPE_R4=100.5f читається як int64_t 100");
+
+    // VTYPE_R4 = 1.5f -> int
+    std::memset(&v, 0, sizeof(v));
+    TV_VT(&v) = VTYPE_R4; TV_R4(&v) = 1.5f;
+    long mI = comp->FindMethod((WCHAR_T*)u"ReadR4Int");
+    CHECK(comp->CallAsProc(mI, &v, 1), "CallAsProc(ReadR4Int)");
+    CHECK(g_r4AsInt == 1, "VTYPE_R4=1.5f читається як int 1");
+
+    // Контроль регресу: VTYPE_R8 і далі читається правильно (фікс не зачепив R8-шлях)
+    std::memset(&v, 0, sizeof(v));
+    TV_VT(&v) = VTYPE_R8; TV_R8(&v) = 100.5;
+    long mD8 = comp->FindMethod((WCHAR_T*)u"ReadR8Double");
+    CHECK(comp->CallAsProc(mD8, &v, 1), "CallAsProc(ReadR8Double)");
+    CHECK(g_r8AsDouble > 100.4999 && g_r8AsDouble < 100.5001,
+          "VTYPE_R8=100.5 і далі читається як double 100.5 (R8-шлях не зачеплено)");
+
+    comp->Done(); delete comp;
+}
+
 int main() {
     // Небуферизований stdout: щоб при аварійному завершенні (AV) не втратити
     // останні рядки й точно локалізувати місце падіння.
@@ -708,6 +772,7 @@ int main() {
     TestParamDefaultsAllTypes();
     TestPropertyAccessFlags();
     TestNamesByIndex();
+    TestFloatR4Conversion();
     std::printf("=== %s (failed: %d) ===\n", g_failed ? "FAIL" : "OK", g_failed);
     return g_failed ? 1 : 0;
 }
