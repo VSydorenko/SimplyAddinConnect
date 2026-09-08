@@ -151,48 +151,52 @@ bool AddInNative::RegisterExtensionAs(WCHAR_T** wsLanguageExt)
 	return *wsLanguageExt != nullptr;
 }
 
+// Нормалізація для індексу імен. Латиниця — через ASCII-зсув; кирилиця —
+// через таблицю діапазонів UTF-16, бо std::towupper залежить від локалі,
+// а компонента мусить поводитись однаково незалежно від налаштувань машини.
+std::u16string AddInNative::NormalizeName(std::u16string_view name) {
+	std::u16string out;
+	out.reserve(name.size());
+	for (char16_t c : name) {
+		if (c >= u'a' && c <= u'z')                 c = char16_t(c - u'a' + u'A');
+		else if (c >= 0x0430 && c <= 0x044F)        c = char16_t(c - 0x20);   // а-я -> А-Я
+		else if (c == 0x0451)                       c = 0x0401;               // ё -> Ё
+		else if (c >= 0x0450 && c <= 0x045F)        c = char16_t(c - 0x50);   // ѐ-џ -> Ѐ-Џ (і, ї, є, ґ)
+		out.push_back(c);
+	}
+	return out;
+}
+
 long AddInNative::GetNProps()
 {
-	return properties.size();
+	return static_cast<long>(props_.size());
 }
 
 long AddInNative::FindProp(const WCHAR_T* wsPropName)
 {
-	std::u16string name((char16_t*)wsPropName);
-	for (auto it = properties.begin(); it != properties.end(); ++it) {
-		for (auto n = it->names.begin(); n != it->names.end(); ++n) {
-			if (n->compare(name) == 0) return long(it - properties.begin());
-		}
-	}
-	name = upper(name);
-	for (auto it = properties.begin(); it != properties.end(); ++it) {
-		for (auto n = it->names.begin(); n != it->names.end(); ++n) {
-			if (upper(*n).compare(name) == 0) return long(it - properties.begin());
-		}
-	}
-	return -1;
+	if (!wsPropName) return -1;
+	const auto it = propIndex_.find(NormalizeName(
+		std::u16string(reinterpret_cast<const char16_t*>(wsPropName))));
+	return (it == propIndex_.end()) ? -1 : it->second;
 }
 
+// Пам'ять під рядок виділяє МЕНЕДЖЕР 1С — інакше платформа не зможе її звільнити.
+// Аліас: 0 -> англійське ім'я, 1 -> національне, будь-що інше -> nullptr
+// (саме так поводиться чинне ядро; платформа за межі 0..1 і не ходить).
 const WCHAR_T* AddInNative::GetPropName(long lPropNum, long lPropAlias)
 {
-	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= properties.size()) return nullptr;
-	try {
-		auto it = std::next(properties.begin(), lPropNum);
-		if (it == properties.end()) return nullptr;
-		auto nm = std::next(it->names.begin(), lPropAlias);
-		if (nm == it->names.end()) return nullptr;
-		return W(nm->c_str());
-	}
-	catch (...) {
-		return nullptr;
-	}
+	if (lPropNum < 0 || lPropNum >= static_cast<long>(props_.size())) return nullptr;
+	const PropDesc& p = props_[lPropNum];
+	if (lPropAlias == 0) return AllocString(p.nameEn);
+	if (lPropAlias == 1) return AllocString(p.nameRu.empty() ? p.nameEn : p.nameRu);
+	return nullptr;
 }
 
 bool AddInNative::GetPropVal(const long lPropNum, tVariant* pvarPropVal)
 {
-	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= properties.size()) return false;
-	auto it = std::next(properties.begin(), lPropNum);
-	if (it == properties.end()) return false;
+	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= props_.size()) return false;
+	auto it = std::next(props_.begin(), lPropNum);
+	if (it == props_.end()) return false;
 	if (!it->getter) return false;
 	try {
 		it->getter(VA(pvarPropVal, &(*it)));
@@ -209,9 +213,9 @@ bool AddInNative::GetPropVal(const long lPropNum, tVariant* pvarPropVal)
 
 bool AddInNative::SetPropVal(const long lPropNum, tVariant* pvarPropVal)
 {
-	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= properties.size()) return false;
-	auto it = std::next(properties.begin(), lPropNum);
-	if (it == properties.end()) return false;
+	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= props_.size()) return false;
+	auto it = std::next(props_.begin(), lPropNum);
+	if (it == props_.end()) return false;
 	if (!it->setter) return false;
 	try {
 		it->setter(VA(pvarPropVal, &(*it)));
@@ -228,62 +232,47 @@ bool AddInNative::SetPropVal(const long lPropNum, tVariant* pvarPropVal)
 
 bool AddInNative::IsPropReadable(const long lPropNum)
 {
-	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= properties.size()) return false;
-	auto it = std::next(properties.begin(), lPropNum);
-	if (it == properties.end()) return false;
+	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= props_.size()) return false;
+	auto it = std::next(props_.begin(), lPropNum);
+	if (it == props_.end()) return false;
 	return (bool)it->getter;
 }
 
 bool AddInNative::IsPropWritable(const long lPropNum)
 {
-	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= properties.size()) return false;
-	auto it = std::next(properties.begin(), lPropNum);
-	if (it == properties.end()) return false;
+	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= props_.size()) return false;
+	auto it = std::next(props_.begin(), lPropNum);
+	if (it == props_.end()) return false;
 	return (bool)it->setter;
 }
 
 long AddInNative::GetNMethods()
 {
-	return methods.size();
+	return static_cast<long>(meths_.size());
 }
 
 long AddInNative::FindMethod(const WCHAR_T* wsMethodName)
 {
-	std::u16string name((char16_t*)wsMethodName);
-	for (auto it = methods.begin(); it != methods.end(); ++it) {
-		for (auto n = it->names.begin(); n != it->names.end(); ++n) {
-			if (n->compare(name) == 0) return long(it - methods.begin());
-		}
-	}
-	name = upper(name);
-	for (auto it = methods.begin(); it != methods.end(); ++it) {
-		for (auto n = it->names.begin(); n != it->names.end(); ++n) {
-			if (upper(*n).compare(name) == 0) return long(it - methods.begin());
-		}
-	}
-	return -1;
+	if (!wsMethodName) return -1;
+	const auto it = methIndex_.find(NormalizeName(
+		std::u16string(reinterpret_cast<const char16_t*>(wsMethodName))));
+	return (it == methIndex_.end()) ? -1 : it->second;
 }
 
 const WCHAR_T* AddInNative::GetMethodName(const long lMethodNum, const long lMethodAlias)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= methods.size()) return nullptr;
-	try {
-		auto it = std::next(methods.begin(), lMethodNum);
-		if (it == methods.end()) return nullptr;
-		auto nm = std::next(it->names.begin(), lMethodAlias);
-		if (nm == it->names.end()) return nullptr;
-		return W(nm->c_str());
-	}
-	catch (...) {
-		return nullptr;
-	}
+	if (lMethodNum < 0 || lMethodNum >= static_cast<long>(meths_.size())) return nullptr;
+	const MethDesc& m = meths_[lMethodNum];
+	if (lMethodAlias == 0) return AllocString(m.nameEn);
+	if (lMethodAlias == 1) return AllocString(m.nameRu.empty() ? m.nameEn : m.nameRu);
+	return nullptr;
 }
 
 long AddInNative::GetNParams(const long lMethodNum)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= methods.size()) return 0;
-	auto it = std::next(methods.begin(), lMethodNum);
-	if (it == methods.end()) return 0;
+	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= meths_.size()) return 0;
+	auto it = std::next(meths_.begin(), lMethodNum);
+	if (it == meths_.end()) return 0;
 	// Альтернативи MethFunction упорядковані за арністю (MethFunctionN на позиції N),
 	// тож індекс variant-а і Є кількістю параметрів. Інваріант закріплено static_assert-ами.
 	if (it->handler.valueless_by_exception()) return 0;
@@ -292,13 +281,13 @@ long AddInNative::GetNParams(const long lMethodNum)
 
 bool AddInNative::GetParamDefValue(const long lMethodNum, const long lParamNum, tVariant* pvarParamDefValue)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= methods.size()) return true;
+	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= meths_.size()) return true;
 	try {
 		VA(pvarParamDefValue).clear();
-		auto it = std::next(methods.begin(), lMethodNum);
-		if (it == methods.end()) return true;
-		auto p = it->defs.find(lParamNum);
-		if (p == it->defs.end()) return true;
+		auto it = std::next(meths_.begin(), lMethodNum);
+		if (it == meths_.end()) return true;
+		auto p = it->defaults.find(lParamNum);
+		if (p == it->defaults.end()) return true;
 		auto var = &p->second.variant;
 		if (auto value = std::get_if<std::u16string>(var)) {
 			VA(pvarParamDefValue) = *value;
@@ -329,10 +318,10 @@ bool AddInNative::GetParamDefValue(const long lMethodNum, const long lParamNum, 
 
 bool AddInNative::HasRetVal(const long lMethodNum)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= methods.size()) return false;
+	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= meths_.size()) return false;
 	try {
-		auto it = std::next(methods.begin(), lMethodNum);
-		if (it == methods.end()) return false;
+		auto it = std::next(meths_.begin(), lMethodNum);
+		if (it == meths_.end()) return false;
 		return it->hasRetVal;
 	}
 	catch (...) {
@@ -340,7 +329,7 @@ bool AddInNative::HasRetVal(const long lMethodNum)
 	}
 }
 
-bool AddInNative::CallMethod(MethFunction* func, tVariant* p, Meth* m, const long lSizeArray)
+bool AddInNative::CallMethod(MethFunction* func, tVariant* p, MethDesc* m, const long lSizeArray)
 {
 	// Кожна гілка: «якщо у variant лежить саме ця арність — перевірити кількість
 	// фактичних параметрів і викликати». Короткозамкнене || дає ту саму семантику,
@@ -366,9 +355,9 @@ bool AddInNative::CallMethod(MethFunction* func, tVariant* p, Meth* m, const lon
 
 bool AddInNative::CallAsProc(const long lMethodNum, tVariant* paParams, const long lSizeArray)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= methods.size()) return false;
-	auto it = std::next(methods.begin(), lMethodNum);
-	if (it == methods.end()) return false;
+	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= meths_.size()) return false;
+	auto it = std::next(meths_.begin(), lMethodNum);
+	if (it == meths_.end()) return false;
 	if (!ValidateParams(*it, paParams, lSizeArray)) return false;
 	try {
 		result << VA(nullptr);
@@ -385,9 +374,9 @@ bool AddInNative::CallAsProc(const long lMethodNum, tVariant* paParams, const lo
 
 bool AddInNative::CallAsFunc(const long lMethodNum, tVariant* pvarRetValue, tVariant* paParams, const long lSizeArray)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= methods.size()) return false;
-	auto it = std::next(methods.begin(), lMethodNum);
-	if (it == methods.end()) return false;
+	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= meths_.size()) return false;
+	auto it = std::next(meths_.begin(), lMethodNum);
+	if (it == meths_.end()) return false;
 	if (!ValidateParams(*it, paParams, lSizeArray)) return false;
 	try {
 		result << VA(pvarRetValue);
@@ -438,17 +427,37 @@ AddInNative* AddInNative::CreateObject(const std::u16string& name) {
 
 void AddInNative::AddProperty(const std::u16string& nameEn, const std::u16string& nameRu, const PropFunction& getter, const PropFunction& setter)
 {
-	properties.push_back({ { nameEn, nameRu }, getter, setter });
+	const long pos = static_cast<long>(props_.size());
+	props_.push_back(PropDesc{ nameEn, nameRu, getter, setter });
+	// Дублікат імені -> перше зареєстроване визначає позицію (так само, як стара
+	// лінійна FindProp завжди повертала перший збіг): try_emplace не перезаписує
+	// вже наявний ключ індексу.
+	propIndex_.try_emplace(NormalizeName(nameEn), pos);
+	if (!nameRu.empty()) propIndex_.try_emplace(NormalizeName(nameRu), pos);
 }
 
 void AddInNative::AddProcedure(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction& handler, const MethDefaults& defs)
 {
-	methods.push_back({ { nameEn, nameRu }, handler, defs, false });
+	RegisterMethod(nameEn, nameRu, handler, defs, {}, /*hasRetVal=*/false);
 }
 
 void AddInNative::AddFunction(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction& handler, const MethDefaults& defs)
 {
-	methods.push_back({ { nameEn, nameRu }, handler, defs, true });
+	RegisterMethod(nameEn, nameRu, handler, defs, {}, /*hasRetVal=*/true);
+}
+
+// Спільна точка реєстрації — щоб індекс наповнювався в одному місці.
+void AddInNative::RegisterMethod(const std::u16string& nameEn, const std::u16string& nameRu,
+                                 const MethFunction& handler, const MethDefaults& defs,
+                                 const std::vector<ParamSpec>& params, bool hasRetVal)
+{
+	const long pos = static_cast<long>(meths_.size());
+	meths_.push_back(MethDesc{ nameEn, nameRu, handler, defs, params, hasRetVal });
+	// Дублікат імені -> перше зареєстроване визначає позицію (так само, як стара
+	// лінійна FindMethod завжди повертала перший збіг): try_emplace не перезаписує
+	// вже наявний ключ індексу.
+	methIndex_.try_emplace(NormalizeName(nameEn), pos);
+	if (!nameRu.empty()) methIndex_.try_emplace(NormalizeName(nameRu), pos);
 }
 
 // Будує MethDefaults зі spec-ів: параметри, що мають byDefault, стають дефолтами 1С.
@@ -463,16 +472,16 @@ AddInNative::MethDefaults AddInNative::DefaultsFromSpecs(const std::vector<Param
 void AddInNative::AddProcedure(const std::u16string& nameEn, const std::u16string& nameRu,
                                const MethFunction& handler, const std::vector<ParamSpec>& params)
 {
-	methods.push_back({ { nameEn, nameRu }, handler, DefaultsFromSpecs(params), false, params });
+	RegisterMethod(nameEn, nameRu, handler, DefaultsFromSpecs(params), params, /*hasRetVal=*/false);
 }
 
 void AddInNative::AddFunction(const std::u16string& nameEn, const std::u16string& nameRu,
                               const MethFunction& handler, const std::vector<ParamSpec>& params)
 {
-	methods.push_back({ { nameEn, nameRu }, handler, DefaultsFromSpecs(params), true, params });
+	RegisterMethod(nameEn, nameRu, handler, DefaultsFromSpecs(params), params, /*hasRetVal=*/true);
 }
 
-bool AddInNative::ValidateParams(Meth& m, tVariant* paParams, const long lSizeArray)
+bool AddInNative::ValidateParams(MethDesc& m, tVariant* paParams, const long lSizeArray)
 {
 	for (size_t i = 0; i < m.params.size(); ++i) {
 		const ParamSpec& spec = m.params[i];
@@ -482,7 +491,7 @@ bool AddInNative::ValidateParams(Meth& m, tVariant* paParams, const long lSizeAr
 			|| paParams[i].vt == VTYPE_EMPTY;
 		if (missing) {
 			const std::u16string& pname = alias ? spec.nameRu : spec.nameEn;
-			const std::u16string& mname = alias ? m.names[1] : m.names[0];
+			const std::u16string& mname = alias ? m.nameRu : m.nameEn;
 			AddError(u"Параметр '" + pname + u"' методу '" + mname +
 			         u"' обов'язковий, отримано порожнє значення");
 			return false;
@@ -703,16 +712,16 @@ std::exception AddInNative::VariantHelper::error(TYPEVAR vt) const
 	std::basic_stringstream<char16_t, std::char_traits<char16_t>, std::allocator<char16_t>> ss;
 	if (addin && addin->alias) {
 		ss << u"Ошибка получения значения";
-		if (prop) ss << u" при обращении к свойству <" << prop->names[1] << ">";
-		if (meth) ss << u" при вызове метода <" << meth->names[1] << ">";
+		if (prop) ss << u" при обращении к свойству <" << prop->nameRu << ">";
+		if (meth) ss << u" при вызове метода <" << meth->nameRu << ">";
 		if (number >= 0) ss << u" параметр <" << number + 1 << ">";
 		ss << u" ожидается <" + typeinfo(vt, true) << u">";
 		if (pvar) ss << u" фактически <" + typeinfo(pvar->vt, true) << u">";
 	}
 	else {
 		ss << u"Error getting value";
-		if (prop) ss << u" of property <" << prop->names[0] << ">";
-		if (meth) ss << u" when calling method <" << meth->names[0] << ">";
+		if (prop) ss << u" of property <" << prop->nameEn << ">";
+		if (meth) ss << u" when calling method <" << meth->nameEn << ">";
 		if (number >= 0) ss << u" parameter <" << number + 1 << ">";
 		ss << u" expected <" + typeinfo(vt, false) << u">";
 		if (pvar) ss << u" actual value <" + typeinfo(pvar->vt, false) << u">";
@@ -815,13 +824,24 @@ void AddInNative::VariantHelper::AllocMemory(unsigned long size)
 	pvar->strLen = size;
 }
 
+// Копія рядка в пам'яті менеджера 1С — примітив алокації, спільний з W() нижче.
+// nullptr, якщо менеджера ще немає або алокація провалилась (на відміну від
+// W(), який на цю ж невдачу кидає bad_alloc — контракт W() інакший).
+WCHAR_T* AddInNative::AllocString(const std::u16string& src) const
+{
+	if (!m_iMemory) return nullptr;
+	WCHAR_T* dst = nullptr;
+	const size_t bytes = (src.size() + 1) * sizeof(WCHAR_T);
+	if (!m_iMemory->AllocMemory(reinterpret_cast<void**>(&dst), static_cast<unsigned long>(bytes)))
+		return nullptr;
+	memcpy(dst, src.c_str(), bytes);
+	return dst;
+}
+
 WCHAR_T* AddInNative::W(const char16_t* str) const
 {
-	WCHAR_T* res = NULL;
-	size_t length = std::char_traits<char16_t>::length(str) + 1;
-	unsigned long size = length * sizeof(WCHAR_T);
-	if (!AllocMemory((void**)&res, size)) throw std::bad_alloc();
-	memcpy(res, str, size);
+	WCHAR_T* res = AllocString(std::u16string(str));
+	if (!res) throw std::bad_alloc();
 	return res;
 }
 

@@ -11,6 +11,7 @@
 #include <variant>
 #include <optional>
 #include <string_view>
+#include <unordered_map>
 #include <functional>
 #include <type_traits>
 #include <utility>
@@ -49,15 +50,15 @@ using CompFunction = std::function<AddInNative* ()>;
 class AddInNative : public IComponentBase
 {
 private:
-	struct Prop;
-	struct Meth;
+	struct PropDesc;
+	struct MethDesc;
 protected:
 	class VariantHelper {
 	private:
 		tVariant* pvar = nullptr;
 		AddInNative* addin = nullptr;
-		Prop* prop = nullptr;
-		Meth* meth = nullptr;
+		PropDesc* prop = nullptr;
+		MethDesc* meth = nullptr;
 		long number = -1;
 	private:
 		std::exception error(TYPEVAR vt) const;
@@ -65,8 +66,8 @@ protected:
 		void AllocMemory(unsigned long size);
 		VariantHelper(const VariantHelper& va) :pvar(va.pvar), addin(va.addin), prop(va.prop), meth(va.meth), number(va.number) {}
 		VariantHelper(tVariant* pvar, AddInNative* addin) :pvar(pvar), addin(addin) {}
-		VariantHelper(tVariant* pvar, AddInNative* addin, Prop* prop) :pvar(pvar), addin(addin), prop(prop) {}
-		VariantHelper(tVariant* pvar, AddInNative* addin, Meth* meth, long number) :pvar(pvar), addin(addin), meth(meth), number(number) {}
+		VariantHelper(tVariant* pvar, AddInNative* addin, PropDesc* prop) :pvar(pvar), addin(addin), prop(prop) {}
+		VariantHelper(tVariant* pvar, AddInNative* addin, MethDesc* meth, long number) :pvar(pvar), addin(addin), meth(meth), number(number) {}
 		VariantHelper& operator<<(const VariantHelper& va) { pvar = va.pvar; addin = va.addin; prop = va.prop; meth = va.meth; number = va.number; return *this; }
 		VariantHelper& operator=(const VariantHelper& va) = delete;
 		VariantHelper& operator=(const std::string& str);
@@ -211,27 +212,49 @@ public:
 	static std::string version();
 
 private:
-	struct Prop {
-		std::vector<std::u16string> names;
-		PropFunction getter;
-		PropFunction setter;
+	// Дескриптор властивості: імена лежать ОКРЕМО в індексі, тут — лише дані.
+	struct PropDesc {
+		std::u16string nameEn;
+		std::u16string nameRu;
+		PropFunction   getter;
+		PropFunction   setter;   // порожній -> властивість лише для читання
 	};
 
-	struct Meth {
-		std::vector<std::u16string> names;
-		MethFunction handler;
-		MethDefaults defs;
-		bool hasRetVal;
+	// Дескриптор методу. hasRetVal розрізняє функцію і процедуру для 1С.
+	struct MethDesc {
+		std::u16string nameEn;
+		std::u16string nameRu;
+		MethFunction   handler;
+		MethDefaults   defaults;
 		std::vector<ParamSpec> params;
+		bool           hasRetVal = false;
 	};
 
-	bool CallMethod(MethFunction* function, tVariant* paParams, Meth* meth, const long lSizeArray);
+	std::vector<PropDesc> props_;
+	std::vector<MethDesc> meths_;
+
+	// Індекс імен -> позиція в векторі. Ключ нормалізований (верхній регістр),
+	// обидві мови кладуться окремими ключами. Дає O(1) пошук замість обходу
+	// вкладених векторів.
+	std::unordered_map<std::u16string, long> propIndex_;
+	std::unordered_map<std::u16string, long> methIndex_;
+
+	// Нормалізація імені для індексу: верхній регістр для латиниці й кирилиці.
+	static std::u16string NormalizeName(std::u16string_view name);
+
+	// Спільна точка реєстрації методів (AddProcedure/AddFunction обох перевантажень) —
+	// щоб індекс наповнювався в одному місці.
+	void RegisterMethod(const std::u16string& nameEn, const std::u16string& nameRu,
+	                     const MethFunction& handler, const MethDefaults& defs,
+	                     const std::vector<ParamSpec>& params, bool hasRetVal);
+
+	bool CallMethod(MethFunction* function, tVariant* paParams, MethDesc* meth, const long lSizeArray);
 
 	// Розгортає виклик хендлера довільної арності: індекси параметрів беруться з
 	// index_sequence, тож списки VA(...) для арностей 0..16 не виписуються руками
 	// (17 рукописних списків — надто ласий грунт для описки в індексі).
 	template <typename Fn, size_t... I>
-	void InvokeHandler(const Fn& handler, tVariant* paParams, Meth* meth, std::index_sequence<I...>)
+	void InvokeHandler(const Fn& handler, tVariant* paParams, MethDesc* meth, std::index_sequence<I...>)
 	{
 		handler(VA(paParams, meth, static_cast<long>(I))...);
 	}
@@ -239,7 +262,7 @@ private:
 	// Одна гілка диспетчера CallMethod: якщо у variant лежить саме Fn — перевірити
 	// кількість фактичних параметрів і викликати. false = «це не та альтернатива».
 	template <size_t N, typename Fn>
-	bool TryCallArity(MethFunction* function, tVariant* paParams, Meth* meth, const long lSizeArray)
+	bool TryCallArity(MethFunction* function, tVariant* paParams, MethDesc* meth, const long lSizeArray)
 	{
 		auto handler = std::get_if<Fn>(function);
 		if (!handler) return false;
@@ -249,14 +272,19 @@ private:
 	}
 	// Перевіряє required-параметри без дефолту перед викликом хендлера: за порожнім
 	// чи відсутнім аргументом реєструє AddError з ім'ям параметра й повертає false.
-	bool ValidateParams(Meth& m, tVariant* paParams, const long lSizeArray);
+	bool ValidateParams(MethDesc& m, tVariant* paParams, const long lSizeArray);
 	// Будує MethDefaults зі spec-ів: параметри з byDefault стають дефолтами 1С.
 	static MethDefaults DefaultsFromSpecs(const std::vector<ParamSpec>& params);
 	VariantHelper VA(tVariant* pvar) { return VariantHelper(pvar, this); }
-	VariantHelper VA(tVariant* pvar, Prop* prop) { return VariantHelper(pvar, this, prop); }
-	VariantHelper VA(tVariant* pvar, Meth* meth, long number) { return VariantHelper(pvar + number, this, meth, number); }
+	VariantHelper VA(tVariant* pvar, PropDesc* prop) { return VariantHelper(pvar, this, prop); }
+	VariantHelper VA(tVariant* pvar, MethDesc* meth, long number) { return VariantHelper(pvar + number, this, meth, number); }
 	bool ADDIN_API AllocMemory(void** pMemory, unsigned long ulCountByte) const noexcept;
 	void ADDIN_API FreeMemory(void** pMemory) const noexcept;
+
+	// Копія рядка в пам'яті менеджера 1С (примітив алокації). nullptr, якщо
+	// менеджера ще немає або алокація провалилась. W() — єдиний інший споживач
+	// цієї логіки — побудований поверх цього ж примітиву (кидає bad_alloc сам).
+	WCHAR_T* AllocString(const std::u16string& src) const;
 
 	friend const WCHAR_T* GetClassNames();
 	friend long GetClassObject(const WCHAR_T*, IComponentBase**);
@@ -265,8 +293,6 @@ private:
 	// при першому виклику, тому файло-рівнева реєстрація (REGISTER_COMPONENT) не
 	// залежить від порядку статичної ініціалізації між одиницями трансляції.
 	static std::map<std::u16string, CompFunction>& components();
-	std::vector<Prop> properties;
-	std::vector<Meth> methods;
 	std::u16string name;
 	bool alias = false;
 
