@@ -261,12 +261,12 @@ long AddInNative::GetNParams(const long lMethodNum)
 void DefaultHelper::Apply(tVariant* pvar, AddInNative* addin) const
 {
 	AddInNative::VariantHelper vh(pvar, addin);
-	switch (variant.index()) {
-	case 1: vh = std::get<std::u16string>(variant); break;
-	case 2: vh = std::get<int64_t>(variant);        break;
-	case 3: vh = std::get<double>(variant);         break;
-	case 4: vh = std::get<bool>(variant);           break;
-	default: break;   // EmptyValue (index 0) -> нічого не пишемо, комірка вже VTYPE_EMPTY
+	switch (slot_.index()) {
+	case 1: vh = std::get<std::u16string>(slot_); break;
+	case 2: vh = std::get<int64_t>(slot_);        break;
+	case 3: vh = std::get<double>(slot_);         break;
+	case 4: vh = std::get<bool>(slot_);           break;
+	default: break;   // Unset (індекс 0) -> нічого не пишемо, комірка вже VTYPE_EMPTY
 	}
 }
 
@@ -295,26 +295,10 @@ bool AddInNative::HasRetVal(const long lMethodNum)
 
 bool AddInNative::CallMethod(MethFunction* func, tVariant* p, MethDesc* m, const long lSizeArray)
 {
-	// Кожна гілка: «якщо у variant лежить саме ця арність — перевірити кількість
-	// фактичних параметрів і викликати». Короткозамкнене || дає ту саму семантику,
-	// що й колишній ланцюжок if-ів, але без рукописних списків VA(p, m, 0..N).
-	return TryCallArity<0,  MethFunction0 >(func, p, m, lSizeArray)
-	    || TryCallArity<1,  MethFunction1 >(func, p, m, lSizeArray)
-	    || TryCallArity<2,  MethFunction2 >(func, p, m, lSizeArray)
-	    || TryCallArity<3,  MethFunction3 >(func, p, m, lSizeArray)
-	    || TryCallArity<4,  MethFunction4 >(func, p, m, lSizeArray)
-	    || TryCallArity<5,  MethFunction5 >(func, p, m, lSizeArray)
-	    || TryCallArity<6,  MethFunction6 >(func, p, m, lSizeArray)
-	    || TryCallArity<7,  MethFunction7 >(func, p, m, lSizeArray)
-	    || TryCallArity<8,  MethFunction8 >(func, p, m, lSizeArray)
-	    || TryCallArity<9,  MethFunction9 >(func, p, m, lSizeArray)
-	    || TryCallArity<10, MethFunction10>(func, p, m, lSizeArray)
-	    || TryCallArity<11, MethFunction11>(func, p, m, lSizeArray)
-	    || TryCallArity<12, MethFunction12>(func, p, m, lSizeArray)
-	    || TryCallArity<13, MethFunction13>(func, p, m, lSizeArray)
-	    || TryCallArity<14, MethFunction14>(func, p, m, lSizeArray)
-	    || TryCallArity<15, MethFunction15>(func, p, m, lSizeArray)
-	    || TryCallArity<16, MethFunction16>(func, p, m, lSizeArray);
+	// Одна гілка на арність: «якщо у варіанті лежить саме ця арність — перевірити
+	// кількість фактичних параметрів і викликати». Перелік гілок породжується з
+	// тієї самої межі kMaxArity, що й сам варіант, тож розійтися вони не можуть.
+	return TryEachArity(func, p, m, lSizeArray, std::make_index_sequence<kMaxArity + 1>{});
 }
 
 // Спільне тіло CallAsProc/CallAsFunc: межі індексу методу, ValidateParams (наш
@@ -526,35 +510,58 @@ std::wstring AddInNative::upper(std::wstring& str)
 	return str;
 }
 
+// Прив'язка комірки. Константність методу стосується самого адаптера, не комірки:
+// pvar — вказівник-член, тож віддавати його не-const з const-методу коректно.
+tVariant* AddInNative::VariantHelper::Bound() const
+{
+	if (!pvar) throw std::bad_variant_access();
+	return pvar;
+}
+
+template <typename N>
+N AddInNative::VariantHelper::ReadNumeric(TYPEVAR expectedForError) const
+{
+	tVariant* v = Bound();
+	switch (TV_VT(v)) {
+	case VTYPE_I2:
+	case VTYPE_I4:
+	case VTYPE_UI1:
+	case VTYPE_ERROR:
+		return static_cast<N>(v->lVal);
+	case VTYPE_R4:
+		return static_cast<N>(TV_R4(v));
+	case VTYPE_R8:
+		return static_cast<N>(TV_R8(v));
+	default:
+		throw TypeError(expectedForError);
+	}
+}
+
 TYPEVAR AddInNative::VariantHelper::type()
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	return pvar->vt;
+	return Bound()->vt;
 }
 
 uint32_t AddInNative::VariantHelper::size()
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	if (pvar->vt != VTYPE_BLOB) throw this->TypeError(VTYPE_BLOB);
+	if (Bound()->vt != VTYPE_BLOB) throw this->TypeError(VTYPE_BLOB);
 	return pvar->strLen;
 }
 
 char* AddInNative::VariantHelper::data()
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	if (pvar->vt != VTYPE_BLOB) throw this->TypeError(VTYPE_BLOB);
+	if (Bound()->vt != VTYPE_BLOB) throw this->TypeError(VTYPE_BLOB);
 	return pvar->pstrVal;
 }
 
 void AddInNative::VariantHelper::clear()
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	switch (TV_VT(pvar)) {
-	case VTYPE_BLOB:
-	case VTYPE_PWSTR:
-		addin->FreeMemory(reinterpret_cast<void**>(&TV_WSTR(pvar)));
-		break;
-	}
+	// Рядок і бінарні дані — єдині типи, під які менеджер 1С виділяв пам'ять;
+	// решта живе прямо в об'єднанні й звільнення не потребує. Віддати чужий
+	// буфер треба ДО tVarInit, бо той затирає вказівник разом з типом.
+	const TYPEVAR vt = Bound()->vt;
+	const bool ownsBuffer = (vt == VTYPE_PWSTR) || (vt == VTYPE_BLOB);
+	if (ownsBuffer) addin->FreeMemory(reinterpret_cast<void**>(&TV_WSTR(pvar)));
 	tVarInit(pvar);
 }
 
@@ -625,8 +632,7 @@ std::exception AddInNative::VariantHelper::TypeError(TYPEVAR expected) const
 template <>
 std::u16string AddInNative::VariantHelper::Get<std::u16string>() const
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	if (pvar->vt != VTYPE_PWSTR) throw TypeError(VTYPE_PWSTR);
+	if (Bound()->vt != VTYPE_PWSTR) throw TypeError(VTYPE_PWSTR);
 	// Апаратнення: NUL-термінований покажчик, а не (pwstrVal, wstrLen). Порожній
 	// pwstrVal (не мало би траплятись за коректного VTYPE_PWSTR) -> визначена
 	// поведінка (порожній рядок) замість розіменування нуля.
@@ -651,61 +657,28 @@ std::wstring AddInNative::VariantHelper::Get<std::wstring>() const
 template <>
 int64_t AddInNative::VariantHelper::Get<int64_t>() const
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	switch (TV_VT(pvar)) {
-	case VTYPE_I2:
-	case VTYPE_I4:
-	case VTYPE_UI1:
-	case VTYPE_ERROR:
-		return (int64_t)pvar->lVal;
-	case VTYPE_R4:
-		// fltVal і dblVal — РІЗНІ члени union'а (include/types.h:179-180). VTYPE_R4
-		// зберігає float САМЕ у fltVal; читання його як dblVal інтерпретує 4 байти
-		// float-мантиси/експоненти як частину 8-байтового double — сміття, а не
-		// значення (виправлена вада, TestFloatR4Conversion).
-		return (int64_t)TV_R4(pvar);
-	case VTYPE_R8:
-		return (int64_t)TV_R8(pvar);
-	default:
-		throw TypeError(VTYPE_I4);
-	}
+	// Дробову частину відкидає саме приведення в N — так поводилось і чинне ядро.
+	return ReadNumeric<int64_t>(VTYPE_I4);
 }
 
 template <>
 double AddInNative::VariantHelper::Get<double>() const
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	switch (TV_VT(pvar)) {
-	case VTYPE_I2:
-	case VTYPE_I4:
-	case VTYPE_UI1:
-	case VTYPE_ERROR:
-		return (double)pvar->lVal;
-	case VTYPE_R4:
-		// Див. коментар у Get<int64_t>() вище: fltVal != dblVal.
-		return (double)TV_R4(pvar);
-	case VTYPE_R8:
-		return (double)TV_R8(pvar);
-	default:
-		throw TypeError(VTYPE_R4);
-	}
+	return ReadNumeric<double>(VTYPE_R4);
 }
 
 template <>
 bool AddInNative::VariantHelper::Get<bool>() const
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	switch (TV_VT(pvar)) {
-	case VTYPE_BOOL:
-		return TV_BOOL(pvar);
-	case VTYPE_I2:
-	case VTYPE_I4:
-	case VTYPE_UI1:
-	case VTYPE_ERROR:
-		return (bool)pvar->lVal;
-	default:
-		throw TypeError(VTYPE_BOOL);
-	}
+	// Булеве читання НЕ ділить набір типів із числовим: дійсні сюди не приймаються,
+	// бо «0.0 це Ложь?» — питання без однозначної відповіді в термінах 1С.
+	const TYPEVAR vt = Bound()->vt;
+	if (vt == VTYPE_BOOL) return TV_BOOL(pvar);
+	// Цілочисельні різновиди читаються за правилом 1С: нуль — Ложь, решта — Истина.
+	const bool isIntegral = (vt == VTYPE_I2) || (vt == VTYPE_I4)
+	                     || (vt == VTYPE_UI1) || (vt == VTYPE_ERROR);
+	if (isIntegral) return pvar->lVal != 0;
+	throw TypeError(VTYPE_BOOL);
 }
 
 // ---- Set<T>(): запис у tVariant. Null pvar -> тихий no-op (протилежно до Get<T>).
@@ -747,13 +720,15 @@ void AddInNative::VariantHelper::Set<int64_t>(const int64_t& value)
 	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння.
 	if (pvar == nullptr) return;
 	clear();
-	if (INT32_MIN <= value && value <= INT32_MAX) {
+	// Що НЕ вміщається в 32 біти, їде дійсним, а не VTYPE_I8: так поводиться чинне
+	// ядро, і на це спирається 1С, читаючи великі суми як число.
+	const bool fitsInt32 = (value >= INT32_MIN) && (value <= INT32_MAX);
+	if (fitsInt32) {
 		TV_VT(pvar) = VTYPE_I4;
-		TV_I4(pvar) = (int32_t)value;
-	}
-	else {
+		TV_I4(pvar) = static_cast<int32_t>(value);
+	} else {
 		TV_VT(pvar) = VTYPE_R8;
-		TV_R8(pvar) = (double)value;
+		TV_R8(pvar) = static_cast<double>(value);
 	}
 }
 

@@ -22,54 +22,55 @@
 
 class AddInNative;
 
+// Значення параметра за замовчуванням, яке 1С запитує через GetParamDefValue.
+// Тримає рівно один із чотирьох типів, що їх уміє віддати платформа, або нічого.
 class DefaultHelper {
-private:
-	class EmptyValue {};
 public:
-	std::variant<
-		EmptyValue,
-		std::u16string,
-		int64_t,
-		double,
-		bool
-	> variant;
-
-	// Порядок альтернатив — контракт DefaultHelper::Apply (.cpp): switch там іде
-	// по variant.index() і кожен індекс жорстко прив'язаний до конкретного типу
-	// (1 -> u16string, 2 -> int64_t, 3 -> double, 4 -> bool). Вставка/перестановка
-	// альтернативи не за цим порядком зламала б Apply МОВЧКИ — інваріант
-	// закріплено тут, за тим самим зразком, що й MethFunction нижче.
-	static_assert(std::variant_size_v<decltype(variant)> == 5,
-		"DefaultHelper::variant: очікується 5 альтернатив (Empty/u16string/int64_t/double/bool)");
-	static_assert(std::is_same_v<std::variant_alternative_t<1, decltype(variant)>, std::u16string>,
-		"DefaultHelper::variant: альтернатива 1 мусить бути std::u16string");
-	static_assert(std::is_same_v<std::variant_alternative_t<2, decltype(variant)>, int64_t>,
-		"DefaultHelper::variant: альтернатива 2 мусить бути int64_t");
-	static_assert(std::is_same_v<std::variant_alternative_t<3, decltype(variant)>, double>,
-		"DefaultHelper::variant: альтернатива 3 мусить бути double");
-	static_assert(std::is_same_v<std::variant_alternative_t<4, decltype(variant)>, bool>,
-		"DefaultHelper::variant: альтернатива 4 мусить бути bool");
-public:
-	DefaultHelper() : variant(EmptyValue()) {}
-	DefaultHelper(const std::u16string& s) : variant(s) {}
-	DefaultHelper(int64_t value) : variant(value) {}
-	DefaultHelper(double value) : variant(value) {}
-	DefaultHelper(bool value) : variant(value) {}
-	DefaultHelper(const char16_t* value) {
-		if (value) variant = std::u16string(value);
-		else variant = EmptyValue();
+	// Конструктор під кожен підтримуваний тип — компонента пише DefaultHelper(u"info"),
+	// DefaultHelper(true) тощо, і потрібна альтернатива обирається за перевантаженням.
+	DefaultHelper()                        : slot_(Unset{})  {}
+	DefaultHelper(const std::u16string& v) : slot_(v)        {}
+	DefaultHelper(int64_t v)               : slot_(v)        {}
+	DefaultHelper(double v)                : slot_(v)        {}
+	DefaultHelper(bool v)                  : slot_(v)        {}
+	// Літерал u"..." — найчастіший запис у компонентах; nullptr означає «дефолту немає».
+	DefaultHelper(const char16_t* v)       : slot_(Unset{})
+	{
+		if (v) slot_ = std::u16string(v);
 	}
 
-	// Записує збережений дефолт у tVariant через адаптер AddInNative::VariantHelper.
-	// Порожній дефолт (EmptyValue) нічого не пише — виклик очікує, що pvar уже
-	// приведений до VTYPE_EMPTY викликачем (GetParamDefValue).
-	// Сигнатура навмисно береться через (tVariant*, AddInNative*), а не через
-	// AddInNative::VariantHelper напряму: DefaultHelper стоїть ПЕРЕД AddInNative
-	// (потрібен для MethDefaults/ParamSpec усередині нього), тож AddInNative тут
-	// іще лише forward-declared — його вкладений тип не можна назвати. Означення —
-	// у .cpp, де AddInNative вже повністю визначений і дружба (friend) відкриває
-	// доступ до protected VariantHelper.
+	// Записує збережений дефолт у комірку 1С через адаптер VariantHelper.
+	// «Немає дефолту» не пише нічого: викликач (GetParamDefValue) уже привів
+	// комірку до VTYPE_EMPTY, і саме так платформа читає «параметр не задано».
+	//
+	// Параметри навмисно сирі (tVariant*, AddInNative*), а не VariantHelper: цей клас
+	// оголошений ПЕРЕД AddInNative (той тримає DefaultHelper усередині MethDefaults і
+	// ParamSpec), тож у цій точці AddInNative лише forward-declared і назвати його
+	// вкладений тип неможливо. Означення — у .cpp, куди дружба відкриває доступ.
 	void Apply(tVariant* pvar, AddInNative* addin) const;
+
+private:
+	// Тег «дефолту немає». Окремий тип, а не std::monostate, щоб альтернатива
+	// читалась за іменем у повідомленнях компілятора.
+	struct Unset {};
+
+	using Slot = std::variant<Unset, std::u16string, int64_t, double, bool>;
+
+	// Порядок альтернатив — контракт Apply(): switch там іде по slot_.index(), і
+	// кожен індекс жорстко прив'язаний до типу. Перестановка зламала б Apply МОВЧКИ,
+	// тому інваріант закріплено тут — тим самим прийомом, що й для арностей нижче.
+	static_assert(std::variant_size_v<Slot> == 5,
+		"DefaultHelper::Slot: очікується 5 альтернатив (Unset/u16string/int64_t/double/bool)");
+	static_assert(std::is_same_v<std::variant_alternative_t<1, Slot>, std::u16string>,
+		"DefaultHelper::Slot: альтернатива 1 мусить бути std::u16string");
+	static_assert(std::is_same_v<std::variant_alternative_t<2, Slot>, int64_t>,
+		"DefaultHelper::Slot: альтернатива 2 мусить бути int64_t");
+	static_assert(std::is_same_v<std::variant_alternative_t<3, Slot>, double>,
+		"DefaultHelper::Slot: альтернатива 3 мусить бути double");
+	static_assert(std::is_same_v<std::variant_alternative_t<4, Slot>, bool>,
+		"DefaultHelper::Slot: альтернатива 4 мусить бути bool");
+
+	Slot slot_;
 };
 
 using CompFunction = std::function<AddInNative* ()>;
@@ -138,6 +139,18 @@ protected:
 		operator int()            const;
 
 	private:
+		// Єдина точка перевірки прив'язки: усі читання й clear() ходять через неї,
+		// щоб перевірка «комірку не прив'язано» існувала в одному екземплярі, а не
+		// повторювалась рядком у кожній спеціалізації Get<T>.
+		tVariant* Bound() const;
+
+		// Числове читання. Цілі різновиди 1С лежать у lVal, VTYPE_R4 — у fltVal,
+		// VTYPE_R8 — у dblVal: це РІЗНІ члени об'єднання, і плутанина між ними вже
+		// коштувала вади (TestFloatR4Conversion). expectedForError визначає, який тип
+		// назве повідомлення про невідповідність: ціле чи дійсне.
+		template <typename N>
+		N ReadNumeric(TYPEVAR expectedForError) const;
+
 		std::exception TypeError(TYPEVAR expected) const;
 	};
 
@@ -156,61 +169,52 @@ protected:
 	};
 
 	using PropFunction = std::function<void(VH)>;
-	using MethFunction0 = std::function<void()>;
-	using MethFunction1 = std::function<void(VH)>;
-	using MethFunction2 = std::function<void(VH, VH)>;
-	using MethFunction3 = std::function<void(VH, VH, VH)>;
-	using MethFunction4 = std::function<void(VH, VH, VH, VH)>;
-	using MethFunction5 = std::function<void(VH, VH, VH, VH, VH)>;
-	using MethFunction6 = std::function<void(VH, VH, VH, VH, VH, VH)>;
-	using MethFunction7 = std::function<void(VH, VH, VH, VH, VH, VH, VH)>;
-	// Арності 8..16 потрібні драйверам БПО: контракт «Подключаемое оборудование» має
-	// методи на 9-10 параметрів (напр. ОплатитьПлатежнойКартой — 9, ОтменитьПлатеж… — 10),
-	// які до цього не реєструвалися взагалі (GetNParams віддавав 0). Запас до 16 узятий
-	// свідомо: розширення цього списку тягне перезбірку й гейт усіх компонент DLL.
-	using MethFunction8  = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction9  = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction10 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction11 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction12 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction13 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction14 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction15 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction16 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
 
-	using MethFunction = std::variant<
-		MethFunction0,
-		MethFunction1,
-		MethFunction2,
-		MethFunction3,
-		MethFunction4,
-		MethFunction5,
-		MethFunction6,
-		MethFunction7,
-		MethFunction8,
-		MethFunction9,
-		MethFunction10,
-		MethFunction11,
-		MethFunction12,
-		MethFunction13,
-		MethFunction14,
-		MethFunction15,
-		MethFunction16
-	>;
+	// Хендлер методу арності N — це std::function<void(VH, ..., VH)> з N аргументами.
+	// Сімнадцять рядків «using MethFunctionN = ...» тут НЕ виписуються руками: список
+	// породжується з index_sequence, тож описка в одному з них неможлива за побудовою,
+	// а зміна межі арності — це правка одного числа, а не сімнадцяти рядків.
+	template <typename Seq> struct HandlerOf;
+	template <size_t... I> struct HandlerOf<std::index_sequence<I...>> {
+		template <size_t> using ArgVH = VH;      // кожен індекс пакета дає рівно один VH
+		using type = std::function<void(ArgVH<I>...)>;
+	};
+	template <size_t N> using MethFunctionN = typename HandlerOf<std::make_index_sequence<N>>::type;
 
-	// Порядок альтернатив — контракт GetNParams: він віддає в 1С кількість параметрів
-	// методу як index() variant-а. Вставка альтернативи не в кінець (або не за арністю)
-	// зламала б це МОВЧКИ — тому інваріант закріплено тут.
-	static_assert(std::variant_size_v<MethFunction> == 17,
-		"MethFunction: очікується 17 альтернатив (арності 0..16)");
-	static_assert(std::is_same_v<std::variant_alternative_t<0, MethFunction>, MethFunction0>,
-		"MethFunction: альтернатива 0 мусить бути MethFunction0");
-	static_assert(std::is_same_v<std::variant_alternative_t<7, MethFunction>, MethFunction7>,
-		"MethFunction: альтернатива 7 мусить бути MethFunction7");
-	static_assert(std::is_same_v<std::variant_alternative_t<9, MethFunction>, MethFunction9>,
-		"MethFunction: альтернатива 9 мусить бути MethFunction9");
-	static_assert(std::is_same_v<std::variant_alternative_t<16, MethFunction>, MethFunction16>,
-		"MethFunction: альтернатива 16 мусить бути MethFunction16");
+	// Верхня межа арності. 9-10 параметрів потрібні драйверам БПО (контракт
+	// «Подключаемое оборудование»: ОплатитьПлатежнойКартой — 9,
+	// ОтменитьПлатежПоПлатежнойКарте — 10); такі методи до розширення не
+	// реєструвалися взагалі — GetNParams віддавав 0, і 1С вважала метод
+	// безпараметровим. Запас до 16 узятий свідомо: підняття межі тягне перезбірку
+	// й гейт усіх компонент DLL.
+	static constexpr size_t kMaxArity = 16;
+
+	// Хендлер будь-якої підтримуваної арності. ПОЗИЦІЯ альтернативи в цьому варіанті
+	// і Є арністю — на цьому стоїть GetNParams, який віддає в 1С index() варіанта.
+	// Побудова з того самого index_sequence гарантує цю відповідність структурно.
+	template <typename Seq> struct HandlerVariantOf;
+	template <size_t... I> struct HandlerVariantOf<std::index_sequence<I...>> {
+		using type = std::variant<MethFunctionN<I>...>;
+	};
+	using MethFunction = typename HandlerVariantOf<std::make_index_sequence<kMaxArity + 1>>::type;
+
+	// Асерти перевіряють не рукописний список (його вже немає), а те, що ПОБУДОВА
+	// дає обіцяне: альтернатива N приймає рівно N аргументів VH. Саме на цьому
+	// тримається контракт GetNParams.
+	static_assert(std::variant_size_v<MethFunction> == kMaxArity + 1,
+		"MethFunction: очікується kMaxArity + 1 альтернатив (арності 0..kMaxArity)");
+	static_assert(std::is_same_v<std::variant_alternative_t<0, MethFunction>,
+		std::function<void()>>,
+		"MethFunction: альтернатива 0 мусить бути хендлером без параметрів");
+	static_assert(std::is_same_v<std::variant_alternative_t<1, MethFunction>,
+		std::function<void(VH)>>,
+		"MethFunction: альтернатива 1 мусить приймати рівно один VH");
+	static_assert(std::is_same_v<std::variant_alternative_t<9, MethFunction>,
+		std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH)>>,
+		"MethFunction: альтернатива 9 мусить приймати рівно дев'ять VH (ОплатитьПлатежнойКартой)");
+	static_assert(std::is_same_v<std::variant_alternative_t<kMaxArity, MethFunction>,
+		std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>>,
+		"MethFunction: остання альтернатива мусить приймати рівно kMaxArity аргументів VH");
 
 	void AddProperty(const std::u16string& nameEn, const std::u16string& nameRu, const PropFunction &getter, const PropFunction &setter = nullptr);
 	void AddProcedure(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction &handler, const MethDefaults &defs = {});
@@ -255,12 +259,23 @@ public:
 	static AddInNative* CreateObject(const std::u16string& name);
 	VariantHelper result;
 	static std::u16string getComponentNames();
+
+	// Згортання регістру. ОБИДВА перевантаження мутують аргумент і повертають його ж —
+	// на це спирається код поза ядром, тож сигнатури незмінні. Реалізація — поверх
+	// NormalizeName, щоб таблиця регістру жила в одному місці.
 	static std::u16string upper(std::u16string& str);
-	static std::wstring upper(std::wstring& str);
-	static std::string WCHAR2MB(std::basic_string_view<WCHAR_T> src);
-	static std::wstring WCHAR2WC(std::basic_string_view<WCHAR_T> src);
+	static std::wstring   upper(std::wstring& str);
+
+	// Конвертації між UTF-8 і UTF-16. Довжина скрізь передається ЯВНО — саме це
+	// зберігає вбудований  ; обгортки ServiceTools::Safe* стоять поверх них.
+	static std::string    WCHAR2MB(std::basic_string_view<WCHAR_T> src);
+	static std::wstring   WCHAR2WC(std::basic_string_view<WCHAR_T> src);
 	static std::u16string MB2WCHAR(std::string_view src);
+
+	// Копія рядка в пам'яті менеджера 1С; кидає bad_alloc, якщо менеджера немає.
 	WCHAR_T* W(const char16_t* str) const;
+
+	// Версія компоненти з version.h — віддається у властивість Version/Версия.
 	static std::string version();
 
 private:
@@ -337,10 +352,10 @@ private:
 	// кількість фактичних параметрів і викликати. false = «це не та альтернатива,
 	// або ця альтернатива не змогла виконатися» (в обох випадках CallMethod має
 	// йти далі/повернути false — коротке замикання || коректне і без throw).
-	template <size_t N, typename Fn>
+	template <size_t N>
 	bool TryCallArity(MethFunction* function, tVariant* paParams, MethDesc* meth, const long lSizeArray)
 	{
-		auto handler = std::get_if<Fn>(function);
+		auto handler = std::get_if<MethFunctionN<N>>(function);
 		if (!handler) return false;
 		if (lSizeArray < static_cast<long>(N)) {
 			// 1С передала менше параметрів, ніж арність хендлера. Раніше тут летів
@@ -357,6 +372,17 @@ private:
 		}
 		InvokeHandler(*handler, paParams, meth, std::make_index_sequence<N>{});
 		return true;
+	}
+
+	// Перебір усіх арностей 0..kMaxArity. Згортка по || має ту саму семантику
+	// короткого замикання, що й ланцюжок із сімнадцяти рядків, але список арностей
+	// знову ж таки породжується, а не виписується — і не може розійтися з
+	// MethFunction, бо будується з тієї самої межі.
+	template <size_t... I>
+	bool TryEachArity(MethFunction* function, tVariant* paParams, MethDesc* meth,
+	                  const long lSizeArray, std::index_sequence<I...>)
+	{
+		return (TryCallArity<I>(function, paParams, meth, lSizeArray) || ...);
 	}
 	// Перевіряє required-параметри без дефолту перед викликом хендлера: за порожнім
 	// чи відсутнім аргументом реєструє AddError з ім'ям параметра й повертає false.
@@ -387,11 +413,16 @@ private:
 	// при першому виклику, тому файло-рівнева реєстрація (REGISTER_COMPONENT) не
 	// залежить від порядку статичної ініціалізації між одиницями трансляції.
 	static std::map<std::u16string, CompFunction>& components();
+
+	// Ім'я, під яким компоненту створила 1С: іде у префікс AddError і в
+	// RegisterExtensionAs.
 	std::u16string name;
+	// Мова платформи: true == російська локаль. Вибирає, яке з двох імен і яку
+	// мову повідомлення побачить прикладний розробник. Ставиться в SetLocale.
 	bool alias = false;
 
 public:
-	AddInNative(void) ;
+	AddInNative();
 	virtual ~AddInNative() {}
 	
 	// Метод для добавления ошибок компонента
