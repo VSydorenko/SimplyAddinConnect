@@ -113,7 +113,7 @@ git fetch origin --quiet
 $behind = (git rev-list --count "HEAD..origin/$Branch").Trim()
 if ($behind -ne '0') { Fail "локальна гілка відстає від origin/$Branch на $behind комітів — зробіть git pull" }
 $ahead = (git rev-list --count "origin/$Branch..HEAD").Trim()
-if ($ahead -ne '0') { Write-Warn2 "локальна гілка попереду origin/$Branch на $ahead комітів — вони поїдуть при push" }
+if ($ahead -ne '0') { Write-Warn2 "незапушених комітів: $ahead — вони поїдуть при push" }
 Write-Ok "синхронізовано з origin/$Branch"
 
 # ---------------------------------------------------------------------------
@@ -207,8 +207,13 @@ else {
     Write-Ok 'version.h не змінився'
 }
 
-# Інші файли чіпати не мали — якщо щось з'явилось, це сигнал, а не дрібниця
+# Інші файли чіпати не мали — якщо щось з'явилось, це сигнал, а не дрібниця.
+# У DryRun version.h навмисно лишився незакоміченим (вище), тож виключаємо саме
+# його: інакше репетиція завжди падала б на власному ж пропуску коміту.
 $stillDirty = @(git status --porcelain)
+if ($DryRun) {
+    $stillDirty = @($stillDirty | Where-Object { $_ -notmatch '(^|[\\/ ])version\.h$' })
+}
 if ($stillDirty.Count -gt 0) {
     Write-Host ($stillDirty -join "`n")
     Fail 'після збірки змінилися файли, крім version.h — розберіться перед релізом'
