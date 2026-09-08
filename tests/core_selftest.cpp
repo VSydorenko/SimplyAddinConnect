@@ -521,6 +521,129 @@ static void TestFallbackLogging() {
     CHECK(true, "fallback logging does not crash");
 }
 
+// ==== Характеристичні тести межових випадків (перед переписуванням ядра) ====
+
+// Межові дані конвертацій: саме тут ламаються самописні реалізації.
+// Порожній рядок, кирилиця, символи поза BMP (сурогатна пара), вбудований \0.
+//
+// WCHAR2MB приймає basic_string_view<WCHAR_T> (WCHAR_T == wchar_t на Windows) —
+// view будуємо явно з довжиною, інакше u16-літерал не конвертується, а вбудований
+// нуль обрізав би рядок і перевірка стала б фіктивною.
+static std::basic_string_view<WCHAR_T> WView(const std::u16string& s) {
+    return std::basic_string_view<WCHAR_T>(
+        reinterpret_cast<const WCHAR_T*>(s.data()), s.size());
+}
+
+static void TestStringConversionEdges() {
+    // Порожній рядок в обидва боки
+    CHECK(AddInNative::WCHAR2MB(WView(u"")).empty(), "WCHAR2MB: порожній -> порожній");
+    CHECK(AddInNative::MB2WCHAR("").empty(),         "MB2WCHAR: порожній -> порожній");
+
+    // Кирилиця: round-trip мусить бути точним
+    const std::u16string ua = u"Підпис ЕЦП";
+    const std::string    u8 = AddInNative::WCHAR2MB(WView(ua));
+    CHECK(AddInNative::MB2WCHAR(u8) == ua, "Round-trip кирилиці точний");
+
+    // Поза BMP: U+1F600 — сурогатна пара в UTF-16, 4 байти в UTF-8
+    const std::u16string emoji = u"\xD83D\xDE00";
+    const std::string    e8    = AddInNative::WCHAR2MB(WView(emoji));
+    CHECK(e8.size() == 4, "Символ поза BMP -> 4 байти UTF-8");
+    CHECK(AddInNative::MB2WCHAR(e8) == emoji, "Round-trip поза BMP точний");
+
+    // Вбудований \0 не має обрізати рядок
+    std::u16string withNul = u"a";
+    withNul.push_back(u'\0');
+    withNul.push_back(u'b');
+    CHECK(AddInNative::WCHAR2MB(WView(withNul)).size() == 3, "Вбудований NUL не обрізає");
+}
+
+// Пошук методу за іменем МУСИТЬ бути регістронезалежним в обох мовах —
+// 1С кличе так, як написав прикладний розробник.
+static void TestCaseInsensitiveLookup() {
+    class Probe : public AddInNative {
+    public:
+        Probe() { AddFunction(u"DoWork", u"Работа", Ret([]() { return int64_t(1); })); }
+    };
+    Probe p;
+    CHECK(p.FindMethod((const WCHAR_T*)u"DoWork") >= 0, "Точний збіг EN");
+    CHECK(p.FindMethod((const WCHAR_T*)u"dowork") >= 0, "Нижній регістр EN");
+    CHECK(p.FindMethod((const WCHAR_T*)u"DOWORK") >= 0, "Верхній регістр EN");
+    CHECK(p.FindMethod((const WCHAR_T*)u"Работа") >= 0, "Точний збіг RU");
+    CHECK(p.FindMethod((const WCHAR_T*)u"работа") >= 0, "Нижній регістр RU");
+    CHECK(p.FindMethod((const WCHAR_T*)u"РАБОТА") >= 0, "Верхній регістр RU");
+    CHECK(p.FindMethod((const WCHAR_T*)u"NoSuchMethod") == -1, "Неіснуючий -> -1");
+}
+
+// GetParamDefValue живить механізм необов'язкових параметрів 1С.
+// Перевіряємо кожен тип дефолту, бо переписування зачіпає саме розбір.
+static void TestParamDefaultsAllTypes() {
+    class Probe : public AddInNative {
+    public:
+        Probe() {
+            AddFunction(u"F", u"Ф", Ret([](VH a, VH b, VH c, VH d) { return int64_t(0); }),
+                        { {0, DefaultHelper(u"text")}, {1, DefaultHelper(int64_t(42))},
+                          {2, DefaultHelper(3.5)},     {3, DefaultHelper(true)} });
+        }
+    };
+    Probe p;
+    const long m = p.FindMethod((const WCHAR_T*)u"F");
+    CHECK(m >= 0, "Метод зареєстровано");
+    CHECK(p.GetNParams(m) == 4, "Арність 4");
+
+    tVariant v; memset(&v, 0, sizeof(v));
+    CHECK(p.GetParamDefValue(m, 1, &v), "Дефолт int читається");
+    CHECK(TV_INT(&v) == 42, "Дефолт int == 42");
+
+    memset(&v, 0, sizeof(v));
+    CHECK(p.GetParamDefValue(m, 3, &v), "Дефолт bool читається");
+    CHECK(TV_BOOL(&v) == true, "Дефолт bool == true");
+}
+
+// Властивість лише для читання не має приймати запис, і навпаки.
+static void TestPropertyAccessFlags() {
+    class Probe : public AddInNative {
+    public:
+        std::u16string stored = u"init";
+        Probe() {
+            AddProperty(u"ReadOnly", u"ТолькоЧтение",
+                        [&](VH v) { v = this->stored; });                  // без сетера
+            AddProperty(u"ReadWrite", u"ЧтениеЗапись",
+                        [&](VH v) { v = this->stored; },
+                        [&](VH v) { this->stored = (std::u16string)v; });
+        }
+    };
+    Probe p;
+    const long ro = p.FindProp((const WCHAR_T*)u"ReadOnly");
+    const long rw = p.FindProp((const WCHAR_T*)u"ReadWrite");
+    CHECK(ro >= 0 && rw >= 0, "Обидві властивості знайдено");
+    CHECK(p.IsPropReadable(ro),  "ReadOnly читається");
+    CHECK(!p.IsPropWritable(ro), "ReadOnly НЕ пишеться");
+    CHECK(p.IsPropReadable(rw),  "ReadWrite читається");
+    CHECK(p.IsPropWritable(rw),  "ReadWrite пишеться");
+    CHECK(p.FindProp((const WCHAR_T*)u"NoSuchProp") == -1, "Неіснуюча -> -1");
+}
+
+// GetPropName/GetMethodName віддають пам'ять, виділену менеджером 1С.
+// Перевіряємо і вміст, і те, що обидві мови доступні за індексом.
+//
+// УВАГА: без setMemManager обидва методи віддадуть nullptr (усередині W()/AllocString
+// алокація через m_iMemory провалюється) — менеджер пам'яті тут обов'язковий.
+static void TestNamesByIndex() {
+    class Probe : public AddInNative {
+    public:
+        Probe() { AddFunction(u"Alpha", u"Альфа", Ret([]() { return int64_t(1); })); }
+    };
+    Probe p;
+    MockMemory memory;
+    p.setMemManager(&memory);
+    const long m = p.FindMethod((const WCHAR_T*)u"Alpha");
+    const WCHAR_T* en = p.GetMethodName(m, 0);
+    const WCHAR_T* ru = p.GetMethodName(m, 1);
+    CHECK(en != nullptr && ru != nullptr, "Обидва імені віддані");
+    CHECK(std::u16string((const char16_t*)en) == u"Alpha", "EN-ім'я збігається");
+    CHECK(std::u16string((const char16_t*)ru) == u"Альфа", "RU-ім'я збігається");
+}
+
 int main() {
     // Небуферизований stdout: щоб при аварійному завершенні (AV) не втратити
     // останні рядки й точно локалізувати місце падіння.
@@ -543,6 +666,11 @@ int main() {
     TestEventBridge();
     TestEventBridgeConcurrency();
     TestFallbackLogging();
+    TestStringConversionEdges();
+    TestCaseInsensitiveLookup();
+    TestParamDefaultsAllTypes();
+    TestPropertyAccessFlags();
+    TestNamesByIndex();
     std::printf("=== %s (failed: %d) ===\n", g_failed ? "FAIL" : "OK", g_failed);
     return g_failed ? 1 : 0;
 }
