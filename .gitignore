@@ -4,8 +4,8 @@
 /build64
 /build32
 /build
-/tools
 /build_tests
+/tools
 /bin
 /.vc
 /.vs

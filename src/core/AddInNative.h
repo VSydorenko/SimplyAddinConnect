@@ -11,6 +11,7 @@
 #include <variant>
 #include <optional>
 #include <string_view>
+#include <unordered_map>
 #include <functional>
 #include <type_traits>
 #include <utility>
@@ -21,27 +22,55 @@
 
 class AddInNative;
 
+// Значення параметра за замовчуванням, яке 1С запитує через GetParamDefValue.
+// Тримає рівно один із чотирьох типів, що їх уміє віддати платформа, або нічого.
 class DefaultHelper {
-private:
-	class EmptyValue {};
 public:
-	std::variant<
-		EmptyValue,
-		std::u16string,
-		int64_t,
-		double,
-		bool
-	> variant;
-public:
-	DefaultHelper() : variant(EmptyValue()) {}
-	DefaultHelper(const std::u16string& s) : variant(s) {}
-	DefaultHelper(int64_t value) : variant(value) {}
-	DefaultHelper(double value) : variant(value) {}
-	DefaultHelper(bool value) : variant(value) {}
-	DefaultHelper(const char16_t* value) {
-		if (value) variant = std::u16string(value);
-		else variant = EmptyValue();
+	// Конструктор під кожен підтримуваний тип — компонента пише DefaultHelper(u"info"),
+	// DefaultHelper(true) тощо, і потрібна альтернатива обирається за перевантаженням.
+	DefaultHelper()                        : slot_(Unset{})  {}
+	DefaultHelper(const std::u16string& v) : slot_(v)        {}
+	DefaultHelper(int64_t v)               : slot_(v)        {}
+	DefaultHelper(double v)                : slot_(v)        {}
+	DefaultHelper(bool v)                  : slot_(v)        {}
+	// Літерал u"..." — найчастіший запис у компонентах; nullptr означає «дефолту немає».
+	DefaultHelper(const char16_t* v)       : slot_(Unset{})
+	{
+		if (v) slot_ = std::u16string(v);
 	}
+
+	// Записує збережений дефолт у комірку 1С через адаптер VariantHelper.
+	// «Немає дефолту» не пише нічого: викликач (GetParamDefValue) уже привів
+	// комірку до VTYPE_EMPTY, і саме так платформа читає «параметр не задано».
+	//
+	// Параметри навмисно сирі (tVariant*, AddInNative*), а не VariantHelper: цей клас
+	// оголошений ПЕРЕД AddInNative (той тримає DefaultHelper усередині MethDefaults і
+	// ParamSpec), тож у цій точці AddInNative лише forward-declared і назвати його
+	// вкладений тип неможливо. Означення — у .cpp, куди дружба відкриває доступ.
+	void Apply(tVariant* pvar, AddInNative* addin) const;
+
+private:
+	// Тег «дефолту немає». Окремий тип, а не std::monostate, щоб альтернатива
+	// читалась за іменем у повідомленнях компілятора.
+	struct Unset {};
+
+	using Slot = std::variant<Unset, std::u16string, int64_t, double, bool>;
+
+	// Порядок альтернатив — контракт Apply(): switch там іде по slot_.index(), і
+	// кожен індекс жорстко прив'язаний до типу. Перестановка зламала б Apply МОВЧКИ,
+	// тому інваріант закріплено тут — тим самим прийомом, що й для арностей нижче.
+	static_assert(std::variant_size_v<Slot> == 5,
+		"DefaultHelper::Slot: очікується 5 альтернатив (Unset/u16string/int64_t/double/bool)");
+	static_assert(std::is_same_v<std::variant_alternative_t<1, Slot>, std::u16string>,
+		"DefaultHelper::Slot: альтернатива 1 мусить бути std::u16string");
+	static_assert(std::is_same_v<std::variant_alternative_t<2, Slot>, int64_t>,
+		"DefaultHelper::Slot: альтернатива 2 мусить бути int64_t");
+	static_assert(std::is_same_v<std::variant_alternative_t<3, Slot>, double>,
+		"DefaultHelper::Slot: альтернатива 3 мусить бути double");
+	static_assert(std::is_same_v<std::variant_alternative_t<4, Slot>, bool>,
+		"DefaultHelper::Slot: альтернатива 4 мусить бути bool");
+
+	Slot slot_;
 };
 
 using CompFunction = std::function<AddInNative* ()>;
@@ -49,43 +78,80 @@ using CompFunction = std::function<AddInNative* ()>;
 class AddInNative : public IComponentBase
 {
 private:
-	struct Prop;
-	struct Meth;
+	struct PropDesc;
+	struct MethDesc;
 protected:
 	class VariantHelper {
 	private:
 		tVariant* pvar = nullptr;
 		AddInNative* addin = nullptr;
-		Prop* prop = nullptr;
-		Meth* meth = nullptr;
+		// Контекст ЛИШЕ для тексту помилки: чиє це значення. Не володіє нічим.
+		const PropDesc* prop = nullptr;
+		const MethDesc* meth = nullptr;
 		long number = -1;
-	private:
-		std::exception error(TYPEVAR vt) const;
 	public:
-		void AllocMemory(unsigned long size);
 		VariantHelper(const VariantHelper& va) :pvar(va.pvar), addin(va.addin), prop(va.prop), meth(va.meth), number(va.number) {}
 		VariantHelper(tVariant* pvar, AddInNative* addin) :pvar(pvar), addin(addin) {}
-		VariantHelper(tVariant* pvar, AddInNative* addin, Prop* prop) :pvar(pvar), addin(addin), prop(prop) {}
-		VariantHelper(tVariant* pvar, AddInNative* addin, Meth* meth, long number) :pvar(pvar), addin(addin), meth(meth), number(number) {}
+		VariantHelper(tVariant* pvar, AddInNative* addin, const PropDesc* prop) :pvar(pvar), addin(addin), prop(prop) {}
+		VariantHelper(tVariant* pvar, AddInNative* addin, const MethDesc* meth, long number) :pvar(pvar), addin(addin), meth(meth), number(number) {}
 		VariantHelper& operator<<(const VariantHelper& va) { pvar = va.pvar; addin = va.addin; prop = va.prop; meth = va.meth; number = va.number; return *this; }
+		// Рибіндинг result: копіювальне присвоєння лишається ЗАБОРОНЕНИМ — навмисний
+		// guard Етапу 0 (без нього this->result = f(...) у WrapRet міг би мовчки
+		// рибіндити result замість присвоїти значення). Рибіндинг — лише через operator<<.
 		VariantHelper& operator=(const VariantHelper& va) = delete;
+
+		// Ядро адаптера: уся робота з tVariant іде через ці два явні методи;
+		// оператори нижче — тонкі обгортки над ними, і тіла їхні лежать у .cpp,
+		// НЕ в тілі класу (причина — у коментарі перед їхніми деклараціями).
+		// Спеціалізації Get/Set теж визначені в .cpp.
+		template <typename T> T    Get() const;
+		template <typename T> void Set(const T& value);
+
+		void     AllocMemory(unsigned long size);
+		uint32_t size();
+		TYPEVAR  type();
+		char*    data();
+		void     clear();
+
+		// Тіла — тонкі обгортки над Set<T>()/Get<T>(), визначені в .cpp (НЕ inline
+		// у тілі класу): виклик Get<T>()/Set<T>() з функції, визначеної ВСЕРЕДИНІ
+		// класу, компілюється в "complete-class context" одразу після закриття
+		// VariantHelper — тобто ДО того, як компілятор побачить explicit-спеціалізації,
+		// оголошені за межами класу AddInNative (вони й фізично не можуть стояти
+		// раніше — explicit-спеціалізація вкладеного шаблону методу мусить бути в
+		// просторі імен, а AddInNative ще не закрився). Наслідок — компілятор мовчки
+		// створює екземпляр primary-шаблону РАНІШЕ оголошення спеціалізації, і MSVC
+		// падає з C2908 "явная специализация; уже создан экземпляр". Тому тут —
+		// лише декларації.
 		VariantHelper& operator=(const std::string& str);
 		VariantHelper& operator=(const std::wstring& str);
 		VariantHelper& operator=(const std::u16string& str);
 		VariantHelper& operator=(int64_t value);
 		VariantHelper& operator=(double value);
 		VariantHelper& operator=(bool value);
-		operator std::string() const;
-		operator std::wstring() const;
+
+		operator std::string()    const;
+		operator std::wstring()   const;
 		operator std::u16string() const;
-		operator int64_t() const;
-		operator double() const;
-		operator bool() const;
-		operator int() const;
-		uint32_t size();
-		TYPEVAR type();
-		char* data();
-		void clear();
+		operator int64_t()        const;
+		operator double()         const;
+		operator bool()           const;
+		operator int()            const;
+
+	private:
+		// Єдина точка перевірки прив'язки: усі читання й clear() ходять через неї,
+		// щоб перевірка «комірку не прив'язано» існувала в одному екземплярі, а не
+		// повторювалась рядком у кожній спеціалізації Get<T>.
+		tVariant* Bound() const;
+
+		// Числове читання. Цілі різновиди 1С лежать у lVal, VTYPE_R4 — у fltVal,
+		// VTYPE_R8 — у dblVal: це РІЗНІ члени об'єднання, і плутанина між ними вже
+		// коштувала вади (TestFloatR4Conversion). expectedForError визначає, який тип
+		// назве повідомлення про невідповідність: ціле чи дійсне.
+		template <typename N>
+		N ReadNumeric(TYPEVAR expectedForError) const;
+
+		std::exception TypeError(TYPEVAR expected) const;
 	};
 
 	using VH = VariantHelper;
@@ -103,61 +169,52 @@ protected:
 	};
 
 	using PropFunction = std::function<void(VH)>;
-	using MethFunction0 = std::function<void()>;
-	using MethFunction1 = std::function<void(VH)>;
-	using MethFunction2 = std::function<void(VH, VH)>;
-	using MethFunction3 = std::function<void(VH, VH, VH)>;
-	using MethFunction4 = std::function<void(VH, VH, VH, VH)>;
-	using MethFunction5 = std::function<void(VH, VH, VH, VH, VH)>;
-	using MethFunction6 = std::function<void(VH, VH, VH, VH, VH, VH)>;
-	using MethFunction7 = std::function<void(VH, VH, VH, VH, VH, VH, VH)>;
-	// Арності 8..16 потрібні драйверам БПО: контракт «Подключаемое оборудование» має
-	// методи на 9-10 параметрів (напр. ОплатитьПлатежнойКартой — 9, ОтменитьПлатеж… — 10),
-	// які до цього не реєструвалися взагалі (GetNParams віддавав 0). Запас до 16 узятий
-	// свідомо: розширення цього списку тягне перезбірку й гейт усіх компонент DLL.
-	using MethFunction8  = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction9  = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction10 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction11 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction12 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction13 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction14 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction15 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
-	using MethFunction16 = std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>;
 
-	using MethFunction = std::variant<
-		MethFunction0,
-		MethFunction1,
-		MethFunction2,
-		MethFunction3,
-		MethFunction4,
-		MethFunction5,
-		MethFunction6,
-		MethFunction7,
-		MethFunction8,
-		MethFunction9,
-		MethFunction10,
-		MethFunction11,
-		MethFunction12,
-		MethFunction13,
-		MethFunction14,
-		MethFunction15,
-		MethFunction16
-	>;
+	// Хендлер методу арності N — це std::function<void(VH, ..., VH)> з N аргументами.
+	// Сімнадцять рядків «using MethFunctionN = ...» тут НЕ виписуються руками: список
+	// породжується з index_sequence, тож описка в одному з них неможлива за побудовою,
+	// а зміна межі арності — це правка одного числа, а не сімнадцяти рядків.
+	template <typename Seq> struct HandlerOf;
+	template <size_t... I> struct HandlerOf<std::index_sequence<I...>> {
+		template <size_t> using ArgVH = VH;      // кожен індекс пакета дає рівно один VH
+		using type = std::function<void(ArgVH<I>...)>;
+	};
+	template <size_t N> using MethFunctionN = typename HandlerOf<std::make_index_sequence<N>>::type;
 
-	// Порядок альтернатив — контракт GetNParams: він віддає в 1С кількість параметрів
-	// методу як index() variant-а. Вставка альтернативи не в кінець (або не за арністю)
-	// зламала б це МОВЧКИ — тому інваріант закріплено тут.
-	static_assert(std::variant_size_v<MethFunction> == 17,
-		"MethFunction: очікується 17 альтернатив (арності 0..16)");
-	static_assert(std::is_same_v<std::variant_alternative_t<0, MethFunction>, MethFunction0>,
-		"MethFunction: альтернатива 0 мусить бути MethFunction0");
-	static_assert(std::is_same_v<std::variant_alternative_t<7, MethFunction>, MethFunction7>,
-		"MethFunction: альтернатива 7 мусить бути MethFunction7");
-	static_assert(std::is_same_v<std::variant_alternative_t<9, MethFunction>, MethFunction9>,
-		"MethFunction: альтернатива 9 мусить бути MethFunction9");
-	static_assert(std::is_same_v<std::variant_alternative_t<16, MethFunction>, MethFunction16>,
-		"MethFunction: альтернатива 16 мусить бути MethFunction16");
+	// Верхня межа арності. 9-10 параметрів потрібні драйверам БПО (контракт
+	// «Подключаемое оборудование»: ОплатитьПлатежнойКартой — 9,
+	// ОтменитьПлатежПоПлатежнойКарте — 10); такі методи до розширення не
+	// реєструвалися взагалі — GetNParams віддавав 0, і 1С вважала метод
+	// безпараметровим. Запас до 16 узятий свідомо: підняття межі тягне перезбірку
+	// й гейт усіх компонент DLL.
+	static constexpr size_t kMaxArity = 16;
+
+	// Хендлер будь-якої підтримуваної арності. ПОЗИЦІЯ альтернативи в цьому варіанті
+	// і Є арністю — на цьому стоїть GetNParams, який віддає в 1С index() варіанта.
+	// Побудова з того самого index_sequence гарантує цю відповідність структурно.
+	template <typename Seq> struct HandlerVariantOf;
+	template <size_t... I> struct HandlerVariantOf<std::index_sequence<I...>> {
+		using type = std::variant<MethFunctionN<I>...>;
+	};
+	using MethFunction = typename HandlerVariantOf<std::make_index_sequence<kMaxArity + 1>>::type;
+
+	// Асерти перевіряють не рукописний список (його вже немає), а те, що ПОБУДОВА
+	// дає обіцяне: альтернатива N приймає рівно N аргументів VH. Саме на цьому
+	// тримається контракт GetNParams.
+	static_assert(std::variant_size_v<MethFunction> == kMaxArity + 1,
+		"MethFunction: очікується kMaxArity + 1 альтернатив (арності 0..kMaxArity)");
+	static_assert(std::is_same_v<std::variant_alternative_t<0, MethFunction>,
+		std::function<void()>>,
+		"MethFunction: альтернатива 0 мусить бути хендлером без параметрів");
+	static_assert(std::is_same_v<std::variant_alternative_t<1, MethFunction>,
+		std::function<void(VH)>>,
+		"MethFunction: альтернатива 1 мусить приймати рівно один VH");
+	static_assert(std::is_same_v<std::variant_alternative_t<9, MethFunction>,
+		std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH)>>,
+		"MethFunction: альтернатива 9 мусить приймати рівно дев'ять VH (ОплатитьПлатежнойКартой)");
+	static_assert(std::is_same_v<std::variant_alternative_t<kMaxArity, MethFunction>,
+		std::function<void(VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH, VH)>>,
+		"MethFunction: остання альтернатива мусить приймати рівно kMaxArity аргументів VH");
 
 	void AddProperty(const std::u16string& nameEn, const std::u16string& nameRu, const PropFunction &getter, const PropFunction &setter = nullptr);
 	void AddProcedure(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction &handler, const MethDefaults &defs = {});
@@ -202,76 +259,170 @@ public:
 	static AddInNative* CreateObject(const std::u16string& name);
 	VariantHelper result;
 	static std::u16string getComponentNames();
+
+	// Згортання регістру. ОБИДВА перевантаження мутують аргумент і повертають його ж —
+	// на це спирається код поза ядром, тож сигнатури незмінні. Реалізація — поверх
+	// NormalizeName, щоб таблиця регістру жила в одному місці.
 	static std::u16string upper(std::u16string& str);
-	static std::wstring upper(std::wstring& str);
-	static std::string WCHAR2MB(std::basic_string_view<WCHAR_T> src);
-	static std::wstring WCHAR2WC(std::basic_string_view<WCHAR_T> src);
+	static std::wstring   upper(std::wstring& str);
+
+	// Конвертації між UTF-8 і UTF-16. Довжина скрізь передається ЯВНО — саме це
+	// зберігає вбудований  ; обгортки ServiceTools::Safe* стоять поверх них.
+	static std::string    WCHAR2MB(std::basic_string_view<WCHAR_T> src);
+	static std::wstring   WCHAR2WC(std::basic_string_view<WCHAR_T> src);
 	static std::u16string MB2WCHAR(std::string_view src);
+
+	// Копія рядка в пам'яті менеджера 1С; кидає bad_alloc, якщо менеджера немає.
 	WCHAR_T* W(const char16_t* str) const;
+
+	// Версія компоненти з version.h — віддається у властивість Version/Версия.
 	static std::string version();
 
 private:
-	struct Prop {
-		std::vector<std::u16string> names;
-		PropFunction getter;
-		PropFunction setter;
+	// Дескриптор властивості: дані + обидва імені. Індекс тримає не самі імена,
+	// а нормалізовані ключі -> позицію в цьому векторі.
+	struct PropDesc {
+		std::u16string nameEn;
+		std::u16string nameRu;
+		PropFunction   getter;
+		PropFunction   setter;   // порожній -> властивість лише для читання
 	};
 
-	struct Meth {
-		std::vector<std::u16string> names;
-		MethFunction handler;
-		MethDefaults defs;
-		bool hasRetVal;
+	// Дескриптор методу. hasRetVal розрізняє функцію і процедуру для 1С.
+	struct MethDesc {
+		std::u16string nameEn;
+		std::u16string nameRu;
+		MethFunction   handler;
+		MethDefaults   defaults;
 		std::vector<ParamSpec> params;
+		bool           hasRetVal = false;
 	};
 
-	bool CallMethod(MethFunction* function, tVariant* paParams, Meth* meth, const long lSizeArray);
+	std::vector<PropDesc> props_;
+	std::vector<MethDesc> meths_;
+
+	// Індекс імен -> позиція в векторі. Ключ нормалізований (верхній регістр),
+	// обидві мови кладуться окремими ключами. Дає O(1) пошук замість обходу
+	// вкладених векторів.
+	std::unordered_map<std::u16string, long> propIndex_;
+	std::unordered_map<std::u16string, long> methIndex_;
+
+	// Нормалізація імені для індексу: верхній регістр для латиниці й кирилиці.
+	static std::u16string NormalizeName(std::u16string_view name);
+
+	// Спільна точка реєстрації методів (AddProcedure/AddFunction обох перевантажень) —
+	// щоб індекс наповнювався в одному місці.
+	void RegisterMethod(const std::u16string& nameEn, const std::u16string& nameRu,
+	                    const MethFunction& handler, const MethDefaults& defs,
+	                    const std::vector<ParamSpec>& params, bool hasRetVal);
+
+	bool CallMethod(MethFunction* function, tVariant* paParams, MethDesc* meth, const long lSizeArray);
+
+	// Спільне тіло CallAsProc/CallAsFunc: межі індексу методу, ValidateParams (наш
+	// механізм, ДО try — як і раніше) і виклик CallMethod у try/catch. CallAsFunc
+	// НЕ будується поверх CallAsProc (той відв'язує result на самому вході — така
+	// композиція стерла б прив'язку до комірки повернення); замість цього обидва
+	// entry point у .cpp самі керують result навколо виклику Dispatch.
+	bool Dispatch(const long n, tVariant* paParams, const long lSizeArray);
+
+	// Спільна обгортка винятків для точок входу IComponentBase: std::u16string ->
+	// AddError + false, будь-що інше -> тихий false. Один екземпляр ланцюга —
+	// GetPropVal/SetPropVal/GetParamDefValue/Dispatch раніше тримали по своїй
+	// дослівній копії того самого семирядкового try/catch; тепер лише викликають
+	// Guarded з тілом-лямбдою. Шаблон — member, щоб AddError у catch-гілках
+	// резолвився на this без явної передачі.
+	template <typename Body>
+	bool Guarded(Body&& body)
+	{
+		try { return body(); }
+		catch (const std::u16string& msg) { AddError(msg); return false; }
+		catch (...) { return false; }
+	}
 
 	// Розгортає виклик хендлера довільної арності: індекси параметрів беруться з
 	// index_sequence, тож списки VA(...) для арностей 0..16 не виписуються руками
 	// (17 рукописних списків — надто ласий грунт для описки в індексі).
 	template <typename Fn, size_t... I>
-	void InvokeHandler(const Fn& handler, tVariant* paParams, Meth* meth, std::index_sequence<I...>)
+	void InvokeHandler(const Fn& handler, tVariant* paParams, MethDesc* meth, std::index_sequence<I...>)
 	{
 		handler(VA(paParams, meth, static_cast<long>(I))...);
 	}
 
 	// Одна гілка диспетчера CallMethod: якщо у variant лежить саме Fn — перевірити
-	// кількість фактичних параметрів і викликати. false = «це не та альтернатива».
-	template <size_t N, typename Fn>
-	bool TryCallArity(MethFunction* function, tVariant* paParams, Meth* meth, const long lSizeArray)
+	// кількість фактичних параметрів і викликати. false = «це не та альтернатива,
+	// або ця альтернатива не змогла виконатися» (в обох випадках CallMethod має
+	// йти далі/повернути false — коротке замикання || коректне і без throw).
+	template <size_t N>
+	bool TryCallArity(MethFunction* function, tVariant* paParams, MethDesc* meth, const long lSizeArray)
 	{
-		auto handler = std::get_if<Fn>(function);
+		auto handler = std::get_if<MethFunctionN<N>>(function);
 		if (!handler) return false;
-		if (lSizeArray < static_cast<long>(N)) throw std::bad_function_call();
+		if (lSizeArray < static_cast<long>(N)) {
+			// 1С передала менше параметрів, ніж арність хендлера. Раніше тут летів
+			// голий std::bad_function_call(), який зовнішній catch(...) мовчки гасив
+			// у false — без жодного AddError 1С-розробнику. Явна перевірка з іменем
+			// методу лишає той самий false, але з діагностикою — локаль-залежним
+			// іменем, як і сусідній ValidateParams (той самий alias ? ru : en), з тим
+			// самим запасним варіантом на порожнє nameRu, що й у GetMethodName.
+			const std::u16string& mname = alias
+				? (meth->nameRu.empty() ? meth->nameEn : meth->nameRu)
+				: meth->nameEn;
+			AddError(u"Невідповідність кількості параметрів методу " + mname);
+			return false;
+		}
 		InvokeHandler(*handler, paParams, meth, std::make_index_sequence<N>{});
 		return true;
 	}
+
+	// Перебір усіх арностей 0..kMaxArity. Згортка по || має ту саму семантику
+	// короткого замикання, що й ланцюжок із сімнадцяти рядків, але список арностей
+	// знову ж таки породжується, а не виписується — і не може розійтися з
+	// MethFunction, бо будується з тієї самої межі.
+	template <size_t... I>
+	bool TryEachArity(MethFunction* function, tVariant* paParams, MethDesc* meth,
+	                  const long lSizeArray, std::index_sequence<I...>)
+	{
+		return (TryCallArity<I>(function, paParams, meth, lSizeArray) || ...);
+	}
 	// Перевіряє required-параметри без дефолту перед викликом хендлера: за порожнім
 	// чи відсутнім аргументом реєструє AddError з ім'ям параметра й повертає false.
-	bool ValidateParams(Meth& m, tVariant* paParams, const long lSizeArray);
+	bool ValidateParams(MethDesc& m, tVariant* paParams, const long lSizeArray);
 	// Будує MethDefaults зі spec-ів: параметри з byDefault стають дефолтами 1С.
 	static MethDefaults DefaultsFromSpecs(const std::vector<ParamSpec>& params);
 	VariantHelper VA(tVariant* pvar) { return VariantHelper(pvar, this); }
-	VariantHelper VA(tVariant* pvar, Prop* prop) { return VariantHelper(pvar, this, prop); }
-	VariantHelper VA(tVariant* pvar, Meth* meth, long number) { return VariantHelper(pvar + number, this, meth, number); }
+	VariantHelper VA(tVariant* pvar, PropDesc* prop) { return VariantHelper(pvar, this, prop); }
+	VariantHelper VA(tVariant* pvar, MethDesc* meth, long number) { return VariantHelper(pvar + number, this, meth, number); }
 	bool ADDIN_API AllocMemory(void** pMemory, unsigned long ulCountByte) const noexcept;
 	void ADDIN_API FreeMemory(void** pMemory) const noexcept;
 
+	// Копія рядка в пам'яті менеджера 1С (примітив алокації). nullptr, якщо
+	// менеджера ще немає або алокація провалилась. W() — єдиний інший споживач
+	// цієї логіки — побудований поверх цього ж примітиву (кидає bad_alloc сам).
+	WCHAR_T* AllocString(const std::u16string& src) const;
+
 	friend const WCHAR_T* GetClassNames();
 	friend long GetClassObject(const WCHAR_T*, IComponentBase**);
+
+	// Дає DefaultHelper::Apply доступ до protected VariantHelper. DefaultHelper
+	// живе ПЕРЕД AddInNative (потрібен йому для MethDefaults/ParamSpec), тож не
+	// може ні назвати AddInNative::VariantHelper у власній сигнатурі, ні
+	// сконструювати її без цієї дружби.
+	friend class DefaultHelper;
 
 	// Реєстр компонент — функціо-локальний статик (Meyers singleton): будується
 	// при першому виклику, тому файло-рівнева реєстрація (REGISTER_COMPONENT) не
 	// залежить від порядку статичної ініціалізації між одиницями трансляції.
 	static std::map<std::u16string, CompFunction>& components();
-	std::vector<Prop> properties;
-	std::vector<Meth> methods;
+
+	// Ім'я, під яким компоненту створила 1С: іде у префікс AddError і в
+	// RegisterExtensionAs.
 	std::u16string name;
+	// Мова платформи: true == російська локаль. Вибирає, яке з двох імен і яку
+	// мову повідомлення побачить прикладний розробник. Ставиться в SetLocale.
 	bool alias = false;
 
 public:
-	AddInNative(void) ;
+	AddInNative();
 	virtual ~AddInNative() {}
 	
 	// Метод для добавления ошибок компонента
@@ -317,6 +468,27 @@ private:
 	// Захищає m_iConnect від гонки між фоновими PostExternalEvent/AddError і Done().
 	std::mutex connectMutex_;
 };
+
+// Явні спеціалізації VariantHelper::Get<T>()/Set<T>() — визначення в AddInNative.cpp.
+// Ці прототипи документують ПОВНИЙ перелік типів, які адаптер уміє читати й писати:
+// primary-шаблон визначення не має, тож будь-який інший T дав би лінк-помилку.
+// Для збірки вони не обов'язкові — Get<T>/Set<T> кличуть лише тіла операторів, а ті
+// лежать в AddInNative.cpp нижче за самі спеціалізації; жодна інша одиниця трансляції
+// (компоненти в src/components у тому числі) цих методів не називає — вона лінкується
+// з символами операторів.
+template <> std::string    AddInNative::VariantHelper::Get<std::string>() const;
+template <> std::wstring   AddInNative::VariantHelper::Get<std::wstring>() const;
+template <> std::u16string AddInNative::VariantHelper::Get<std::u16string>() const;
+template <> int64_t        AddInNative::VariantHelper::Get<int64_t>() const;
+template <> double         AddInNative::VariantHelper::Get<double>() const;
+template <> bool           AddInNative::VariantHelper::Get<bool>() const;
+
+template <> void AddInNative::VariantHelper::Set<std::string>(const std::string& value);
+template <> void AddInNative::VariantHelper::Set<std::wstring>(const std::wstring& value);
+template <> void AddInNative::VariantHelper::Set<std::u16string>(const std::u16string& value);
+template <> void AddInNative::VariantHelper::Set<int64_t>(const int64_t& value);
+template <> void AddInNative::VariantHelper::Set<double>(const double& value);
+template <> void AddInNative::VariantHelper::Set<bool>(const bool& value);
 
 // Реєстрація компоненти в реєстрі DLL + захист від відкидання лінкером.
 // Клас мусить оголосити: static std::vector<std::u16string> names;

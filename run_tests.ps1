@@ -553,11 +553,17 @@ else {
         Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
     }
 
-    # Кейс 5 — крос-валідація ПРРО, лише за наявності еталонів
+    # Кейс 5 — крос-валідація ПРРО, лише за наявності еталонів.
+    # Еталони лежать в ОКРЕМОМУ репозиторії github.com/VSydorenko/prro_docs (він публічний).
+    # Порядок пошуку: 1) PRRO_DOCS_DIR; 2) каталог prro_docs ПОРУЧ із цим репо — типова
+    # розкладка, коли обидва клоновано в один батьківський каталог.
     $prro = $env:PRRO_DOCS_DIR
-    if (-not $prro -and (Test-Path 'R:/github/prro_docs')) { $prro = 'R:/github/prro_docs' }
     if (-not $prro) {
-        Add-Result 'L2/L3' 'native_host case 5' 'SKIP' 'немає PRRO_DOCS_DIR і R:/github/prro_docs'
+        $prroSibling = Join-Path (Split-Path $PSScriptRoot -Parent) 'prro_docs'
+        if (Test-Path $prroSibling) { $prro = $prroSibling }
+    }
+    if (-not $prro) {
+        Add-Result 'L2/L3' 'native_host case 5' 'SKIP' 'немає еталонів ПРРО: виставте PRRO_DOCS_DIR або клонуйте github.com/VSydorenko/prro_docs поруч із цим репозиторієм'
     }
     else {
         $argList = @('5', "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"", "`"$prro`"")
@@ -828,7 +834,7 @@ else {
 #
 # Каталог еталонів обчислюється НЕЗАЛЕЖНО від блоку L2/L3 (там $prro — локальна змінна
 # власної гілки скрипту, тягнути її звідти крихко): та сама логіка — $env:PRRO_DOCS_DIR,
-# фолбек R:/github/prro_docs.
+# фолбек на каталог prro_docs поруч із цим репозиторієм.
 #
 # Свідомо БЕЗ автоматичного вироку — та сама причина, що й у матриці корпусу ЦЗО: правило
 # "яка розбіжність є дефектом, а яка властивістю вхідних даних" — відкрите питання №6
@@ -838,7 +844,10 @@ else {
 Section 'ЕТАП L4-iit: еталони ДПС очима двох двигунів'
 
 $prroDocsDir = $env:PRRO_DOCS_DIR
-if (-not $prroDocsDir -and (Test-Path 'R:/github/prro_docs')) { $prroDocsDir = 'R:/github/prro_docs' }
+if (-not $prroDocsDir) {
+    $prroSibling = Join-Path (Split-Path $PSScriptRoot -Parent) 'prro_docs'
+    if (Test-Path $prroSibling) { $prroDocsDir = $prroSibling }
+}
 # @(...) обовʼязково — та сама пастка PS 5.1, що й у корпусі ЦЗО вище: Get-ChildItem на
 # єдиному збігу віддав би скаляр, а не масив з одним елементом.
 $prroSigned = @()
@@ -850,7 +859,7 @@ if ($NoUapki) {
     Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'SKIP' 'режим -NoUapki: крипто-стек UAPKI не збирається'
 }
 elseif (-not $prroDocsDir -or -not (Test-Path $prroDocsDir)) {
-    Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'SKIP' 'немає PRRO_DOCS_DIR і R:/github/prro_docs'
+    Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'SKIP' 'немає еталонів ПРРО: виставте PRRO_DOCS_DIR або клонуйте github.com/VSydorenko/prro_docs поруч із цим репозиторієм'
 }
 elseif ($prroSigned.Count -eq 0) {
     Add-Result 'L4-iit' 'еталони ДПС × 2 двигуни' 'SKIP' "у $prroDocsDir немає *.signed"

@@ -33,8 +33,20 @@
 - **C++17**, без підняття стандарту. Без нових сабмодулів.
 - **Кириличні `u"..."`-літерали** імен методів зберігати дослівно — від них залежить
   виклик з 1С.
-- **Не редагувати `version.h`** — його перегенеровує `build_project.ps1`.
+- **`version.h` не редагувати руками, але КОМІТИТИ.** Його перегенеровує
+  `build_project.ps1`: `MAJOR`/`MINOR`/`REVISION` скрипт бере з **`VERSION.txt`**,
+  а з `version.h` — лише `VERSION_BUILD`, який інкрементує. Тому: номер версії
+  міняється **у `VERSION.txt`** (правка самого `version.h` мовчки відкотиться на
+  першій же збірці), а перегенерований `version.h` — невід'ємна частина білду й
+  іде в коміт разом з роботою (так і робилось в історії репозиторію: 47 комітів
+  зачіпають цей файл).
 - **Гейт наприкінці:** x64 `PASS=29 / FAIL=0 / SKIP=0`, x86 `PASS=28 / FAIL=0 / SKIP=1`.
+- **Де сніпет плану розходиться з чинним кодом — правда за КОДОМ.** Сніпети тут
+  ілюструють структуру, а не є еталоном тексту. Поведінка (тексти помилок, коди
+  повернення, межі індексів, контракти методів) зберігається дослівно. Розбіжності,
+  знайдені під час виконання, внесені в план окремими блоками «**Рулінг
+  (виконання, 2026-09-08)**» — вони мають пріоритет над сусіднім сніпетом
+  (узгоджено з автором плану 2026-09-08).
 
 ### Команди, які знадобляться в кожній задачі
 
@@ -193,29 +205,46 @@ git commit -m "tools: перевірка ядра на успадкований 
 - Modify: `tests/core_selftest.cpp` (додати функції + реєстрацію в `main`)
 
 **Interfaces:**
-- Consumes: наявні хелпери харнесу — `CHECK(cond, msg)`, `RunGuarded(name, fn)`,
-  мок платформи 1С. Подивитись, як влаштований `TestSmokeLifecycle` (рядок ~59), і
-  повторити той самий спосіб створення компоненти.
-- Produces: 5 нових тест-функцій, зареєстрованих у `main`.
+- Consumes: наявні хелпери харнесу — `CHECK(cond, msg)`, моки платформи 1С
+  `MockConnect`/`MockMemory`. Подивитись, як влаштований `TestSmokeLifecycle`
+  (рядок ~59), і повторити той самий спосіб створення компоненти.
+- Produces: 5 нових тест-функцій, викликаних з `main`.
+
+> **Рулінг (виконання, 2026-09-08).** У `tests/core_selftest.cpp` **немає** хелпера
+> `RunGuarded` — тест-функції викликаються з `main()` напряму. Нові реєструються так
+> само. Друге: `AddInNative::WCHAR2MB` приймає `std::basic_string_view<WCHAR_T>`, а
+> `WCHAR_T` на Windows — це `wchar_t`, тож `u"..."`-літерал і `std::u16string` туди
+> **не конвертуються**. View будується явно: `reinterpret_cast<const WCHAR_T*>` +
+> довжина. Це ще й єдиний чесний спосіб перевірити вбудований `\0` — конструктор із
+> самого вказівника обрізав би рядок на першому нулі й тест став би фіктивним.
 
 - [ ] **Step 1: Написати тести на конвертації рядків**
 
 ```cpp
 // Межові дані конвертацій: саме тут ламаються самописні реалізації.
 // Порожній рядок, кирилиця, символи поза BMP (сурогатна пара), вбудований \0.
+//
+// WCHAR2MB приймає basic_string_view<WCHAR_T> (WCHAR_T == wchar_t на Windows) —
+// view будуємо явно з довжиною, інакше u16-літерал не конвертується, а вбудований
+// нуль обрізав би рядок і перевірка стала б фіктивною.
+static std::basic_string_view<WCHAR_T> WView(const std::u16string& s) {
+    return std::basic_string_view<WCHAR_T>(
+        reinterpret_cast<const WCHAR_T*>(s.data()), s.size());
+}
+
 static void TestStringConversionEdges() {
     // Порожній рядок в обидва боки
-    CHECK(AddInNative::WCHAR2MB(u"").empty(), "WCHAR2MB: порожній -> порожній");
-    CHECK(AddInNative::MB2WCHAR("").empty(),  "MB2WCHAR: порожній -> порожній");
+    CHECK(AddInNative::WCHAR2MB(WView(u"")).empty(), "WCHAR2MB: порожній -> порожній");
+    CHECK(AddInNative::MB2WCHAR("").empty(),         "MB2WCHAR: порожній -> порожній");
 
     // Кирилиця: round-trip мусить бути точним
     const std::u16string ua = u"Підпис ЕЦП";
-    const std::string    u8 = AddInNative::WCHAR2MB(ua);
+    const std::string    u8 = AddInNative::WCHAR2MB(WView(ua));
     CHECK(AddInNative::MB2WCHAR(u8) == ua, "Round-trip кирилиці точний");
 
     // Поза BMP: U+1F600 — сурогатна пара в UTF-16, 4 байти в UTF-8
     const std::u16string emoji = u"\xD83D\xDE00";
-    const std::string    e8    = AddInNative::WCHAR2MB(emoji);
+    const std::string    e8    = AddInNative::WCHAR2MB(WView(emoji));
     CHECK(e8.size() == 4, "Символ поза BMP -> 4 байти UTF-8");
     CHECK(AddInNative::MB2WCHAR(e8) == emoji, "Round-trip поза BMP точний");
 
@@ -223,7 +252,7 @@ static void TestStringConversionEdges() {
     std::u16string withNul = u"a";
     withNul.push_back(u'\0');
     withNul.push_back(u'b');
-    CHECK(AddInNative::WCHAR2MB(withNul).size() == 3, "Вбудований NUL не обрізає");
+    CHECK(AddInNative::WCHAR2MB(WView(withNul)).size() == 3, "Вбудований NUL не обрізає");
 }
 ```
 
@@ -310,12 +339,17 @@ static void TestPropertyAccessFlags() {
 ```cpp
 // GetPropName/GetMethodName віддають пам'ять, виділену менеджером 1С.
 // Перевіряємо і вміст, і те, що обидві мови доступні за індексом.
+//
+// УВАГА: без setMemManager обидва методи віддадуть nullptr (усередині W()/AllocString
+// алокація через m_iMemory провалюється) — менеджер пам'яті тут обов'язковий.
 static void TestNamesByIndex() {
     class Probe : public AddInNative {
     public:
         Probe() { AddFunction(u"Alpha", u"Альфа", Ret([]() { return int64_t(1); })); }
     };
     Probe p;
+    MockMemory memory;
+    p.setMemManager(&memory);
     const long m = p.FindMethod((const WCHAR_T*)u"Alpha");
     const WCHAR_T* en = p.GetMethodName(m, 0);
     const WCHAR_T* ru = p.GetMethodName(m, 1);
@@ -327,14 +361,15 @@ static void TestNamesByIndex() {
 
 - [ ] **Step 6: Зареєструвати тести в `main`**
 
-Знайти в `tests/core_selftest.cpp` блок викликів `RunGuarded(...)` і додати:
+Знайти в `tests/core_selftest.cpp` блок прямих викликів тест-функцій у `main()`
+(після `TestFallbackLogging()`) і додати:
 
 ```cpp
-    RunGuarded("TestStringConversionEdges", TestStringConversionEdges);
-    RunGuarded("TestCaseInsensitiveLookup", TestCaseInsensitiveLookup);
-    RunGuarded("TestParamDefaultsAllTypes", TestParamDefaultsAllTypes);
-    RunGuarded("TestPropertyAccessFlags", TestPropertyAccessFlags);
-    RunGuarded("TestNamesByIndex", TestNamesByIndex);
+    TestStringConversionEdges();
+    TestCaseInsensitiveLookup();
+    TestParamDefaultsAllTypes();
+    TestPropertyAccessFlags();
+    TestNamesByIndex();
 ```
 
 - [ ] **Step 7: Зібрати й запустити — усі мають пройти на ЧИННОМУ коді**
@@ -433,7 +468,9 @@ std::u16string AddInNative::NormalizeName(std::u16string_view name) {
         if (c >= u'a' && c <= u'z')                 c = char16_t(c - u'a' + u'A');
         else if (c >= 0x0430 && c <= 0x044F)        c = char16_t(c - 0x20);   // а-я -> А-Я
         else if (c == 0x0451)                       c = 0x0401;               // ё -> Ё
-        else if (c >= 0x0450 && c <= 0x045F)        c = char16_t(c - 0x50);   // ѐ-џ -> Ѐ-Џ (і, ї, є, ґ)
+        // ґ/Ґ (U+0491/U+0490) лежать ПОЗА цим діапазоном і свідомо НЕ згортаються:
+        // жодне зареєстроване ім'я в src/components та src/drivers їх не містить.
+        else if (c >= 0x0450 && c <= 0x045F)        c = char16_t(c - 0x50);   // ѐ-џ -> Ѐ-Џ (і, ї, є)
         out.push_back(c);
     }
     return out;
@@ -475,7 +512,8 @@ void AddInNative::RegisterMethod(const std::u16string& nameEn, const std::u16str
 Оголосити `RegisterMethod` у приватній секції `.h`. **Перевантаження
 `AddFunction`/`AddProcedure` з `const std::vector<ParamSpec>&` зберегти** — вони
 частина контракту (105 входжень `ParamSpec` у компонентах); вони теж викликають
-`RegisterMethod`, передаючи `params`.
+`RegisterMethod`, передаючи `params` **і `DefaultsFromSpecs(params)` як дефолти** —
+інакше `byDefault` зі spec-ів мовчки перестане доходити до 1С.
 
 - [ ] **Step 4: Переписати пошук і лічильники**
 
@@ -500,20 +538,29 @@ long AddInNative::FindMethod(const WCHAR_T* wsMethodName) {
 
 - [ ] **Step 5: Переписати віддачу імен**
 
+**Рулінг (виконання, 2026-09-08): межі аліаса зберігаються.** Чинний код бере ім'я
+через `std::next(names.begin(), alias)` і віддає `nullptr`, якщо аліас за межами
+(тобто ≥2). Схема «`alias == 0 ? en : ru`» віддала б російське ім'я на аліас 2 —
+це зміна поведінки. Тримаємо: 0 → EN, 1 → RU, решта → `nullptr`.
+
 ```cpp
 // Пам'ять під рядок виділяє МЕНЕДЖЕР 1С — інакше платформа не зможе її звільнити.
+// Аліас: 0 -> англійське ім'я, 1 -> національне, будь-що інше -> nullptr
+// (саме так поводиться чинне ядро; платформа за межі 0..1 і не ходить).
 const WCHAR_T* AddInNative::GetPropName(long lPropNum, long lPropAlias) {
     if (lPropNum < 0 || lPropNum >= static_cast<long>(props_.size())) return nullptr;
     const PropDesc& p = props_[lPropNum];
-    const std::u16string& src = (lPropAlias == 0 || p.nameRu.empty()) ? p.nameEn : p.nameRu;
-    return AllocString(src);
+    if (lPropAlias == 0) return AllocString(p.nameEn);
+    if (lPropAlias == 1) return AllocString(p.nameRu.empty() ? p.nameEn : p.nameRu);
+    return nullptr;
 }
 
 const WCHAR_T* AddInNative::GetMethodName(long lMethodNum, long lMethodAlias) {
     if (lMethodNum < 0 || lMethodNum >= static_cast<long>(meths_.size())) return nullptr;
     const MethDesc& m = meths_[lMethodNum];
-    const std::u16string& src = (lMethodAlias == 0 || m.nameRu.empty()) ? m.nameEn : m.nameRu;
-    return AllocString(src);
+    if (lMethodAlias == 0) return AllocString(m.nameEn);
+    if (lMethodAlias == 1) return AllocString(m.nameRu.empty() ? m.nameEn : m.nameRu);
+    return nullptr;
 }
 
 // Копія рядка в пам'яті менеджера 1С. nullptr, якщо менеджера ще немає.
@@ -575,10 +622,22 @@ class VariantHelper {
 private:
     tVariant*    pvar  = nullptr;
     AddInNative* addin = nullptr;
+    // Контекст ЛИШЕ для тексту помилки: чиє це значення. Не володіє нічим.
+    const PropDesc* prop = nullptr;
+    const MethDesc* meth = nullptr;
+    long            paramNo = -1;   // 0-базовий; у тексті показується paramNo + 1
 
 public:
     VariantHelper(tVariant* pvar, AddInNative* addin) : pvar(pvar), addin(addin) {}
+    VariantHelper(tVariant* pvar, AddInNative* addin, const PropDesc* prop)
+        : pvar(pvar), addin(addin), prop(prop) {}
+    VariantHelper(tVariant* pvar, AddInNative* addin, const MethDesc* meth, long paramNo)
+        : pvar(pvar), addin(addin), meth(meth), paramNo(paramNo) {}
     VariantHelper(const VariantHelper&) = default;
+
+    // Рибіндинг result: копіювальне присвоєння лишається ЗАБОРОНЕНИМ (див. рулінг нижче).
+    VariantHelper& operator=(const VariantHelper&) = delete;
+    VariantHelper& operator<<(const VariantHelper& va);
 
     // Ядро адаптера: два явні методи, через які йде ВСЯ робота з tVariant.
     // Оператори нижче — тонкі обгортки над ними.
@@ -611,9 +670,25 @@ private:
 };
 ```
 
-**Увага:** якщо чинний `VariantHelper` має додаткові члени (`prop`, `meth`,
-`number`) і вони десь використовуються — з'ясувати де (`grep -rn "\.number\|->number" src/`)
-і зберегти лише те, що справді потрібне. Порожні поля не переносити.
+**Рулінг (виконання, 2026-09-08): контекст помилки зберігається дослівно.**
+Чинні члени `prop`/`meth`/`number` **використовуються** — у `VariantHelper::error()`
+(`AddInNative.cpp:701`) вони складають повідомлення виду
+«Ошибка получения значения при обращении к свойству &lt;Версия&gt; ожидается &lt;Строка&gt;
+фактически &lt;Число&gt;» / «при вызове метода &lt;X&gt; параметр &lt;3&gt;», окремо для
+alias-режиму. Викинути їх означає забрати в 1С-розробника вказівку, ЯКИЙ саме
+параметр/властивість не того типу. Тому:
+
+- контекст лишається, але заходить **через конструктор**, а не як зайві поля
+  «про всяк випадок»;
+- текст `TypeError` — байт-у-байт як у чинному `error()`, включно з нумерацією
+  параметра **з одиниці** (`paramNo + 1`);
+- назви типів у тексті бере таблиця з Задачі 7 — **чинні рядки** (див. рулінг там).
+
+**Рулінг (виконання, 2026-09-08): `operator=(const VariantHelper&)` лишається
+`= delete`.** Це навмисний guard Етапу 0: без нього `this->result = f(...)` у
+`WrapRet` могло б мовчки **рибіндити** `result` замість присвоїти значення.
+Рибіндинг (`CallAsFunc`) робиться через наявний `operator<<` або приватний
+`BindResult` — але не через копіювальне присвоєння.
 
 - [ ] **Step 2: Реалізувати `Get`/`Set` спеціалізаціями**
 
@@ -643,9 +718,31 @@ template <> void AddInNative::VariantHelper::Set<std::u16string>(const std::u16s
 }
 ```
 
-Решта типів — за тим самим зразком: `int64_t` → `VTYPE_I4`/`VTYPE_I8`,
-`double` → `VTYPE_R8`, `bool` → `VTYPE_BOOL`, `std::string`/`std::wstring` —
-через конвертації із Задачі 5.
+Решта типів — за тим самим зразком: `double` → `VTYPE_R8`,
+`bool` → `VTYPE_BOOL`, `std::string`/`std::wstring` — через конвертації із Задачі 5.
+
+**Рулінг (виконання, 2026-09-08): поведінку зберігаємо, окрім однієї названої вади.**
+Сніпети цієї задачі ілюструють структуру, не текст. Розбіжності зі чинним кодом, де
+виграє КОД:
+
+- `operator=(int64_t)` пише `VTYPE_I4` для діапазону int32 і `VTYPE_R8` (не
+  `VTYPE_I8`) для решти;
+- `operator std::u16string()` читає NUL-термінований `pwstrVal`, а не пару
+  `(pwstrVal, wstrLen)`, і **кидає** помилку типу на будь-якому не-`VTYPE_PWSTR`,
+  включно з `VTYPE_EMPTY` — інакше 1С-розробник перестане бачити, що забув
+  параметр;
+- присвоєння рядка при відмові алокації кидає `std::bad_alloc`, а не мовчить;
+- `operator=` для чисел/булевого/рядка на відʼєднаному `result` (`pvar == nullptr`)
+  — тихий no-op, а не виняток (guard під `CallAsProc`);
+- обрізання хвостових NUL у `wstrLen` після присвоєння рядка зберігається.
+
+**Виняток — справжня вада, яку тут ЖЕ виправляємо** (рішення власника, 2026-09-08):
+чинні `operator int64_t()`, `operator int()` і `operator double()` на `VTYPE_R4`
+читають `dblVal`, тобто інтерпретують байти 4-байтового `float` як `double` і
+повертають сміття. `TV_R4` — це `fltVal` (`include/types.h:179`), `TV_R8` — `dblVal`
+(`:180`). Кожен тип мусить читатися зі свого члена об'єднання. Виправлення йде
+ОКРЕМИМ комітом і **обов'язково з тестом**, який на старій реалізації падає
+(інакше фікс нічим не закріплений).
 
 - [ ] **Step 3: Зібрати й прогнати харнес**
 
@@ -669,11 +766,23 @@ git commit -m "refactor(core): власний VariantHelper на явних Get/
 ### Task 5: Конвертації рядків через WinAPI
 
 **Files:**
-- Modify: `src/core/AddInNative.cpp` — `WCHAR2MB`, `MB2WCHAR`, `WCHAR2WC`, `upper`
+- Modify: `src/core/AddInNative.cpp` — `WCHAR2MB`, `MB2WCHAR`, `WCHAR2WC`, `upper`;
+  видалити вільні `WC2MB`/`MB2WC`
+- Modify: `src/core/pch.h` — прибрати оголошення `WC2MB`/`MB2WC`
 
 **Interfaces:**
 - Produces: ті самі статичні методи з тими самими сигнатурами (їх обгортає
   `ServiceTools::SafeMB2WCHAR` / `SafeWCHAR2MB`, які чіпати не можна).
+
+**Рулінг (виконання, 2026-09-08): вільні `WC2MB`/`MB2WC` видаляються, а не
+переписуються.** Вони оголошені в `src/core/pch.h:41-42`, реалізовані в
+`AddInNative.cpp:70-80` через `wstring_convert`. Перевірка по `src/` і `tests/`:
+`MB2WC` не викликається **ніде**; `WC2MB` — рівно один виклик, у мертвій гілці
+`operator=(const std::wstring&)` (`else` під `if (sizeof(wchar_t) == 2)`, а на
+Windows/MSVC ця умова завжди істинна). Переписувати мертвий код немає сенсу:
+видаляємо обидві функції разом з оголошеннями в `pch.h`, а
+`operator=(const std::wstring&)` зводимо до прямої реінтерпретації в `std::u16string`
+(проєкт Windows-only, `sizeof(wchar_t) == 2` гарантовано).
 
 - [ ] **Step 1: Переписати на `MultiByteToWideChar` / `WideCharToMultiByte`**
 
@@ -740,7 +849,9 @@ git commit -m "refactor(core): конвертації рядків через Wi
 **Files:**
 - Modify: `src/core/AddInNative.cpp` — `GetPropVal`, `SetPropVal`, `IsPropReadable`,
   `IsPropWritable`, `GetNParams`, `GetParamDefValue`, `HasRetVal`, `CallAsProc`,
-  `CallAsFunc`, приватний `CallMethod`
+  `CallAsFunc`, приватні `CallMethod` і `Dispatch`
+- Modify: `src/core/AddInNative.h` — оголосити приватний `Dispatch`, метод
+  `DefaultHelper::Apply`
 
 **Interfaces:**
 - Consumes: `props_`, `meths_` (Задача 3), `VariantHelper` (Задача 4),
@@ -881,24 +992,44 @@ bool AddInNative::CallMethod(const MethDesc& m, tVariant* params, long paramCoun
 #undef SAC_CALL
 }
 
-bool AddInNative::CallAsProc(const long n, tVariant* paParams, const long lSizeArray) {
+// Спільне тіло обох точок входу: валідація ParamSpec (ДО try — так у чинному коді)
+// і власне виклик. Обгортка над винятками — тут, щоб CallAsProc і CallAsFunc не
+// розходились у тому, які винятки перетворюються на AddError.
+bool AddInNative::Dispatch(const long n, tVariant* paParams, const long lSizeArray) {
     if (n < 0 || n >= static_cast<long>(meths_.size())) return false;
+    if (!ValidateParams(meths_[n], paParams, lSizeArray)) return false;
     try { return CallMethod(meths_[n], paParams, lSizeArray); }
-    catch (const std::exception& e) { AddError(MB2WCHAR(e.what())); return false; }
+    catch (const std::u16string& msg) { AddError(msg); return false; }
+    catch (const std::exception& e)   { AddError(MB2WCHAR(e.what())); return false; }
     catch (...) { return false; }
+}
+
+bool AddInNative::CallAsProc(const long n, tVariant* paParams, const long lSizeArray) {
+    // Функцію викликано як процедуру: результат нікуди не писати. Відв'язуємо
+    // result, інакше Ret()-хендлер писав би в комірку від попереднього CallAsFunc.
+    result << VariantHelper(nullptr, this);
+    return Dispatch(n, paParams, lSizeArray);
 }
 
 bool AddInNative::CallAsFunc(const long n, tVariant* pvarRetValue,
                              tVariant* paParams, const long lSizeArray) {
-    if (n < 0 || n >= static_cast<long>(meths_.size())) return false;
     // result вказує на комірку повернення на час виклику; після — відв'язати,
     // інакше хендлер, викликаний як процедура, писатиме у звільнену пам'ять.
-    result = VariantHelper(pvarRetValue, this);
-    const bool ok = CallAsProc(n, paParams, lSizeArray);
-    result = VariantHelper(nullptr, this);
+    result << VariantHelper(pvarRetValue, this);
+    const bool ok = Dispatch(n, paParams, lSizeArray);
+    result << VariantHelper(nullptr, this);
     return ok;
 }
 ```
+
+**Рулінг (виконання, 2026-09-08): `CallAsFunc` НЕ будується поверх `CallAsProc`.**
+Чинний `CallAsProc` скидає `result` **на початку**, тож композиція
+«bind → `CallAsProc` → unbind» затерла б binding і `Ret()` мовчки втрачав би
+результат. Спільна частина винесена в приватний `Dispatch`; обидві чинні поведінки
+(скидання в `CallAsProc`, bind/unbind у `CallAsFunc`) збережені точно.
+`ValidateParams` — **наш** механізм, він лишається і викликається з обох точок
+входу до `try`, як зараз; адаптується лише читання імен (`names[0]/[1]` →
+`nameEn`/`nameRu`).
 
 **Критично:** семантику `result` зберегти точно — на ній стоїть `Ret()` і
 конвенція «`Ret()` обгортає лише хендлери, чиє `return`-значення є результатом».
@@ -943,28 +1074,37 @@ git commit -m "refactor(core): власний диспетчер викликі�
 `VTYPE_ERROR`, `VTYPE_R4`, `VTYPE_R8`, `VTYPE_BOOL`, `VTYPE_PSTR`, `VTYPE_PWSTR`,
 `VTYPE_DATE`, `VTYPE_TM`, `VTYPE_BLOB`. Нічого не додавати «про запас».
 
+**Рулінг (виконання, 2026-09-08): рядки назв типів — ЧИННІ, дослівно.**
+Мета роботи — змінити авторство реалізації, а не поведінку (спека §1); текст помилки
+бачить 1С-розробник у своєму коді. Тому `VTYPE_R4/R8` лишаються **`Float` / `Число`**
+(а не `Number`), `VTYPE_BLOB` — **`Binary` / `Двоичные данные`** (а не
+`BinaryData`/`ДвоичныеДанные`). Невідомий тип, як і зараз, віддає
+`Undefined`/`Неопределено`. Змінюється **структура** (таблиця замість `switch`),
+не рядки.
+
 ```cpp
 // Людські назви типів для повідомлень про помилку. Пара {EN, RU} на тип.
-// Цілочисельні різновиди 1С показує користувачеві однаково — «Целое число»;
-// це не спрощення, а те, як платформа їх подає у своїх повідомленнях.
-static const std::pair<const char16_t*, const char16_t*>* TypeNames(TYPEVAR vt) {
+// Рядки — ті самі, що віддає чинне ядро: їх бачить 1С-розробник у тексті помилки.
+// Цілочисельні різновиди 1С показує користувачеві однаково — «Целое число».
+static std::u16string TypeName(TYPEVAR vt, bool alias) {
     static const std::map<TYPEVAR, std::pair<const char16_t*, const char16_t*>> table = {
-        { VTYPE_EMPTY, { u"Undefined",    u"Неопределено"   } },
-        { VTYPE_I2,    { u"Integer",      u"Целое число"    } },
-        { VTYPE_I4,    { u"Integer",      u"Целое число"    } },
-        { VTYPE_UI1,   { u"Integer",      u"Целое число"    } },
-        { VTYPE_ERROR, { u"Integer",      u"Целое число"    } },
-        { VTYPE_R4,    { u"Number",       u"Число"          } },
-        { VTYPE_R8,    { u"Number",       u"Число"          } },
-        { VTYPE_BOOL,  { u"Boolean",      u"Булево"         } },
-        { VTYPE_PSTR,  { u"String",       u"Строка"         } },
-        { VTYPE_PWSTR, { u"String",       u"Строка"         } },
-        { VTYPE_DATE,  { u"Date",         u"Дата"           } },
-        { VTYPE_TM,    { u"Date",         u"Дата"           } },
-        { VTYPE_BLOB,  { u"BinaryData",   u"ДвоичныеДанные" } },
+        { VTYPE_EMPTY, { u"Undefined", u"Неопределено"     } },
+        { VTYPE_I2,    { u"Integer",   u"Целое число"      } },
+        { VTYPE_I4,    { u"Integer",   u"Целое число"      } },
+        { VTYPE_UI1,   { u"Integer",   u"Целое число"      } },
+        { VTYPE_ERROR, { u"Integer",   u"Целое число"      } },
+        { VTYPE_R4,    { u"Float",     u"Число"            } },
+        { VTYPE_R8,    { u"Float",     u"Число"            } },
+        { VTYPE_BOOL,  { u"Boolean",   u"Булево"           } },
+        { VTYPE_PSTR,  { u"String",    u"Строка"           } },
+        { VTYPE_PWSTR, { u"String",    u"Строка"           } },
+        { VTYPE_DATE,  { u"Date",      u"Дата"             } },
+        { VTYPE_TM,    { u"Date",      u"Дата"             } },
+        { VTYPE_BLOB,  { u"Binary",    u"Двоичные данные"  } },
     };
     const auto it = table.find(vt);
-    return (it == table.end()) ? nullptr : &it->second;
+    if (it == table.end()) return alias ? u"Неопределено" : u"Undefined";
+    return alias ? it->second.second : it->second.first;
 }
 ```
 
@@ -978,12 +1118,20 @@ static const std::pair<const char16_t*, const char16_t*>* TypeNames(TYPEVAR vt) 
 
 Експорти:
 
+**Рулінг (виконання, 2026-09-08): `GetClassObject` віддає 1/0, не адресу.**
+`reinterpret_cast<long>(вказівник)` усікає 64-бітну адресу — це вже виправлено на
+Етапі 0 і покрито `TestBootFixes` (3 CHECK: `rc == 1`, `rc2 == 0` на ненульовому
+`pInterface`, `0` на невідомому імені). Null-guard на `pInterface` із плану —
+слушний, лишаємо.
+
 ```cpp
 long GetClassObject(const WCHAR_T* wsName, IComponentBase** pInterface) {
     if (!pInterface || *pInterface) return 0;
     *pInterface = AddInNative::CreateObject(
         std::u16string(reinterpret_cast<const char16_t*>(wsName)));
-    return reinterpret_cast<long>(*pInterface);
+    // Контракт 1С: ненульове значення = успіх. Саме 1, а не адреса — приведення
+    // 64-бітного вказівника до long усікає його.
+    return *pInterface ? 1 : 0;
 }
 
 long DestroyObject(IComponentBase** pInterface) {
@@ -1025,7 +1173,84 @@ git commit -m "refactor(core): власний службовий шар — ти
 
 ---
 
+### Task 10: Синхронізація документації ядра
+
+Виконувати **після Задачі 7** (коли ядро набуло остаточного вигляду) і **до
+Задачі 8** — гейт має ганяти вже узгоджений стан. Номер 10, а не 7-біс, суто
+технічний: скрипт витягу брифа шукає задачу за числом, і «7-біс» злився б із
+Задачею 7.
+
+Прогалина знайдена під час виконання (2026-09-08): жодна задача плану не оновлює
+`docs/architecture/core.md`, хоча інструкції проєкту (`CLAUDE.md`, `AGENTS.md`)
+роблять саме цей документ **джерелом правди** про підсистему ядра, а переписування
+змінило майже все, що він описує. Документ, який упевнено описує неіснуючий код,
+гірший за відсутній: наступний розробник діятиме за ним і не матиме підстав
+сумніватися.
+
+**Files:**
+- Modify: `docs/architecture/core.md`
+
+**Interfaces:**
+- Consumes: остаточний стан `src/core/AddInNative.{h,cpp}` після Задач 3-7.
+- Produces: документ, у якому кожне твердження й кожне посилання `file:line`
+  відповідають коду.
+
+- [ ] **Step 1: Звірити документ із кодом розділ за розділом**
+
+Розділи, про які **вже відомо**, що вони описують знесений код (перевірити всі,
+не лише ці):
+
+| Розділ | Що там написано зараз | Що стало |
+|---|---|---|
+| §2.1 Зберігання | `push_back({ {nameEn, nameRu}, ... })` у `properties`/`methods` | `props_`/`meths_` із плоских `PropDesc`/`MethDesc`; спільна точка `RegisterMethod` |
+| §2.2 Два імені й пошук | `std::vector names`, двоетапний пошук: точний збіг, потім `upper()` зі `std::toupper` і локаллю `ru_RU.UTF-8` | `nameEn`/`nameRu` + `unordered_map` індекс нормалізованих ключів, O(1), таблиця `NormalizeName` замість локалі; дублікат імені → перша реєстрація |
+| §2.4 Дефолти | розбір `std::variant` усередині `GetParamDefValue` | `DefaultHelper::Apply` (якщо Задача 6 його ввела — звірити з кодом) |
+| §3.1-3.3 VariantHelper | оператори як самостійні реалізації | явні `Get<T>`/`Set<T>`, оператори — обгортки; тіла в `.cpp` через MSVC C2908 |
+| §3.5 Помилки типу | `error(TYPEVAR)` | `TypeError(TYPEVAR)`; текст незмінний |
+| §3.6 `result` | модель `result << VA(...)` у `CallAsProc`/`CallAsFunc` | приватний `Dispatch`; `CallAsFunc` НЕ будується поверх `CallAsProc` |
+| §4.1 Пам'ять | `W()` як єдиний алокатор | `AllocString` — примітив, `W()` — обгортка, що кидає `bad_alloc` |
+| §5.2 Конвертації `Safe*` | `std::wstring_convert` | `MultiByteToWideChar`/`WideCharToMultiByte`, і **зміна поведінки**: некоректний ввід дає U+FFFD замість винятка (спека §4-біс) |
+| §6.7 Захист індексів | межі аліаса | 0 → EN, 1 → RU, решта → `nullptr` |
+
+- [ ] **Step 2: Виправити посилання `file:line`**
+
+Документ густо посилається на конкретні рядки, і після переписування зсунулись
+майже всі. У розділах, яких торкаєшся, кожне посилання **перевірити у файлі**, а не
+перерахувати в голові. Посилання, яке вказує не туди, — та сама брехня, лише тихіша.
+
+- [ ] **Step 3: Дописати те, чого в документі не було**
+
+Свідомі рішення, ухвалені під час переписування й ніде в архітектурі не описані:
+
+- дві **свідомі зміни поведінки** зі спеки §4-біс (`VTYPE_R4` → `fltVal`;
+  U+FFFD замість винятка) — з підставою, а не самим фактом;
+- чому `operator=(const VariantHelper&)` лишається `= delete` і рибіндинг іде через
+  `operator<<`;
+- чому `NormalizeName` табличний, а не через локаль, і що ґ/Ґ свідомо не покриті;
+- чому `GetParamDefValue` віддає `true` на індекс поза межами — єдиний інвертований
+  guard у файлі.
+
+- [ ] **Step 4: Перевірити, що інших документів це не зачепило**
+
+Run: `grep -rn "properties\|methods\|VarinantHelper\|wstring_convert\|RuLocale" docs/`
+Expected: збігів, що описують ядро, немає. `docs/architecture/README.md` і
+`AGENTS.md` тримати драйвер-НЕЗАЛЕЖНИМИ — вміст ядра дублювати туди не можна.
+
+- [ ] **Step 5: Коміт**
+
+```bash
+git add docs/architecture/core.md
+git commit -m "docs(architecture): ядро — документ приведено у відповідність до переписаного коду"
+```
+
+---
+
 ### Task 8: Верифікація чистоти й повний гейт
+
+> **Виконано 2026-09-08.** Числа й доказова база — у спеці, §5-біс. Інструмент
+> `tools/check_core_heritage.py` після досягнення критерію **знято з дерева**:
+> нижче він згадується як історія того, ЯК вимірювалось, а не як чинна команда.
+> Відтворити вимір можна з історії (скрипт живий у комітах `e9d2124`..`7562a02`).
 
 **Files:**
 - Modify: `tools/check_core_heritage.py` — за потреби додати обґрунтовані винятки
@@ -1173,13 +1398,15 @@ git commit -m "docs: MIT-ліцензія, нотиси третіх сторі�
 Task 1 (інструмент) ─┐
 Task 2 (тест-сітка) ─┴─> Task 3 (реєстр) ─> Task 4 (VariantHelper) ─> Task 5 (рядки)
                                                                           │
-                          Task 8 (верифікація) <─ Task 7 (службове) <─ Task 6 (виклики)
-                                   │
-                                   └─> Task 9 (ліцензування)
+      Task 10 (доки) <─ Task 7 (службове) <─ Task 6 (виклики) <───────────┘
+         │
+         └─> Task 8 (верифікація) ─> Task 9 (ліцензування)
 ```
 
 Задачі 1 і 2 незалежні між собою — можна в будь-якому порядку, але **обидві до**
 Задачі 3. Задачі 3–7 строго послідовні: кожна спирається на структури попередньої.
+Задача 10 (документація) стоїть між 7 і 8: описувати ядро має сенс, коли воно
+набуло остаточного вигляду, а гейт Задачі 8 має ганяти вже узгоджений стан.
 
 ## Що робити, якщо щось пішло не так
 

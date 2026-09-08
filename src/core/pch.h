@@ -36,7 +36,3 @@
 #include <condition_variable>
 #include <ctime>
 #include <cstdint>
-
-// Часто використовувані утиліти
-std::wstring MB2WC(const std::string& source);
-std::string WC2MB(const std::wstring& source);

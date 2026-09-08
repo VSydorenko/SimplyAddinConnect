@@ -521,6 +521,230 @@ static void TestFallbackLogging() {
     CHECK(true, "fallback logging does not crash");
 }
 
+// ==== Характеристичні тести межових випадків (перед переписуванням ядра) ====
+
+// Межові дані конвертацій: саме тут ламаються самописні реалізації.
+// Порожній рядок, кирилиця, символи поза BMP (сурогатна пара), вбудований \0.
+//
+// WCHAR2MB приймає basic_string_view<WCHAR_T> (WCHAR_T == wchar_t на Windows) —
+// view будуємо явно з довжиною, інакше u16-літерал не конвертується, а вбудований
+// нуль обрізав би рядок і перевірка стала б фіктивною.
+static std::basic_string_view<WCHAR_T> WView(const std::u16string& s) {
+    return std::basic_string_view<WCHAR_T>(
+        reinterpret_cast<const WCHAR_T*>(s.data()), s.size());
+}
+
+static void TestStringConversionEdges() {
+    // Порожній рядок в обидва боки
+    CHECK(AddInNative::WCHAR2MB(WView(u"")).empty(), "WCHAR2MB: порожній -> порожній");
+    CHECK(AddInNative::MB2WCHAR("").empty(),         "MB2WCHAR: порожній -> порожній");
+
+    // Кирилиця: round-trip мусить бути точним
+    const std::u16string ua = u"Підпис ЕЦП";
+    const std::string    u8 = AddInNative::WCHAR2MB(WView(ua));
+    CHECK(AddInNative::MB2WCHAR(u8) == ua, "Round-trip кирилиці точний");
+
+    // Поза BMP: U+1F600 — сурогатна пара в UTF-16, 4 байти в UTF-8
+    const std::u16string emoji = u"\xD83D\xDE00";
+    const std::string    e8    = AddInNative::WCHAR2MB(WView(emoji));
+    CHECK(e8.size() == 4, "Символ поза BMP -> 4 байти UTF-8");
+    CHECK(AddInNative::MB2WCHAR(e8) == emoji, "Round-trip поза BMP точний");
+
+    // Вбудований \0 не має обрізати рядок
+    std::u16string withNul = u"a";
+    withNul.push_back(u'\0');
+    withNul.push_back(u'b');
+    CHECK(AddInNative::WCHAR2MB(WView(withNul)).size() == 3, "Вбудований NUL не обрізає");
+}
+
+// Пошук методу за іменем МУСИТЬ бути регістронезалежним в обох мовах —
+// 1С кличе так, як написав прикладний розробник.
+static void TestCaseInsensitiveLookup() {
+    class Probe : public AddInNative {
+    public:
+        Probe() { AddFunction(u"DoWork", u"Работа", Ret([]() { return int64_t(1); })); }
+    };
+    Probe p;
+    CHECK(p.FindMethod((const WCHAR_T*)u"DoWork") >= 0, "Точний збіг EN");
+    CHECK(p.FindMethod((const WCHAR_T*)u"dowork") >= 0, "Нижній регістр EN");
+    CHECK(p.FindMethod((const WCHAR_T*)u"DOWORK") >= 0, "Верхній регістр EN");
+    CHECK(p.FindMethod((const WCHAR_T*)u"Работа") >= 0, "Точний збіг RU");
+    CHECK(p.FindMethod((const WCHAR_T*)u"работа") >= 0, "Нижній регістр RU");
+    CHECK(p.FindMethod((const WCHAR_T*)u"РАБОТА") >= 0, "Верхній регістр RU");
+    CHECK(p.FindMethod((const WCHAR_T*)u"NoSuchMethod") == -1, "Неіснуючий -> -1");
+}
+
+// GetParamDefValue живить механізм необов'язкових параметрів 1С.
+// Спека (docs/superpowers/specs/2026-09-07-core-rewrite-design.md §7) вимагає покриття
+// «для всіх типів дефолту (рядок, ціле, дійсне, булеве, дата, порожній)». Дата серед
+// альтернатив DefaultHelper::variant відсутня (EmptyValue/u16string/int64_t/double/bool —
+// рівно 5, контракт заморожений), тож дату НЕ покриваємо; решту — так, і саме через
+// TV_VT (тип), а не лише через значення, бо збіг вмісту union'а міг би пройти випадково.
+static void TestParamDefaultsAllTypes() {
+    class Probe : public AddInNative {
+    public:
+        Probe() {
+            // Параметр 4 навмисно БЕЗ запису в MethDefaults — «порожній» дефолт зі спеки.
+            AddFunction(u"F", u"Ф",
+                        Ret([](VH a, VH b, VH c, VH d, VH e) {
+                            (void)a; (void)b; (void)c; (void)d; (void)e;
+                            return int64_t(0);
+                        }),
+                        { {0, DefaultHelper(u"text")}, {1, DefaultHelper(int64_t(42))},
+                          {2, DefaultHelper(3.5)},     {3, DefaultHelper(true)} });
+        }
+    };
+    Probe p;
+    // Рядковий дефолт пише через VariantHelper::operator=(u16string), яка алокує
+    // через addin->AllocMemory — без менеджера пам'яті кине bad_alloc, GetParamDefValue
+    // його проковтне й поверне false замість реальної перевірки.
+    MockMemory memory;
+    p.setMemManager(&memory);
+    const long m = p.FindMethod((const WCHAR_T*)u"F");
+    CHECK(m >= 0, "Метод зареєстровано");
+    CHECK(p.GetNParams(m) == 5, "Арність 5");
+
+    // Рядок (index 0)
+    tVariant v; memset(&v, 0, sizeof(v));
+    CHECK(p.GetParamDefValue(m, 0, &v), "Дефолт string читається");
+    CHECK(TV_VT(&v) == VTYPE_PWSTR, "Дефолт string має тип VTYPE_PWSTR");
+    CHECK(std::u16string(reinterpret_cast<char16_t*>(TV_WSTR(&v)), v.wstrLen) == u"text",
+          "Дефолт string == \"text\"");
+    memory.FreeMemory(reinterpret_cast<void**>(&v.pwstrVal));
+
+    // Ціле (index 1)
+    memset(&v, 0, sizeof(v));
+    CHECK(p.GetParamDefValue(m, 1, &v), "Дефолт int читається");
+    CHECK(TV_VT(&v) == VTYPE_I4, "Дефолт int має тип VTYPE_I4");
+    CHECK(TV_INT(&v) == 42, "Дефолт int == 42");
+
+    // Дійсне (index 2)
+    memset(&v, 0, sizeof(v));
+    CHECK(p.GetParamDefValue(m, 2, &v), "Дефолт double читається");
+    CHECK(TV_VT(&v) == VTYPE_R8, "Дефолт double має тип VTYPE_R8");
+    CHECK(TV_R8(&v) == 3.5, "Дефолт double == 3.5");
+
+    // Булеве (index 3)
+    memset(&v, 0, sizeof(v));
+    CHECK(p.GetParamDefValue(m, 3, &v), "Дефолт bool читається");
+    CHECK(TV_VT(&v) == VTYPE_BOOL, "Дефолт bool має тип VTYPE_BOOL");
+    CHECK(TV_BOOL(&v) == true, "Дефолт bool == true");
+
+    // Без дефолту (index 4): true + VTYPE_EMPTY — «порожній» тип зі спеки §7
+    memset(&v, 0, sizeof(v));
+    CHECK(p.GetParamDefValue(m, 4, &v), "Параметр без дефолту -> true");
+    CHECK(TV_VT(&v) == VTYPE_EMPTY, "Параметр без дефолту лишає VTYPE_EMPTY");
+}
+
+// Властивість лише для читання не має приймати запис, і навпаки.
+static void TestPropertyAccessFlags() {
+    class Probe : public AddInNative {
+    public:
+        std::u16string stored = u"init";
+        Probe() {
+            AddProperty(u"ReadOnly", u"ТолькоЧтение",
+                        [&](VH v) { v = this->stored; });                  // без сетера
+            AddProperty(u"ReadWrite", u"ЧтениеЗапись",
+                        [&](VH v) { v = this->stored; },
+                        [&](VH v) { this->stored = (std::u16string)v; });
+        }
+    };
+    Probe p;
+    const long ro = p.FindProp((const WCHAR_T*)u"ReadOnly");
+    const long rw = p.FindProp((const WCHAR_T*)u"ReadWrite");
+    CHECK(ro >= 0 && rw >= 0, "Обидві властивості знайдено");
+    CHECK(p.IsPropReadable(ro),  "ReadOnly читається");
+    CHECK(!p.IsPropWritable(ro), "ReadOnly НЕ пишеться");
+    CHECK(p.IsPropReadable(rw),  "ReadWrite читається");
+    CHECK(p.IsPropWritable(rw),  "ReadWrite пишеться");
+    CHECK(p.FindProp((const WCHAR_T*)u"NoSuchProp") == -1, "Неіснуюча -> -1");
+}
+
+// GetPropName/GetMethodName віддають пам'ять, виділену менеджером 1С.
+// Перевіряємо і вміст, і те, що обидві мови доступні за індексом.
+//
+// УВАГА: без setMemManager обидва методи віддадуть nullptr (усередині W()/AllocString
+// алокація через m_iMemory провалюється) — менеджер пам'яті тут обов'язковий.
+static void TestNamesByIndex() {
+    class Probe : public AddInNative {
+    public:
+        Probe() { AddFunction(u"Alpha", u"Альфа", Ret([]() { return int64_t(1); })); }
+    };
+    Probe p;
+    MockMemory memory;
+    p.setMemManager(&memory);
+    const long m = p.FindMethod((const WCHAR_T*)u"Alpha");
+    const WCHAR_T* en = p.GetMethodName(m, 0);
+    const WCHAR_T* ru = p.GetMethodName(m, 1);
+    CHECK(en != nullptr && ru != nullptr, "Обидва імені віддані");
+    CHECK(std::u16string((const char16_t*)en) == u"Alpha", "EN-ім'я збігається");
+    CHECK(std::u16string((const char16_t*)ru) == u"Альфа", "RU-ім'я збігається");
+}
+
+// ---- VTYPE_R4 читається зі свого члена union'а (fltVal), а не з dblVal ----
+// include/types.h:179-180: TV_R4(X) -> fltVal (float, 4 байти), TV_R8(X) -> dblVal
+// (double, 8 байтів) — РІЗНІ поля. Стара реалізація Get<int64_t>()/Get<double>()
+// на VTYPE_R4 читала dblVal: перші 4 байти union'а — бітовий образ float-значення,
+// решта 4 — нулі (memset), і той самий шматок пам'яті інтерпретувався як 8-байтовий
+// double. Для 2.5f/100.5f/1.5f це дає денормалізоване число, близьке до нуля, —
+// ГРУБО відмінне від правильного значення (а не похибка округлення), тож регрес
+// на старій реалізації тут гарантовано ловиться.
+static double g_r4AsDouble = 0.0;
+static int64_t g_r4AsInt64 = 0;
+static int g_r4AsInt = 0;
+static double g_r8AsDouble = 0.0;
+static void TestFloatR4Conversion() {
+    struct FloatProbe : public AddInNative {
+        FloatProbe() {
+            AddProcedure(u"ReadR4Double", u"ЧитатиR4Дійсне",
+                MethFunction(std::function<void(VH)>([](VH v) { g_r4AsDouble = (double)v; })));
+            AddProcedure(u"ReadR4Int64", u"ЧитатиR4Int64",
+                MethFunction(std::function<void(VH)>([](VH v) { g_r4AsInt64 = (int64_t)v; })));
+            AddProcedure(u"ReadR4Int", u"ЧитатиR4Int",
+                MethFunction(std::function<void(VH)>([](VH v) { g_r4AsInt = (int)v; })));
+            AddProcedure(u"ReadR8Double", u"ЧитатиR8Дійсне",
+                MethFunction(std::function<void(VH)>([](VH v) { g_r8AsDouble = (double)v; })));
+        }
+    };
+    AddInNative::AddComponent(u"FloatProbe", []() -> AddInNative* { return new FloatProbe; });
+    AddInNative* comp = AddInNative::CreateObject(u"FloatProbe");
+    MockConnect connect; MockMemory memory;
+    comp->Init(&connect); comp->setMemManager(&memory);
+
+    // VTYPE_R4 = 2.5f -> double
+    tVariant v{}; std::memset(&v, 0, sizeof(v));
+    TV_VT(&v) = VTYPE_R4; TV_R4(&v) = 2.5f;
+    long mD = comp->FindMethod((WCHAR_T*)u"ReadR4Double");
+    CHECK(mD >= 0, "FindMethod(ReadR4Double)");
+    CHECK(comp->CallAsProc(mD, &v, 1), "CallAsProc(ReadR4Double)");
+    CHECK(g_r4AsDouble > 2.4999 && g_r4AsDouble < 2.5001,
+          "VTYPE_R4=2.5f читається як double 2.5 (з fltVal, не з dblVal)");
+
+    // VTYPE_R4 = 100.5f -> int64_t (дробова частина відкидається, ціла має бути 100)
+    std::memset(&v, 0, sizeof(v));
+    TV_VT(&v) = VTYPE_R4; TV_R4(&v) = 100.5f;
+    long mI64 = comp->FindMethod((WCHAR_T*)u"ReadR4Int64");
+    CHECK(comp->CallAsProc(mI64, &v, 1), "CallAsProc(ReadR4Int64)");
+    CHECK(g_r4AsInt64 == 100, "VTYPE_R4=100.5f читається як int64_t 100");
+
+    // VTYPE_R4 = 1.5f -> int
+    std::memset(&v, 0, sizeof(v));
+    TV_VT(&v) = VTYPE_R4; TV_R4(&v) = 1.5f;
+    long mI = comp->FindMethod((WCHAR_T*)u"ReadR4Int");
+    CHECK(comp->CallAsProc(mI, &v, 1), "CallAsProc(ReadR4Int)");
+    CHECK(g_r4AsInt == 1, "VTYPE_R4=1.5f читається як int 1");
+
+    // Контроль регресу: VTYPE_R8 і далі читається правильно (фікс не зачепив R8-шлях)
+    std::memset(&v, 0, sizeof(v));
+    TV_VT(&v) = VTYPE_R8; TV_R8(&v) = 100.5;
+    long mD8 = comp->FindMethod((WCHAR_T*)u"ReadR8Double");
+    CHECK(comp->CallAsProc(mD8, &v, 1), "CallAsProc(ReadR8Double)");
+    CHECK(g_r8AsDouble > 100.4999 && g_r8AsDouble < 100.5001,
+          "VTYPE_R8=100.5 і далі читається як double 100.5 (R8-шлях не зачеплено)");
+
+    comp->Done(); delete comp;
+}
+
 int main() {
     // Небуферизований stdout: щоб при аварійному завершенні (AV) не втратити
     // останні рядки й точно локалізувати місце падіння.
@@ -543,6 +767,12 @@ int main() {
     TestEventBridge();
     TestEventBridgeConcurrency();
     TestFallbackLogging();
+    TestStringConversionEdges();
+    TestCaseInsensitiveLookup();
+    TestParamDefaultsAllTypes();
+    TestPropertyAccessFlags();
+    TestNamesByIndex();
+    TestFloatR4Conversion();
     std::printf("=== %s (failed: %d) ===\n", g_failed ? "FAIL" : "OK", g_failed);
     return g_failed ? 1 : 0;
 }

@@ -170,7 +170,8 @@ CAdES — бери `signatureInfos[0].status`.
 Критерій успіху: `errorCode==0`, непорожній `signatureInfos`, `statusSignature`
 починається з `"VALID"` і присутній `signerCertId`. Каталог задається аргументом CLI
 `prroDir` або змінною `PRRO_DOCS_DIR`; за замовчуванням `run_tests.ps1` бере
-`$env:PRRO_DOCS_DIR` або `R:/github/prro_docs`, якщо він існує. Немає каталогу — SKIP,
+`$env:PRRO_DOCS_DIR` або каталог `prro_docs` поруч із репозиторієм, якщо він існує
+(еталони — github.com/VSydorenko/prro_docs). Немає каталогу — SKIP,
 не провал. Сенс L3 — довести, що наш стек приймає підписи, згенеровані незалежними
 (еталонними) інструментами, а не лише власні.
 

@@ -12,11 +12,7 @@
 #include <signal.h>
 #endif
 
-#include <locale>
 #include <wchar.h>
-#include <iterator>
-#include <codecvt>
-#include <cwctype>
 #include <sstream>
 
 #include "AddInNative.h"
@@ -45,38 +41,30 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD  ul_reason_for_call, LPVOID lpReserv
 
 const WCHAR_T* GetClassNames()
 {
-	static const std::u16string names(AddInNative::getComponentNames());
-	return (const WCHAR_T*)names.c_str();
+	// Статичний буфер: платформа читає рядок одразу після повернення з виклику,
+	// тож він мусить пережити цей стековий фрейм.
+	static const std::u16string names = AddInNative::getComponentNames();
+	return reinterpret_cast<const WCHAR_T*>(names.c_str());
 }
 
 long GetClassObject(const WCHAR_T* wsName, IComponentBase** pInterface)
 {
-	if (*pInterface) return 0;
-	auto cls_name = std::u16string(reinterpret_cast<const char16_t*>(wsName));
-	*pInterface = AddInNative::CreateObject(cls_name);
-	// Контракт 1С: ненульове значення = успіх. Повертаємо 1 замість адреси,
-	// бо приведення 64-бітного вказівника до long усікає його (UB на x64).
+	// pInterface — обов'язковий OUT-параметр контракту; ненульовий *pInterface
+	// означає, що виклик уже когось туди поклав, і ми його не перетираємо.
+	if (!pInterface || *pInterface) return 0;
+	const auto className = std::u16string(reinterpret_cast<const char16_t*>(wsName));
+	*pInterface = AddInNative::CreateObject(className);
+	// Контракт 1С: ненульове значення = успіх. Саме 1, а не адреса — приведення
+	// 64-бітного вказівника до long усікає його (UB на x64).
 	return *pInterface ? 1 : 0;
 }
 
 long DestroyObject(IComponentBase** pInterface)
 {
-	if (!*pInterface) return -1;
-	delete* pInterface;
+	if (!pInterface || !*pInterface) return -1;
+	delete *pInterface;
 	*pInterface = nullptr;
 	return 0;
-}
-
-std::string WC2MB(const std::wstring& wstr)
-{
-	std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
-	return converter.to_bytes(wstr);
-}
-
-std::wstring MB2WC(const std::string& str)
-{
-	std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
-	return converter.from_bytes(str);
 }
 
 std::map<std::u16string, CompFunction>& AddInNative::components() {
@@ -108,25 +96,32 @@ std::string AddInNative::version()
 
 bool AddInNative::Init(void* pConnection)
 {
+	// pConnection — міст назад у 1С (IAddInDefBase); без нього AddError/
+	// PostExternalEvent не мають кому доставляти повідомлення.
 	std::lock_guard<std::mutex> lock(connectMutex_);
 	m_iConnect = static_cast<IAddInDefBase*>(pConnection);
-	if (m_iConnect) m_iConnect->SetEventBufferDepth(100);
-	return m_iConnect != nullptr;
+	if (!m_iConnect) return false;
+	m_iConnect->SetEventBufferDepth(100);
+	return true;
 }
 
 bool AddInNative::setMemManager(void* memory)
 {
+	// Повертаємо саме результат присвоєння: успіх ініціалізації = менеджер не nullptr.
 	return m_iMemory = static_cast<IMemoryManager*>(memory);
 }
 
 long AddInNative::GetInfo()
 {
+	// Версія компонентної технології, якої вимагає платформа 1С від зовнішньої компоненти.
 	return 2000;
 }
 
 void AddInNative::Done()
 {
-	// Зв'язок з 1С далі недійсний: відсікаємо фонові PostExternalEvent/AddError
+	// З цього моменту зв'язок з 1С недійсний: під тим самим м'ютексом, що й
+	// AddError/PostExternalEvent, обнуляємо m_iConnect, щоб фонові потоки
+	// транспортів припинили постити події в уже завершений хост.
 	std::lock_guard<std::mutex> lock(connectMutex_);
 	m_iConnect = nullptr;
 }
@@ -147,279 +142,219 @@ bool AddInNative::PostExternalEvent(const std::u16string& message, const std::u1
 
 bool AddInNative::RegisterExtensionAs(WCHAR_T** wsLanguageExt)
 {
-	*wsLanguageExt = W(this->name.c_str());
+	// Платформа знає розширення мови під іменем компоненти; W() при відмові
+	// виділення пам'яті кидає bad_alloc, тож порожній результат сюди не долітає.
+	*wsLanguageExt = W(name.c_str());
 	return *wsLanguageExt != nullptr;
+}
+
+// Нормалізація для індексу імен. Латиниця — через ASCII-зсув; кирилиця —
+// через таблицю діапазонів UTF-16, бо std::towupper залежить від локалі,
+// а компонента мусить поводитись однаково незалежно від налаштувань машини.
+std::u16string AddInNative::NormalizeName(std::u16string_view name) {
+	std::u16string out;
+	out.reserve(name.size());
+	for (char16_t c : name) {
+		if (c >= u'a' && c <= u'z')                 c = char16_t(c - u'a' + u'A');
+		else if (c >= 0x0430 && c <= 0x044F)        c = char16_t(c - 0x20);   // а-я -> А-Я
+		else if (c == 0x0451)                       c = 0x0401;               // ё -> Ё
+		// ґ/Ґ (U+0491/U+0490) лежать ПОЗА цим діапазоном і свідомо НЕ згортаються:
+		// жодне зареєстроване ім'я в src/components та src/drivers їх не містить.
+		else if (c >= 0x0450 && c <= 0x045F)        c = char16_t(c - 0x50);   // ѐ-џ -> Ѐ-Џ (і, ї, є)
+		out.push_back(c);
+	}
+	return out;
 }
 
 long AddInNative::GetNProps()
 {
-	return properties.size();
+	return static_cast<long>(props_.size());
 }
 
 long AddInNative::FindProp(const WCHAR_T* wsPropName)
 {
-	std::u16string name((char16_t*)wsPropName);
-	for (auto it = properties.begin(); it != properties.end(); ++it) {
-		for (auto n = it->names.begin(); n != it->names.end(); ++n) {
-			if (n->compare(name) == 0) return long(it - properties.begin());
-		}
-	}
-	name = upper(name);
-	for (auto it = properties.begin(); it != properties.end(); ++it) {
-		for (auto n = it->names.begin(); n != it->names.end(); ++n) {
-			if (upper(*n).compare(name) == 0) return long(it - properties.begin());
-		}
-	}
-	return -1;
+	if (!wsPropName) return -1;
+	const auto it = propIndex_.find(NormalizeName(
+		std::u16string(reinterpret_cast<const char16_t*>(wsPropName))));
+	return (it == propIndex_.end()) ? -1 : it->second;
 }
 
+// Пам'ять під рядок виділяє МЕНЕДЖЕР 1С — інакше платформа не зможе її звільнити.
+// Аліас: 0 -> англійське ім'я, 1 -> національне (за порожнього — англійське),
+// будь-що інше -> nullptr. Платформа за межі 0..1 не ходить; старе ядро на
+// аліасі >= 2 робило std::next по 2-елементному вектору, тобто виходило за межі.
 const WCHAR_T* AddInNative::GetPropName(long lPropNum, long lPropAlias)
 {
-	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= properties.size()) return nullptr;
-	try {
-		auto it = std::next(properties.begin(), lPropNum);
-		if (it == properties.end()) return nullptr;
-		auto nm = std::next(it->names.begin(), lPropAlias);
-		if (nm == it->names.end()) return nullptr;
-		return W(nm->c_str());
-	}
-	catch (...) {
-		return nullptr;
-	}
-}
-
-bool AddInNative::GetPropVal(const long lPropNum, tVariant* pvarPropVal)
-{
-	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= properties.size()) return false;
-	auto it = std::next(properties.begin(), lPropNum);
-	if (it == properties.end()) return false;
-	if (!it->getter) return false;
-	try {
-		it->getter(VA(pvarPropVal, &(*it)));
-		return true;
-	}
-	catch (const std::u16string& msg) {
-		AddError(msg);
-		return false;
-	}
-	catch (...) {
-		return false;
-	}
-}
-
-bool AddInNative::SetPropVal(const long lPropNum, tVariant* pvarPropVal)
-{
-	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= properties.size()) return false;
-	auto it = std::next(properties.begin(), lPropNum);
-	if (it == properties.end()) return false;
-	if (!it->setter) return false;
-	try {
-		it->setter(VA(pvarPropVal, &(*it)));
-		return true;
-	}
-	catch (const std::u16string& msg) {
-		AddError(msg);
-		return false;
-	}
-	catch (...) {
-		return false;
-	}
+	if (lPropNum < 0 || lPropNum >= static_cast<long>(props_.size())) return nullptr;
+	const PropDesc& p = props_[lPropNum];
+	if (lPropAlias == 0) return AllocString(p.nameEn);
+	if (lPropAlias == 1) return AllocString(p.nameRu.empty() ? p.nameEn : p.nameRu);
+	return nullptr;
 }
 
 bool AddInNative::IsPropReadable(const long lPropNum)
 {
-	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= properties.size()) return false;
-	auto it = std::next(properties.begin(), lPropNum);
-	if (it == properties.end()) return false;
-	return (bool)it->getter;
+	return lPropNum >= 0 && static_cast<size_t>(lPropNum) < props_.size()
+	    && bool(props_[lPropNum].getter);
 }
 
 bool AddInNative::IsPropWritable(const long lPropNum)
 {
-	if (lPropNum < 0 || static_cast<size_t>(lPropNum) >= properties.size()) return false;
-	auto it = std::next(properties.begin(), lPropNum);
-	if (it == properties.end()) return false;
-	return (bool)it->setter;
+	return lPropNum >= 0 && static_cast<size_t>(lPropNum) < props_.size()
+	    && bool(props_[lPropNum].setter);
+}
+
+bool AddInNative::GetPropVal(const long lPropNum, tVariant* pvarPropVal)
+{
+	// null-guard на комірку — свідоме посилення, а не збереження поведінки: старий
+	// код за pvarPropVal == nullptr виконував геттер і повертав true (Set<T> при
+	// порожньому pvar тихо виходить). 1С порожню комірку не передає.
+	if (!IsPropReadable(lPropNum) || !pvarPropVal) return false;
+	PropDesc& p = props_[lPropNum];
+	return Guarded([&] { p.getter(VA(pvarPropVal, &p)); return true; });
+}
+
+bool AddInNative::SetPropVal(const long lPropNum, tVariant* pvarPropVal)
+{
+	if (!IsPropWritable(lPropNum) || !pvarPropVal) return false;
+	PropDesc& p = props_[lPropNum];
+	return Guarded([&] { p.setter(VA(pvarPropVal, &p)); return true; });
 }
 
 long AddInNative::GetNMethods()
 {
-	return methods.size();
+	return static_cast<long>(meths_.size());
 }
 
 long AddInNative::FindMethod(const WCHAR_T* wsMethodName)
 {
-	std::u16string name((char16_t*)wsMethodName);
-	for (auto it = methods.begin(); it != methods.end(); ++it) {
-		for (auto n = it->names.begin(); n != it->names.end(); ++n) {
-			if (n->compare(name) == 0) return long(it - methods.begin());
-		}
-	}
-	name = upper(name);
-	for (auto it = methods.begin(); it != methods.end(); ++it) {
-		for (auto n = it->names.begin(); n != it->names.end(); ++n) {
-			if (upper(*n).compare(name) == 0) return long(it - methods.begin());
-		}
-	}
-	return -1;
+	if (!wsMethodName) return -1;
+	const auto it = methIndex_.find(NormalizeName(
+		std::u16string(reinterpret_cast<const char16_t*>(wsMethodName))));
+	return (it == methIndex_.end()) ? -1 : it->second;
 }
 
 const WCHAR_T* AddInNative::GetMethodName(const long lMethodNum, const long lMethodAlias)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= methods.size()) return nullptr;
-	try {
-		auto it = std::next(methods.begin(), lMethodNum);
-		if (it == methods.end()) return nullptr;
-		auto nm = std::next(it->names.begin(), lMethodAlias);
-		if (nm == it->names.end()) return nullptr;
-		return W(nm->c_str());
-	}
-	catch (...) {
-		return nullptr;
-	}
+	if (lMethodNum < 0 || lMethodNum >= static_cast<long>(meths_.size())) return nullptr;
+	const MethDesc& m = meths_[lMethodNum];
+	if (lMethodAlias == 0) return AllocString(m.nameEn);
+	if (lMethodAlias == 1) return AllocString(m.nameRu.empty() ? m.nameEn : m.nameRu);
+	return nullptr;
 }
 
 long AddInNative::GetNParams(const long lMethodNum)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= methods.size()) return 0;
-	auto it = std::next(methods.begin(), lMethodNum);
-	if (it == methods.end()) return 0;
+	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= meths_.size()) return 0;
+	const MethFunction& handler = meths_[lMethodNum].handler;
 	// Альтернативи MethFunction упорядковані за арністю (MethFunctionN на позиції N),
 	// тож індекс variant-а і Є кількістю параметрів. Інваріант закріплено static_assert-ами.
-	if (it->handler.valueless_by_exception()) return 0;
-	return static_cast<long>(it->handler.index());
+	if (handler.valueless_by_exception()) return 0;
+	return static_cast<long>(handler.index());
+}
+
+// DefaultHelper стоїть у заголовку ПЕРЕД AddInNative (потрібен йому для MethDefaults/
+// ParamSpec), тож не міг оголосити параметр типу AddInNative::VariantHelper напряму —
+// той вкладений тип іще не існував у точці його власного оголошення. Тут, у .cpp,
+// AddInNative вже повністю визначений, а дружба (friend class DefaultHelper в
+// AddInNative.h) відкриває доступ до protected VariantHelper.
+void DefaultHelper::Apply(tVariant* pvar, AddInNative* addin) const
+{
+	AddInNative::VariantHelper vh(pvar, addin);
+	switch (slot_.index()) {
+	case 1: vh = std::get<std::u16string>(slot_); break;
+	case 2: vh = std::get<int64_t>(slot_);        break;
+	case 3: vh = std::get<double>(slot_);         break;
+	case 4: vh = std::get<bool>(slot_);           break;
+	default: break;   // Unset (індекс 0) -> нічого не пишемо, комірка вже VTYPE_EMPTY
+	}
 }
 
 bool AddInNative::GetParamDefValue(const long lMethodNum, const long lParamNum, tVariant* pvarParamDefValue)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= methods.size()) return true;
-	try {
+	if (!pvarParamDefValue) return false;
+	return Guarded([&] {
+		// Очищення — БЕЗУМОВНО, до перевірки меж методу: викликач передає комірку
+		// під "немає дефолту", і вона мусить лишитись валідним VTYPE_EMPTY навіть
+		// коли метод/параметр не знайдено, а не чужим сміттям з попереднього виклику.
 		VA(pvarParamDefValue).clear();
-		auto it = std::next(methods.begin(), lMethodNum);
-		if (it == methods.end()) return true;
-		auto p = it->defs.find(lParamNum);
-		if (p == it->defs.end()) return true;
-		auto var = &p->second.variant;
-		if (auto value = std::get_if<std::u16string>(var)) {
-			VA(pvarParamDefValue) = *value;
-			return true;
-		}
-		if (auto value = std::get_if<int64_t>(var)) {
-			VA(pvarParamDefValue) = *value;
-			return true;
-		}
-		if (auto value = std::get_if<double>(var)) {
-			VA(pvarParamDefValue) = *value;
-			return true;
-		}
-		if (auto value = std::get_if<bool>(var)) {
-			VA(pvarParamDefValue) = *value;
-			return true;
-		}
+		if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= meths_.size()) return true;
+		const MethDesc& m = meths_[lMethodNum];
+		const auto it = m.defaults.find(lParamNum);
+		if (it == m.defaults.end()) return true;   // немає дефолту -> лишається VTYPE_EMPTY
+		it->second.Apply(pvarParamDefValue, this);
 		return true;
-	}
-	catch (const std::u16string& msg) {
-		AddError(msg);
-		return false;
-	}
-	catch (...) {
-		return false;
-	}
+	});
 }
 
 bool AddInNative::HasRetVal(const long lMethodNum)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= methods.size()) return false;
-	try {
-		auto it = std::next(methods.begin(), lMethodNum);
-		if (it == methods.end()) return false;
-		return it->hasRetVal;
-	}
-	catch (...) {
-		return false;
-	}
+	return lMethodNum >= 0 && static_cast<size_t>(lMethodNum) < meths_.size()
+	    && meths_[lMethodNum].hasRetVal;
 }
 
-bool AddInNative::CallMethod(MethFunction* func, tVariant* p, Meth* m, const long lSizeArray)
+bool AddInNative::CallMethod(MethFunction* func, tVariant* p, MethDesc* m, const long lSizeArray)
 {
-	// Кожна гілка: «якщо у variant лежить саме ця арність — перевірити кількість
-	// фактичних параметрів і викликати». Короткозамкнене || дає ту саму семантику,
-	// що й колишній ланцюжок if-ів, але без рукописних списків VA(p, m, 0..N).
-	return TryCallArity<0,  MethFunction0 >(func, p, m, lSizeArray)
-	    || TryCallArity<1,  MethFunction1 >(func, p, m, lSizeArray)
-	    || TryCallArity<2,  MethFunction2 >(func, p, m, lSizeArray)
-	    || TryCallArity<3,  MethFunction3 >(func, p, m, lSizeArray)
-	    || TryCallArity<4,  MethFunction4 >(func, p, m, lSizeArray)
-	    || TryCallArity<5,  MethFunction5 >(func, p, m, lSizeArray)
-	    || TryCallArity<6,  MethFunction6 >(func, p, m, lSizeArray)
-	    || TryCallArity<7,  MethFunction7 >(func, p, m, lSizeArray)
-	    || TryCallArity<8,  MethFunction8 >(func, p, m, lSizeArray)
-	    || TryCallArity<9,  MethFunction9 >(func, p, m, lSizeArray)
-	    || TryCallArity<10, MethFunction10>(func, p, m, lSizeArray)
-	    || TryCallArity<11, MethFunction11>(func, p, m, lSizeArray)
-	    || TryCallArity<12, MethFunction12>(func, p, m, lSizeArray)
-	    || TryCallArity<13, MethFunction13>(func, p, m, lSizeArray)
-	    || TryCallArity<14, MethFunction14>(func, p, m, lSizeArray)
-	    || TryCallArity<15, MethFunction15>(func, p, m, lSizeArray)
-	    || TryCallArity<16, MethFunction16>(func, p, m, lSizeArray);
+	// Одна гілка на арність: «якщо у варіанті лежить саме ця арність — перевірити
+	// кількість фактичних параметрів і викликати». Перелік гілок породжується з
+	// тієї самої межі kMaxArity, що й сам варіант, тож розійтися вони не можуть.
+	return TryEachArity(func, p, m, lSizeArray, std::make_index_sequence<kMaxArity + 1>{});
+}
+
+// Спільне тіло CallAsProc/CallAsFunc: межі індексу методу, ValidateParams (наш
+// механізм ParamSpec, ДО try — як і в чинному коді) і сам виклик у try/catch.
+// CallAsFunc НЕ будується поверх CallAsProc — той відв'язує result на вході, і
+// композиція «bind -> CallAsProc -> unbind» стерла б прив'язку до комірки
+// повернення раніше, ніж Ret() встиг би в неї щось записати.
+bool AddInNative::Dispatch(const long n, tVariant* paParams, const long lSizeArray)
+{
+	if (n < 0 || static_cast<size_t>(n) >= meths_.size()) return false;
+	MethDesc& m = meths_[n];
+	if (!ValidateParams(m, paParams, lSizeArray)) return false;
+	return Guarded([&] { return CallMethod(&m.handler, paParams, &m, lSizeArray); });
 }
 
 bool AddInNative::CallAsProc(const long lMethodNum, tVariant* paParams, const long lSizeArray)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= methods.size()) return false;
-	auto it = std::next(methods.begin(), lMethodNum);
-	if (it == methods.end()) return false;
-	if (!ValidateParams(*it, paParams, lSizeArray)) return false;
-	try {
-		result << VA(nullptr);
-		return CallMethod(&it->handler, paParams, &(*it), lSizeArray);
-	}
-	catch (const std::u16string& msg) {
-		AddError(msg);
-		return false;
-	}
-	catch (...) {
-		return false;
-	}
+	// Функцію викликано як процедуру: результат нікуди не писати. Відв'язуємо
+	// result ДО диспетчеризації — інакше Ret()-хендлер писав би в комірку від
+	// попереднього CallAsFunc (TestRetViaCallAsProc).
+	result << VA(nullptr);
+	return Dispatch(lMethodNum, paParams, lSizeArray);
 }
 
 bool AddInNative::CallAsFunc(const long lMethodNum, tVariant* pvarRetValue, tVariant* paParams, const long lSizeArray)
 {
-	if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= methods.size()) return false;
-	auto it = std::next(methods.begin(), lMethodNum);
-	if (it == methods.end()) return false;
-	if (!ValidateParams(*it, paParams, lSizeArray)) return false;
-	try {
-		result << VA(pvarRetValue);
-		bool ok = CallMethod(&it->handler, paParams, &(*it), lSizeArray);
-		result << VA(nullptr);
-		return ok;
-	}
-	catch (const std::u16string& msg) {
-		AddError(msg);
-		return false;
-	}
-	catch (...) {
-		result << VA(nullptr);
-		return false;
-	}
+	// result вказує на комірку повернення на час диспетчеризації, а після —
+	// завжди відв'язується: і за успіху, і за відмови ValidateParams/меж, і за
+	// винятку. Інакше хендлер, викликаний згодом як процедура, писав би у
+	// звільнену пам'ять caller-а попереднього виклику.
+	result << VA(pvarRetValue);
+	const bool ok = Dispatch(lMethodNum, paParams, lSizeArray);
+	result << VA(nullptr);
+	return ok;
 }
 
 void AddInNative::SetLocale(const WCHAR_T* locale)
 {
-	std::string loc = WCHAR2MB(locale);
-	this->alias = loc.substr(0, 3) == "rus";
+	// alias перемикає РУ/EN мову кожного тексту помилки нижче й у ValidateParams:
+	// локаль, що починається з "rus", означає російську.
+	const std::string loc = WCHAR2MB(locale);
+	alias = loc.compare(0, 3, "rus") == 0;
 }
 
 std::u16string AddInNative::getComponentNames() {
-	const char16_t* const delim = u"|";
-	std::vector<std::u16string> names;
-	for (auto it = components().begin(); it != components().end(); ++it) names.push_back(it->first);
-	std::basic_ostringstream<char16_t, std::char_traits<char16_t>, std::allocator<char16_t>> imploded;
-	std::copy(names.begin(), names.end(), std::ostream_iterator<std::u16string, char16_t, std::char_traits<char16_t>>(imploded, delim));
-	std::u16string result = imploded.str();
-	result.pop_back();
-	return result;
+	// Порожній реєстр -> порожній рядок, а не UB: старий код будував рядок
+	// через ostream_iterator і завжди відрізав останній символ pop_back()-ом,
+	// що на порожньому контейнері читає з-за меж рядка. Тут роздільник
+	// додається ПЕРЕД кожним іменем, крім першого, — трейлінгового символу
+	// просто немає, і pop_back() не потрібен.
+	std::u16string joined;
+	for (const auto& entry : components()) {
+		if (!joined.empty()) joined += u'|';
+		joined += entry.first;
+	}
+	return joined;
 }
 
 std::u16string AddInNative::AddComponent(const std::u16string& name, CompFunction creator)
@@ -438,17 +373,37 @@ AddInNative* AddInNative::CreateObject(const std::u16string& name) {
 
 void AddInNative::AddProperty(const std::u16string& nameEn, const std::u16string& nameRu, const PropFunction& getter, const PropFunction& setter)
 {
-	properties.push_back({ { nameEn, nameRu }, getter, setter });
+	const long pos = static_cast<long>(props_.size());
+	props_.push_back(PropDesc{ nameEn, nameRu, getter, setter });
+	// Дублікат імені -> перше зареєстроване визначає позицію: try_emplace не
+	// перезаписує вже наявний ключ. Стара лінійна FindProp теж віддавала перший
+	// збіг, окрім одного виродженого випадку — двох імен, що різняться лише
+	// регістром (вона мала окремий прохід точного збігу перед згорткою регістру).
+	propIndex_.try_emplace(NormalizeName(nameEn), pos);
+	if (!nameRu.empty()) propIndex_.try_emplace(NormalizeName(nameRu), pos);
 }
 
 void AddInNative::AddProcedure(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction& handler, const MethDefaults& defs)
 {
-	methods.push_back({ { nameEn, nameRu }, handler, defs, false });
+	RegisterMethod(nameEn, nameRu, handler, defs, {}, /*hasRetVal=*/false);
 }
 
 void AddInNative::AddFunction(const std::u16string& nameEn, const std::u16string& nameRu, const MethFunction& handler, const MethDefaults& defs)
 {
-	methods.push_back({ { nameEn, nameRu }, handler, defs, true });
+	RegisterMethod(nameEn, nameRu, handler, defs, {}, /*hasRetVal=*/true);
+}
+
+// Спільна точка реєстрації — щоб індекс наповнювався в одному місці.
+void AddInNative::RegisterMethod(const std::u16string& nameEn, const std::u16string& nameRu,
+                                 const MethFunction& handler, const MethDefaults& defs,
+                                 const std::vector<ParamSpec>& params, bool hasRetVal)
+{
+	const long pos = static_cast<long>(meths_.size());
+	meths_.push_back(MethDesc{ nameEn, nameRu, handler, defs, params, hasRetVal });
+	// Дублікат імені -> перше зареєстроване визначає позицію: try_emplace не
+	// перезаписує вже наявний ключ (див. те саме міркування в AddProperty).
+	methIndex_.try_emplace(NormalizeName(nameEn), pos);
+	if (!nameRu.empty()) methIndex_.try_emplace(NormalizeName(nameRu), pos);
 }
 
 // Будує MethDefaults зі spec-ів: параметри, що мають byDefault, стають дефолтами 1С.
@@ -463,16 +418,16 @@ AddInNative::MethDefaults AddInNative::DefaultsFromSpecs(const std::vector<Param
 void AddInNative::AddProcedure(const std::u16string& nameEn, const std::u16string& nameRu,
                                const MethFunction& handler, const std::vector<ParamSpec>& params)
 {
-	methods.push_back({ { nameEn, nameRu }, handler, DefaultsFromSpecs(params), false, params });
+	RegisterMethod(nameEn, nameRu, handler, DefaultsFromSpecs(params), params, /*hasRetVal=*/false);
 }
 
 void AddInNative::AddFunction(const std::u16string& nameEn, const std::u16string& nameRu,
                               const MethFunction& handler, const std::vector<ParamSpec>& params)
 {
-	methods.push_back({ { nameEn, nameRu }, handler, DefaultsFromSpecs(params), true, params });
+	RegisterMethod(nameEn, nameRu, handler, DefaultsFromSpecs(params), params, /*hasRetVal=*/true);
 }
 
-bool AddInNative::ValidateParams(Meth& m, tVariant* paParams, const long lSizeArray)
+bool AddInNative::ValidateParams(MethDesc& m, tVariant* paParams, const long lSizeArray)
 {
 	for (size_t i = 0; i < m.params.size(); ++i) {
 		const ParamSpec& spec = m.params[i];
@@ -482,7 +437,7 @@ bool AddInNative::ValidateParams(Meth& m, tVariant* paParams, const long lSizeAr
 			|| paParams[i].vt == VTYPE_EMPTY;
 		if (missing) {
 			const std::u16string& pname = alias ? spec.nameRu : spec.nameEn;
-			const std::u16string& mname = alias ? m.names[1] : m.names[0];
+			const std::u16string& mname = alias ? m.nameRu : m.nameEn;
 			AddError(u"Параметр '" + pname + u"' методу '" + mname +
 			         u"' обов'язковий, отримано порожнє значення");
 			return false;
@@ -501,310 +456,300 @@ void ADDIN_API AddInNative::FreeMemory(void** pMemory) const noexcept
 	if (m_iMemory) m_iMemory->FreeMemory(pMemory);
 }
 
+// WinAPI-конвертації замість deprecated std::wstring_convert (проєкт Windows-only).
+// Довжину скрізь передаємо явно (src.size()), а не -1: саме це зберігає вбудований
+// \0 усередині рядка — з -1 конвертація зупинилась би на першому нулі.
+// Навмисна зміна поведінки: на невалідному UTF-8/UTF-16 wstring_convert кидав
+// std::range_error; WinAPI з flags=0 підставляє символ-замінник U+FFFD і продовжує.
+// Виняток, що вилітає з ServiceTools::SafeMB2WCHAR у виклики логування й у хост 1С,
+// гірший за replacement character — тому MB_ERR_INVALID_CHARS/WC_ERR_INVALID_CHARS
+// свідомо НЕ використовуємо (вони перетворили б биту послідовність на порожній
+// рядок — тиха втрата даних).
 std::string AddInNative::WCHAR2MB(std::basic_string_view<WCHAR_T> src)
 {
-#ifdef _WINDOWS
-	static std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> cvt_utf8_utf16;
-	return cvt_utf8_utf16.to_bytes(src.data(), src.data() + src.size());
-#else
-	static std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> cvt_utf8_utf16;
-	return cvt_utf8_utf16.to_bytes(reinterpret_cast<const char16_t*>(src.data()),
-		reinterpret_cast<const char16_t*>(src.data() + src.size()));
-#endif//_WINDOWS
+	if (src.empty()) return std::string();
+	const wchar_t* wsrc = reinterpret_cast<const wchar_t*>(src.data());
+	const int srcLen = static_cast<int>(src.size());
+	const int need = ::WideCharToMultiByte(CP_UTF8, 0, wsrc, srcLen, nullptr, 0, nullptr, nullptr);
+	if (need <= 0) return std::string();
+	std::string out(static_cast<size_t>(need), '\0');
+	::WideCharToMultiByte(CP_UTF8, 0, wsrc, srcLen, out.data(), need, nullptr, nullptr);
+	return out;
 }
 
+// char16_t -> wchar_t на Windows: обидва 2-байтні, тож це поелементна копія,
+// а не перекодування.
 std::wstring AddInNative::WCHAR2WC(std::basic_string_view<WCHAR_T> src) {
-#ifdef _WINDOWS
-	return std::wstring(src);
-#else
-	std::wstring_convert<std::codecvt_utf16<wchar_t, 0x10ffff, std::little_endian>> conv;
-	return conv.from_bytes(reinterpret_cast<const char*>(src.data()),
-		reinterpret_cast<const char*>(src.data() + src.size()));
-#endif//_WINDOWS
+	return std::wstring(src.begin(), src.end());
 }
 
+// Прапорці 0 і явна довжина — з тих самих міркувань, що й у WCHAR2MB вище
+// (підстановка U+FFFD замість винятка; MB_ERR_INVALID_CHARS не ставимо).
 std::u16string AddInNative::MB2WCHAR(std::string_view src) {
-#ifdef _WINDOWS
-	static std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> cvt_utf8_utf16;
-	std::wstring tmp = cvt_utf8_utf16.from_bytes(src.data(), src.data() + src.size());
-	return std::u16string(reinterpret_cast<const char16_t*>(tmp.data()), tmp.size());
-#else
-	static std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> cvt_utf8_utf16;
-	return cvt_utf8_utf16.from_bytes(src.data(), src.data() + src.size());
-#endif//_WINDOWS
-}
-
-// Локаль для регістронезалежного пошуку імен. НЕ глобальний об'єкт:
-// std::locale("ru_RU.UTF-8") може кинути виняток, а на етапі статичної
-// ініціалізації DLL це означає відмову завантаження компоненти в 1С.
-static const std::locale& RuLocale()
-{
-	static const std::locale loc = []() -> std::locale {
-		try { return std::locale("ru_RU.UTF-8"); }
-		catch (...) {
-			try { return std::locale("Russian_Russia.1251"); }
-			catch (...) { return std::locale::classic(); }
-		}
-	}();
-	return loc;
+	if (src.empty()) return std::u16string();
+	const int srcLen = static_cast<int>(src.size());
+	const int need = ::MultiByteToWideChar(CP_UTF8, 0, src.data(), srcLen, nullptr, 0);
+	if (need <= 0) return std::u16string();
+	std::u16string out(static_cast<size_t>(need), u'\0');
+	::MultiByteToWideChar(CP_UTF8, 0, src.data(), srcLen, reinterpret_cast<wchar_t*>(out.data()), need);
+	return out;
 }
 
 std::u16string AddInNative::upper(std::u16string& str)
 {
-	std::transform(str.begin(), str.end(), str.begin(), [](wchar_t ch) { return std::toupper(ch, RuLocale()); });
+	str = NormalizeName(str);
 	return str;
 }
 
 std::wstring AddInNative::upper(std::wstring& str)
 {
-	std::transform(str.begin(), str.end(), str.begin(), [](wchar_t ch) { return std::toupper(ch, RuLocale()); });
+	// wchar_t і char16_t — обидва 2-байтні на Windows: реінтерпретація, не перекодування.
+	std::u16string tmp(reinterpret_cast<const char16_t*>(str.data()), str.size());
+	tmp = NormalizeName(tmp);
+	str.assign(reinterpret_cast<const wchar_t*>(tmp.data()), tmp.size());
 	return str;
+}
+
+// Прив'язка комірки. Константність методу стосується самого адаптера, не комірки:
+// pvar — вказівник-член, тож віддавати його не-const з const-методу коректно.
+tVariant* AddInNative::VariantHelper::Bound() const
+{
+	if (!pvar) throw std::bad_variant_access();
+	return pvar;
+}
+
+template <typename N>
+N AddInNative::VariantHelper::ReadNumeric(TYPEVAR expectedForError) const
+{
+	tVariant* v = Bound();
+	switch (TV_VT(v)) {
+	case VTYPE_I2:
+	case VTYPE_I4:
+	case VTYPE_UI1:
+	case VTYPE_ERROR:
+		return static_cast<N>(v->lVal);
+	case VTYPE_R4:
+		return static_cast<N>(TV_R4(v));
+	case VTYPE_R8:
+		return static_cast<N>(TV_R8(v));
+	default:
+		throw TypeError(expectedForError);
+	}
 }
 
 TYPEVAR AddInNative::VariantHelper::type()
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	return pvar->vt;
+	return Bound()->vt;
 }
 
 uint32_t AddInNative::VariantHelper::size()
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	if (pvar->vt != VTYPE_BLOB) throw this->error(VTYPE_BLOB);
+	if (Bound()->vt != VTYPE_BLOB) throw this->TypeError(VTYPE_BLOB);
 	return pvar->strLen;
 }
 
 char* AddInNative::VariantHelper::data()
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	if (pvar->vt != VTYPE_BLOB) throw this->error(VTYPE_BLOB);
+	if (Bound()->vt != VTYPE_BLOB) throw this->TypeError(VTYPE_BLOB);
 	return pvar->pstrVal;
-}
-
-AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::string& str)
-{
-	return operator=(AddInNative::MB2WCHAR(str));
-}
-
-AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::wstring& str)
-{
-	if (sizeof(wchar_t) == 2) {
-		return operator=(std::u16string(reinterpret_cast<const char16_t*>(str.data()), str.size()));
-	}
-	else {
-		return operator=(WC2MB(str));
-	}
 }
 
 void AddInNative::VariantHelper::clear()
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	switch (TV_VT(pvar)) {
-	case VTYPE_BLOB:
-	case VTYPE_PWSTR:
-		addin->FreeMemory(reinterpret_cast<void**>(&TV_WSTR(pvar)));
-		break;
-	}
+	// Рядок і бінарні дані — єдині типи, під які менеджер 1С виділяв пам'ять;
+	// решта живе прямо в об'єднанні й звільнення не потребує. Віддати чужий
+	// буфер треба ДО tVarInit, бо той затирає вказівник разом з типом.
+	const TYPEVAR vt = Bound()->vt;
+	const bool ownsBuffer = (vt == VTYPE_PWSTR) || (vt == VTYPE_BLOB);
+	if (ownsBuffer) addin->FreeMemory(reinterpret_cast<void**>(&TV_WSTR(pvar)));
 	tVarInit(pvar);
-}
-
-AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(int64_t value)
-{
-	// Присвоєння у відʼєднаний result (CallAsProc навмисно обнуляє pvar, коли
-	// функцію викликано як процедуру — результат не потрібен) — тихе відкидання,
-	// а не bad_variant_access через clear() на nullptr
-	if (pvar == nullptr) return *this;
-	clear();
-	if (INT32_MIN <= value && value <= INT32_MAX) {
-		TV_VT(pvar) = VTYPE_I4;
-		TV_I4(pvar) = (int32_t)value;
-	}
-	else {
-		TV_VT(pvar) = VTYPE_R8;
-		TV_R8(pvar) = (double)value;
-	}
-	return *this;
-}
-
-AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(double value)
-{
-	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння
-	if (pvar == nullptr) return *this;
-	clear();
-	TV_VT(pvar) = VTYPE_R8;
-	TV_R8(pvar) = value;
-	return *this;
-}
-
-AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(bool value)
-{
-	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння
-	if (pvar == nullptr) return *this;
-	clear();
-	TV_VT(pvar) = VTYPE_BOOL;
-	TV_BOOL(pvar) = value;
-	return *this;
-}
-
-AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::u16string& str)
-{
-	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння
-	if (pvar == nullptr) return *this;
-	clear();
-	TV_VT(pvar) = VTYPE_PWSTR;
-	pvar->pwstrVal = nullptr;
-	size_t size = (str.size() + 1) * sizeof(char16_t);
-	if (!addin->AllocMemory(reinterpret_cast<void**>(&pvar->pwstrVal), size)) throw std::bad_alloc();
-	memcpy(pvar->pwstrVal, str.c_str(), size);
-	pvar->wstrLen = str.size();
-	while (pvar->wstrLen && pvar->pwstrVal[pvar->wstrLen - 1] == 0) pvar->wstrLen--;
-	return *this;
 }
 
 bool AddInNative::AddError(const std::u16string& descr, long scode)
 {
-	std::u16string info = u"AddIn." + name;
+	// Джерело помилки для 1С — префікс "AddIn." + ім'я конкретної компоненти.
+	const std::u16string source = u"AddIn." + name;
 	// Синхронізація з Done()/фоновими потоками: читання m_iConnect під тим самим
-	// м'ютексом (жоден шлях не викликає AddError, тримаючи connectMutex_)
+	// м'ютексом (жоден шлях не викликає AddError, тримаючи connectMutex_).
 	std::lock_guard<std::mutex> lock(connectMutex_);
-	return m_iConnect && m_iConnect->AddError(ADDIN_E_IMPORTANT, (WCHAR_T*)info.c_str(), (WCHAR_T*)descr.c_str(), scode);
+	if (!m_iConnect) return false;
+	return m_iConnect->AddError(ADDIN_E_IMPORTANT, (WCHAR_T*)source.c_str(), (WCHAR_T*)descr.c_str(), scode);
 }
 
-static std::u16string typeinfo(TYPEVAR vt, bool alias)
+// Людські назви типів для тексту помилки. Пара {EN, RU} на тип — рядки НЕ
+// змінюються при переписуванні (їх бачить 1С-розробник у власному коді);
+// змінюється лише структура (таблиця замість switch). Цілочисельні різновиди
+// 1С показує користувачеві однаково — «Целое число»; невідомий тип, як і
+// раніше, віддає Undefined/Неопределено.
+static std::u16string TypeName(TYPEVAR vt, bool alias)
 {
-	switch (vt) {
-	case VTYPE_EMPTY:
-		return alias ? u"Неопределено" : u"Undefined";
-	case VTYPE_I2:
-	case VTYPE_I4:
-	case VTYPE_ERROR:
-	case VTYPE_UI1:
-		return alias ? u"Целое число" : u"Integer";
-	case VTYPE_BOOL:
-		return alias ? u"Булево" : u"Boolean";
-	case VTYPE_R4:
-	case VTYPE_R8:
-		return alias ? u"Число" : u"Float";
-	case VTYPE_DATE:
-	case VTYPE_TM:
-		return alias ? u"Дата" : u"Date";
-	case VTYPE_PSTR:
-	case VTYPE_PWSTR:
-		return alias ? u"Строка" : u"String";
-	case VTYPE_BLOB:
-		return alias ? u"Двоичные данные" : u"Binary";
-	default:
-		return alias ? u"Неопределено" : u"Undefined";
-	}
+	static const std::map<TYPEVAR, std::pair<const char16_t*, const char16_t*>> table = {
+		{ VTYPE_EMPTY, { u"Undefined", u"Неопределено"    } },
+		{ VTYPE_I2,    { u"Integer",   u"Целое число"     } },
+		{ VTYPE_I4,    { u"Integer",   u"Целое число"     } },
+		{ VTYPE_UI1,   { u"Integer",   u"Целое число"     } },
+		{ VTYPE_ERROR, { u"Integer",   u"Целое число"     } },
+		{ VTYPE_R4,    { u"Float",     u"Число"           } },
+		{ VTYPE_R8,    { u"Float",     u"Число"           } },
+		{ VTYPE_BOOL,  { u"Boolean",   u"Булево"          } },
+		{ VTYPE_PSTR,  { u"String",    u"Строка"          } },
+		{ VTYPE_PWSTR, { u"String",    u"Строка"          } },
+		{ VTYPE_DATE,  { u"Date",      u"Дата"            } },
+		{ VTYPE_TM,    { u"Date",      u"Дата"            } },
+		{ VTYPE_BLOB,  { u"Binary",    u"Двоичные данные" } },
+	};
+	const auto it = table.find(vt);
+	if (it == table.end()) return alias ? u"Неопределено" : u"Undefined";
+	return alias ? it->second.second : it->second.first;
 }
 
-std::exception AddInNative::VariantHelper::error(TYPEVAR vt) const
+std::exception AddInNative::VariantHelper::TypeError(TYPEVAR expected) const
 {
 	std::basic_stringstream<char16_t, std::char_traits<char16_t>, std::allocator<char16_t>> ss;
 	if (addin && addin->alias) {
 		ss << u"Ошибка получения значения";
-		if (prop) ss << u" при обращении к свойству <" << prop->names[1] << ">";
-		if (meth) ss << u" при вызове метода <" << meth->names[1] << ">";
+		if (prop) ss << u" при обращении к свойству <" << prop->nameRu << ">";
+		if (meth) ss << u" при вызове метода <" << meth->nameRu << ">";
 		if (number >= 0) ss << u" параметр <" << number + 1 << ">";
-		ss << u" ожидается <" + typeinfo(vt, true) << u">";
-		if (pvar) ss << u" фактически <" + typeinfo(pvar->vt, true) << u">";
+		ss << u" ожидается <" + TypeName(expected, true) << u">";
+		if (pvar) ss << u" фактически <" + TypeName(pvar->vt, true) << u">";
 	}
 	else {
 		ss << u"Error getting value";
-		if (prop) ss << u" of property <" << prop->names[0] << ">";
-		if (meth) ss << u" when calling method <" << meth->names[0] << ">";
+		if (prop) ss << u" of property <" << prop->nameEn << ">";
+		if (meth) ss << u" when calling method <" << meth->nameEn << ">";
 		if (number >= 0) ss << u" parameter <" << number + 1 << ">";
-		ss << u" expected <" + typeinfo(vt, false) << u">";
-		if (pvar) ss << u" actual value <" + typeinfo(pvar->vt, false) << u">";
+		ss << u" expected <" + TypeName(expected, false) << u">";
+		if (pvar) ss << u" actual value <" + TypeName(pvar->vt, false) << u">";
 	}
 	if (addin) addin->AddError(ss.str());
 	return std::bad_typeid();
 }
 
-AddInNative::VariantHelper::operator std::string() const
-{
-	std::u16string str(*this);
-	return WCHAR2MB((WCHAR_T*)str.c_str());
-}
+// ---- Get<T>(): читання tVariant. Null pvar -> bad_variant_access (протилежно
+// до Set<T>, де відʼєднаний result — тихий no-op; див. коментар у Set нижче). ----
 
-AddInNative::VariantHelper::operator std::wstring() const
+template <>
+std::u16string AddInNative::VariantHelper::Get<std::u16string>() const
 {
-	std::u16string str(*this);
-	return WCHAR2WC((WCHAR_T*)str.c_str());
-}
-
-AddInNative::VariantHelper::operator std::u16string() const
-{
-	if (pvar == nullptr) throw std::bad_variant_access();
-	if (pvar->vt != VTYPE_PWSTR) throw error(VTYPE_PWSTR);
+	if (Bound()->vt != VTYPE_PWSTR) throw TypeError(VTYPE_PWSTR);
+	// Апаратнення: NUL-термінований покажчик, а не (pwstrVal, wstrLen). Порожній
+	// pwstrVal (не мало би траплятись за коректного VTYPE_PWSTR) -> визначена
+	// поведінка (порожній рядок) замість розіменування нуля.
+	if (pvar->pwstrVal == nullptr) return std::u16string();
 	return reinterpret_cast<char16_t*>(pvar->pwstrVal);
 }
 
-AddInNative::VariantHelper::operator int64_t() const
+template <>
+std::string AddInNative::VariantHelper::Get<std::string>() const
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	switch (TV_VT(pvar)) {
-	case VTYPE_I2:
-	case VTYPE_I4:
-	case VTYPE_UI1:
-	case VTYPE_ERROR:
-		return (int64_t)pvar->lVal;
-	case VTYPE_R4:
-	case VTYPE_R8:
-		return (int64_t)pvar->dblVal;
-	default:
-		throw error(VTYPE_I4);
+	std::u16string str = Get<std::u16string>();
+	return WCHAR2MB((WCHAR_T*)str.c_str());
+}
+
+template <>
+std::wstring AddInNative::VariantHelper::Get<std::wstring>() const
+{
+	std::u16string str = Get<std::u16string>();
+	return WCHAR2WC((WCHAR_T*)str.c_str());
+}
+
+template <>
+int64_t AddInNative::VariantHelper::Get<int64_t>() const
+{
+	// Дробову частину відкидає саме приведення в N — так поводилось і чинне ядро.
+	return ReadNumeric<int64_t>(VTYPE_I4);
+}
+
+template <>
+double AddInNative::VariantHelper::Get<double>() const
+{
+	return ReadNumeric<double>(VTYPE_R4);
+}
+
+template <>
+bool AddInNative::VariantHelper::Get<bool>() const
+{
+	// Булеве читання НЕ ділить набір типів із числовим: дійсні сюди не приймаються,
+	// бо «0.0 це Ложь?» — питання без однозначної відповіді в термінах 1С.
+	const TYPEVAR vt = Bound()->vt;
+	if (vt == VTYPE_BOOL) return TV_BOOL(pvar);
+	// Цілочисельні різновиди читаються за правилом 1С: нуль — Ложь, решта — Истина.
+	const bool isIntegral = (vt == VTYPE_I2) || (vt == VTYPE_I4)
+	                     || (vt == VTYPE_UI1) || (vt == VTYPE_ERROR);
+	if (isIntegral) return pvar->lVal != 0;
+	throw TypeError(VTYPE_BOOL);
+}
+
+// ---- Set<T>(): запис у tVariant. Null pvar -> тихий no-op (протилежно до Get<T>).
+// CallAsProc навмисно відʼєднує result.pvar, коли функцію викликано як процедуру —
+// результат нікуди писати не треба; без цього guard-а clear() кинула б
+// bad_variant_access і виклик провалився б попри виконану дію (TestRetViaCallAsProc). ----
+
+template <>
+void AddInNative::VariantHelper::Set<std::u16string>(const std::u16string& value)
+{
+	if (pvar == nullptr) return;
+	clear();
+	TV_VT(pvar) = VTYPE_PWSTR;
+	pvar->pwstrVal = nullptr;
+	size_t size = (value.size() + 1) * sizeof(char16_t);
+	if (!addin->AllocMemory(reinterpret_cast<void**>(&pvar->pwstrVal), size)) throw std::bad_alloc();
+	memcpy(pvar->pwstrVal, value.c_str(), size);
+	pvar->wstrLen = value.size();
+	while (pvar->wstrLen && pvar->pwstrVal[pvar->wstrLen - 1] == 0) pvar->wstrLen--;
+}
+
+template <>
+void AddInNative::VariantHelper::Set<std::string>(const std::string& value)
+{
+	Set<std::u16string>(AddInNative::MB2WCHAR(value));
+}
+
+template <>
+void AddInNative::VariantHelper::Set<std::wstring>(const std::wstring& value)
+{
+	// Проєкт Windows-only: sizeof(wchar_t) == 2 гарантовано, тож пряма
+	// реінтерпретація в std::u16string, без гілки на WC2MB (видалено разом з ним).
+	Set<std::u16string>(std::u16string(reinterpret_cast<const char16_t*>(value.data()), value.size()));
+}
+
+template <>
+void AddInNative::VariantHelper::Set<int64_t>(const int64_t& value)
+{
+	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння.
+	if (pvar == nullptr) return;
+	clear();
+	// Що НЕ вміщається в 32 біти, їде дійсним, а не VTYPE_I8: так поводиться чинне
+	// ядро, і на це спирається 1С, читаючи великі суми як число.
+	const bool fitsInt32 = (value >= INT32_MIN) && (value <= INT32_MAX);
+	if (fitsInt32) {
+		TV_VT(pvar) = VTYPE_I4;
+		TV_I4(pvar) = static_cast<int32_t>(value);
+	} else {
+		TV_VT(pvar) = VTYPE_R8;
+		TV_R8(pvar) = static_cast<double>(value);
 	}
 }
 
-AddInNative::VariantHelper::operator int() const
+template <>
+void AddInNative::VariantHelper::Set<double>(const double& value)
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	switch (TV_VT(pvar)) {
-	case VTYPE_I2:
-	case VTYPE_I4:
-	case VTYPE_UI1:
-	case VTYPE_ERROR:
-		return (int)pvar->lVal;
-	case VTYPE_R4:
-	case VTYPE_R8:
-		return (int)pvar->dblVal;
-	default:
-		throw error(VTYPE_I4);
-	}
+	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння.
+	if (pvar == nullptr) return;
+	clear();
+	TV_VT(pvar) = VTYPE_R8;
+	TV_R8(pvar) = value;
 }
 
-AddInNative::VariantHelper::operator double() const
+template <>
+void AddInNative::VariantHelper::Set<bool>(const bool& value)
 {
-	if (pvar == nullptr) throw std::bad_variant_access();
-	switch (TV_VT(pvar)) {
-	case VTYPE_I2:
-	case VTYPE_I4:
-	case VTYPE_UI1:
-	case VTYPE_ERROR:
-		return (double)pvar->lVal;
-	case VTYPE_R4:
-	case VTYPE_R8:
-		return (double)pvar->dblVal;
-	default:
-		throw error(VTYPE_R4);
-	}
-}
-
-AddInNative::VariantHelper::operator bool() const
-{
-	if (pvar == nullptr) throw std::bad_variant_access();
-	switch (TV_VT(pvar)) {
-	case VTYPE_BOOL:
-		return TV_BOOL(pvar);
-	case VTYPE_I2:
-	case VTYPE_I4:
-	case VTYPE_UI1:
-	case VTYPE_ERROR:
-		return (bool)pvar->lVal;
-	default:
-		throw error(VTYPE_BOOL);
-	}
+	// Відʼєднаний result (CallAsProc обнуляє pvar) — тихо відкидаємо присвоєння.
+	if (pvar == nullptr) return;
+	clear();
+	TV_VT(pvar) = VTYPE_BOOL;
+	TV_BOOL(pvar) = value;
 }
 
 void AddInNative::VariantHelper::AllocMemory(unsigned long size)
@@ -815,13 +760,42 @@ void AddInNative::VariantHelper::AllocMemory(unsigned long size)
 	pvar->strLen = size;
 }
 
+// ---- Оператори: тонкі обгортки над Set<T>()/Get<T>() (див. коментар у заголовку
+// про те, чому вони НЕ inline-визначення в тілі класу). ----
+
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::string& str)    { Set(str); return *this; }
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::wstring& str)   { Set(str); return *this; }
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(const std::u16string& str) { Set(str); return *this; }
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(int64_t value)             { Set(value); return *this; }
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(double value)              { Set(value); return *this; }
+AddInNative::VariantHelper& AddInNative::VariantHelper::operator=(bool value)                { Set(value); return *this; }
+
+AddInNative::VariantHelper::operator std::string()    const { return Get<std::string>(); }
+AddInNative::VariantHelper::operator std::wstring()   const { return Get<std::wstring>(); }
+AddInNative::VariantHelper::operator std::u16string() const { return Get<std::u16string>(); }
+AddInNative::VariantHelper::operator int64_t()        const { return Get<int64_t>(); }
+AddInNative::VariantHelper::operator double()         const { return Get<double>(); }
+AddInNative::VariantHelper::operator bool()           const { return Get<bool>(); }
+AddInNative::VariantHelper::operator int()            const { return static_cast<int>(Get<int64_t>()); }
+
+// Копія рядка в пам'яті менеджера 1С — примітив алокації, спільний з W() нижче.
+// nullptr, якщо менеджера ще немає або алокація провалилась (на відміну від
+// W(), який на цю ж невдачу кидає bad_alloc — контракт W() інакший).
+WCHAR_T* AddInNative::AllocString(const std::u16string& src) const
+{
+	if (!m_iMemory) return nullptr;
+	WCHAR_T* dst = nullptr;
+	const size_t bytes = (src.size() + 1) * sizeof(WCHAR_T);
+	if (!m_iMemory->AllocMemory(reinterpret_cast<void**>(&dst), static_cast<unsigned long>(bytes)))
+		return nullptr;
+	memcpy(dst, src.c_str(), bytes);
+	return dst;
+}
+
 WCHAR_T* AddInNative::W(const char16_t* str) const
 {
-	WCHAR_T* res = NULL;
-	size_t length = std::char_traits<char16_t>::length(str) + 1;
-	unsigned long size = length * sizeof(WCHAR_T);
-	if (!AllocMemory((void**)&res, size)) throw std::bad_alloc();
-	memcpy(res, str, size);
+	WCHAR_T* res = AllocString(std::u16string(str));
+	if (!res) throw std::bad_alloc();
 	return res;
 }
 

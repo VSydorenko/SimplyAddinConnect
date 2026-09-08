@@ -797,7 +797,8 @@ static void usage() {
         "  --providers каталог із cm-pkcs12_*.dll (деф. каталог цього exe)\n"
         "  --data      каталог тест-даних certs/ + crls/ (деф. compile-time tests/data)\n"
         "  --samples   каталог зразків ПРРО (.signed) для --canned\n"
-        "              (деф. %%PRRO_DOCS_DIR%% або R:\\github\\prro_docs + підкаталог зразків)\n"
+        "              (деф. %%PRRO_DOCS_DIR%% або каталог prro_docs поруч із репозиторієм;\n"
+        "               самі зразки — github.com/VSydorenko/prro_docs)\n"
         "  --canned    /reference віддає канонічний .signed замість свіжо-підписаного\n"
         "  --self-test прогнати вбудовані перевірки (сервер НЕ піднімається) і вийти\n");
 }
@@ -873,11 +874,23 @@ int main() {
     if (cfg.keyPath.empty())      cfg.keyPath      = cfg.dataDir + L"\\test-diia.p12";
     if (cfg.providersDir.empty()) cfg.providersDir = exeDir();
     if (!samplesSet) {
+        // Зразки ПРРО лежать в окремому репозиторії github.com/VSydorenko/prro_docs.
+        // Порядок: 1) PRRO_DOCS_DIR; 2) каталог prro_docs ПОРУЧ із репозиторієм —
+        // exe лежить у <repo>/bin/Release, тож сусід це три рівні вгору. Фолбек
+        // best-effort: якщо exe кудись скопіювали, спрацює лише змінна оточення.
         std::wstring root;
         wchar_t buf[MAX_PATH];
         const DWORD n = GetEnvironmentVariableW(L"PRRO_DOCS_DIR", buf, MAX_PATH);
-        if (n > 0 && n < MAX_PATH)                 root = buf;
-        else if (dirExists(L"R:\\github\\prro_docs")) root = L"R:\\github\\prro_docs";
+        if (n > 0 && n < MAX_PATH) {
+            root = buf;
+        }
+        else {
+            const std::wstring dir = exeDir();
+            if (!dir.empty()) {
+                const std::wstring sibling = dir + L"\\..\\..\\..\\prro_docs";
+                if (dirExists(sibling)) root = sibling;
+            }
+        }
         if (!root.empty()) cfg.samplesDir = root + SAMPLES_SUBDIR;
     }
 
