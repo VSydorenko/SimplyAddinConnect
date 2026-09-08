@@ -432,7 +432,7 @@ uapki_fiscal_emulator [port] [--key <p12>] [--pass <pwd>] [--providers <dir>]
 | `--pass` | пароль контейнера | `testpassword` |
 | `--providers` | каталог із `cm-pkcs12_*.dll` | каталог самого exe (`bin/Release`) |
 | `--data` | каталог тест-даних `certs/` + `crls/` | compile-time `tests/data` |
-| `--samples` | каталог зразків ПРРО (`.signed`) для `--canned` | `%PRRO_DOCS_DIR%` або `R:\github\prro_docs\...\Приклади з КЕП` |
+| `--samples` | каталог зразків ПРРО (`.signed`) для `--canned` | `%PRRO_DOCS_DIR%` або каталог `prro_docs` поруч із репозиторієм (github.com/VSydorenko/prro_docs) |
 | `--canned` | `/reference` віддає канонічний `.signed`-зразок замість свіжо-підписаного | вимкнено |
 | `--self-test` | прогнати вбудовані перевірки (сервер НЕ піднімається) і вийти | вимкнено |
 
