@@ -468,7 +468,9 @@ std::u16string AddInNative::NormalizeName(std::u16string_view name) {
         if (c >= u'a' && c <= u'z')                 c = char16_t(c - u'a' + u'A');
         else if (c >= 0x0430 && c <= 0x044F)        c = char16_t(c - 0x20);   // а-я -> А-Я
         else if (c == 0x0451)                       c = 0x0401;               // ё -> Ё
-        else if (c >= 0x0450 && c <= 0x045F)        c = char16_t(c - 0x50);   // ѐ-џ -> Ѐ-Џ (і, ї, є, ґ)
+        // ґ/Ґ (U+0491/U+0490) лежать ПОЗА цим діапазоном і свідомо НЕ згортаються:
+        // жодне зареєстроване ім'я в src/components та src/drivers їх не містить.
+        else if (c >= 0x0450 && c <= 0x045F)        c = char16_t(c - 0x50);   // ѐ-џ -> Ѐ-Џ (і, ї, є)
         out.push_back(c);
     }
     return out;

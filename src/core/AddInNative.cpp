@@ -161,7 +161,9 @@ std::u16string AddInNative::NormalizeName(std::u16string_view name) {
 		if (c >= u'a' && c <= u'z')                 c = char16_t(c - u'a' + u'A');
 		else if (c >= 0x0430 && c <= 0x044F)        c = char16_t(c - 0x20);   // а-я -> А-Я
 		else if (c == 0x0451)                       c = 0x0401;               // ё -> Ё
-		else if (c >= 0x0450 && c <= 0x045F)        c = char16_t(c - 0x50);   // ѐ-џ -> Ѐ-Џ (і, ї, є, ґ)
+		// ґ/Ґ (U+0491/U+0490) лежать ПОЗА цим діапазоном і свідомо НЕ згортаються:
+		// жодне зареєстроване ім'я в src/components та src/drivers їх не містить.
+		else if (c >= 0x0450 && c <= 0x045F)        c = char16_t(c - 0x50);   // ѐ-џ -> Ѐ-Џ (і, ї, є)
 		out.push_back(c);
 	}
 	return out;
@@ -181,8 +183,9 @@ long AddInNative::FindProp(const WCHAR_T* wsPropName)
 }
 
 // Пам'ять під рядок виділяє МЕНЕДЖЕР 1С — інакше платформа не зможе її звільнити.
-// Аліас: 0 -> англійське ім'я, 1 -> національне, будь-що інше -> nullptr
-// (саме так поводиться чинне ядро; платформа за межі 0..1 і не ходить).
+// Аліас: 0 -> англійське ім'я, 1 -> національне (за порожнього — англійське),
+// будь-що інше -> nullptr. Платформа за межі 0..1 не ходить; старе ядро на
+// аліасі >= 2 робило std::next по 2-елементному вектору, тобто виходило за межі.
 const WCHAR_T* AddInNative::GetPropName(long lPropNum, long lPropAlias)
 {
 	if (lPropNum < 0 || lPropNum >= static_cast<long>(props_.size())) return nullptr;
@@ -429,9 +432,10 @@ void AddInNative::AddProperty(const std::u16string& nameEn, const std::u16string
 {
 	const long pos = static_cast<long>(props_.size());
 	props_.push_back(PropDesc{ nameEn, nameRu, getter, setter });
-	// Дублікат імені -> перше зареєстроване визначає позицію (так само, як стара
-	// лінійна FindProp завжди повертала перший збіг): try_emplace не перезаписує
-	// вже наявний ключ індексу.
+	// Дублікат імені -> перше зареєстроване визначає позицію: try_emplace не
+	// перезаписує вже наявний ключ. Стара лінійна FindProp теж віддавала перший
+	// збіг, окрім одного виродженого випадку — двох імен, що різняться лише
+	// регістром (вона мала окремий прохід точного збігу перед згорткою регістру).
 	propIndex_.try_emplace(NormalizeName(nameEn), pos);
 	if (!nameRu.empty()) propIndex_.try_emplace(NormalizeName(nameRu), pos);
 }
@@ -453,9 +457,8 @@ void AddInNative::RegisterMethod(const std::u16string& nameEn, const std::u16str
 {
 	const long pos = static_cast<long>(meths_.size());
 	meths_.push_back(MethDesc{ nameEn, nameRu, handler, defs, params, hasRetVal });
-	// Дублікат імені -> перше зареєстроване визначає позицію (так само, як стара
-	// лінійна FindMethod завжди повертала перший збіг): try_emplace не перезаписує
-	// вже наявний ключ індексу.
+	// Дублікат імені -> перше зареєстроване визначає позицію: try_emplace не
+	// перезаписує вже наявний ключ (див. те саме міркування в AddProperty).
 	methIndex_.try_emplace(NormalizeName(nameEn), pos);
 	if (!nameRu.empty()) methIndex_.try_emplace(NormalizeName(nameRu), pos);
 }

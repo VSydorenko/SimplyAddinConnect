@@ -212,7 +212,8 @@ public:
 	static std::string version();
 
 private:
-	// Дескриптор властивості: імена лежать ОКРЕМО в індексі, тут — лише дані.
+	// Дескриптор властивості: дані + обидва імені. Індекс тримає не самі імена,
+	// а нормалізовані ключі -> позицію в цьому векторі.
 	struct PropDesc {
 		std::u16string nameEn;
 		std::u16string nameRu;
@@ -245,8 +246,8 @@ private:
 	// Спільна точка реєстрації методів (AddProcedure/AddFunction обох перевантажень) —
 	// щоб індекс наповнювався в одному місці.
 	void RegisterMethod(const std::u16string& nameEn, const std::u16string& nameRu,
-	                     const MethFunction& handler, const MethDefaults& defs,
-	                     const std::vector<ParamSpec>& params, bool hasRetVal);
+	                    const MethFunction& handler, const MethDefaults& defs,
+	                    const std::vector<ParamSpec>& params, bool hasRetVal);
 
 	bool CallMethod(MethFunction* function, tVariant* paParams, MethDesc* meth, const long lSizeArray);
 
