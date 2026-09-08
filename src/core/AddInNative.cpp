@@ -194,36 +194,19 @@ bool AddInNative::IsPropWritable(const long lPropNum)
 
 bool AddInNative::GetPropVal(const long lPropNum, tVariant* pvarPropVal)
 {
+	// null-guard на комірку — свідоме посилення, а не збереження поведінки: старий
+	// код за pvarPropVal == nullptr виконував геттер і повертав true (Set<T> при
+	// порожньому pvar тихо виходить). 1С порожню комірку не передає.
 	if (!IsPropReadable(lPropNum) || !pvarPropVal) return false;
 	PropDesc& p = props_[lPropNum];
-	try {
-		p.getter(VA(pvarPropVal, &p));
-		return true;
-	}
-	catch (const std::u16string& msg) {
-		AddError(msg);
-		return false;
-	}
-	catch (...) {
-		return false;
-	}
+	return Guarded([&] { p.getter(VA(pvarPropVal, &p)); return true; });
 }
 
 bool AddInNative::SetPropVal(const long lPropNum, tVariant* pvarPropVal)
 {
 	if (!IsPropWritable(lPropNum) || !pvarPropVal) return false;
 	PropDesc& p = props_[lPropNum];
-	try {
-		p.setter(VA(pvarPropVal, &p));
-		return true;
-	}
-	catch (const std::u16string& msg) {
-		AddError(msg);
-		return false;
-	}
-	catch (...) {
-		return false;
-	}
+	return Guarded([&] { p.setter(VA(pvarPropVal, &p)); return true; });
 }
 
 long AddInNative::GetNMethods()
@@ -278,7 +261,7 @@ void DefaultHelper::Apply(tVariant* pvar, AddInNative* addin) const
 bool AddInNative::GetParamDefValue(const long lMethodNum, const long lParamNum, tVariant* pvarParamDefValue)
 {
 	if (!pvarParamDefValue) return false;
-	try {
+	return Guarded([&] {
 		// Очищення — БЕЗУМОВНО, до перевірки меж методу: викликач передає комірку
 		// під "немає дефолту", і вона мусить лишитись валідним VTYPE_EMPTY навіть
 		// коли метод/параметр не знайдено, а не чужим сміттям з попереднього виклику.
@@ -289,14 +272,7 @@ bool AddInNative::GetParamDefValue(const long lMethodNum, const long lParamNum, 
 		if (it == m.defaults.end()) return true;   // немає дефолту -> лишається VTYPE_EMPTY
 		it->second.Apply(pvarParamDefValue, this);
 		return true;
-	}
-	catch (const std::u16string& msg) {
-		AddError(msg);
-		return false;
-	}
-	catch (...) {
-		return false;
-	}
+	});
 }
 
 bool AddInNative::HasRetVal(const long lMethodNum)
@@ -339,16 +315,7 @@ bool AddInNative::Dispatch(const long n, tVariant* paParams, const long lSizeArr
 	if (n < 0 || static_cast<size_t>(n) >= meths_.size()) return false;
 	MethDesc& m = meths_[n];
 	if (!ValidateParams(m, paParams, lSizeArray)) return false;
-	try {
-		return CallMethod(&m.handler, paParams, &m, lSizeArray);
-	}
-	catch (const std::u16string& msg) {
-		AddError(msg);
-		return false;
-	}
-	catch (...) {
-		return false;
-	}
+	return Guarded([&] { return CallMethod(&m.handler, paParams, &m, lSizeArray); });
 }
 
 bool AddInNative::CallAsProc(const long lMethodNum, tVariant* paParams, const long lSizeArray)

@@ -33,6 +33,22 @@ public:
 		double,
 		bool
 	> variant;
+
+	// Порядок альтернатив — контракт DefaultHelper::Apply (.cpp): switch там іде
+	// по variant.index() і кожен індекс жорстко прив'язаний до конкретного типу
+	// (1 -> u16string, 2 -> int64_t, 3 -> double, 4 -> bool). Вставка/перестановка
+	// альтернативи не за цим порядком зламала б Apply МОВЧКИ — інваріант
+	// закріплено тут, за тим самим зразком, що й MethFunction нижче.
+	static_assert(std::variant_size_v<decltype(variant)> == 5,
+		"DefaultHelper::variant: очікується 5 альтернатив (Empty/u16string/int64_t/double/bool)");
+	static_assert(std::is_same_v<std::variant_alternative_t<1, decltype(variant)>, std::u16string>,
+		"DefaultHelper::variant: альтернатива 1 мусить бути std::u16string");
+	static_assert(std::is_same_v<std::variant_alternative_t<2, decltype(variant)>, int64_t>,
+		"DefaultHelper::variant: альтернатива 2 мусить бути int64_t");
+	static_assert(std::is_same_v<std::variant_alternative_t<3, decltype(variant)>, double>,
+		"DefaultHelper::variant: альтернатива 3 мусить бути double");
+	static_assert(std::is_same_v<std::variant_alternative_t<4, decltype(variant)>, bool>,
+		"DefaultHelper::variant: альтернатива 4 мусить бути bool");
 public:
 	DefaultHelper() : variant(EmptyValue()) {}
 	DefaultHelper(const std::u16string& s) : variant(s) {}
@@ -294,6 +310,20 @@ private:
 	// entry point у .cpp самі керують result навколо виклику Dispatch.
 	bool Dispatch(const long n, tVariant* paParams, const long lSizeArray);
 
+	// Спільна обгортка винятків для точок входу IComponentBase: std::u16string ->
+	// AddError + false, будь-що інше -> тихий false. Один екземпляр ланцюга —
+	// GetPropVal/SetPropVal/GetParamDefValue/Dispatch раніше тримали по своїй
+	// дослівній копії того самого семирядкового try/catch; тепер лише викликають
+	// Guarded з тілом-лямбдою. Шаблон — member, щоб AddError у catch-гілках
+	// резолвився на this без явної передачі.
+	template <typename Body>
+	bool Guarded(Body&& body)
+	{
+		try { return body(); }
+		catch (const std::u16string& msg) { AddError(msg); return false; }
+		catch (...) { return false; }
+	}
+
 	// Розгортає виклик хендлера довільної арності: індекси параметрів беруться з
 	// index_sequence, тож списки VA(...) для арностей 0..16 не виписуються руками
 	// (17 рукописних списків — надто ласий грунт для описки в індексі).
@@ -316,8 +346,13 @@ private:
 			// 1С передала менше параметрів, ніж арність хендлера. Раніше тут летів
 			// голий std::bad_function_call(), який зовнішній catch(...) мовчки гасив
 			// у false — без жодного AddError 1С-розробнику. Явна перевірка з іменем
-			// методу лишає той самий false, але з діагностикою.
-			AddError(u"Невідповідність кількості параметрів методу " + meth->nameEn);
+			// методу лишає той самий false, але з діагностикою — локаль-залежним
+			// іменем, як і сусідній ValidateParams (той самий alias ? ru : en), з тим
+			// самим запасним варіантом на порожнє nameRu, що й у GetMethodName.
+			const std::u16string& mname = alias
+				? (meth->nameRu.empty() ? meth->nameEn : meth->nameRu)
+				: meth->nameEn;
+			AddError(u"Невідповідність кількості параметрів методу " + mname);
 			return false;
 		}
 		InvokeHandler(*handler, paParams, meth, std::make_index_sequence<N>{});
