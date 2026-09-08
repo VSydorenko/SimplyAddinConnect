@@ -12,11 +12,8 @@
 #include <signal.h>
 #endif
 
-#include <locale>
 #include <wchar.h>
 #include <iterator>
-#include <codecvt>
-#include <cwctype>
 #include <sstream>
 
 #include "AddInNative.h"
@@ -65,18 +62,6 @@ long DestroyObject(IComponentBase** pInterface)
 	delete* pInterface;
 	*pInterface = nullptr;
 	return 0;
-}
-
-std::string WC2MB(const std::wstring& wstr)
-{
-	std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
-	return converter.to_bytes(wstr);
-}
-
-std::wstring MB2WC(const std::string& str)
-{
-	std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
-	return converter.from_bytes(str);
 }
 
 std::map<std::u16string, CompFunction>& AddInNative::components() {
@@ -513,63 +498,55 @@ void ADDIN_API AddInNative::FreeMemory(void** pMemory) const noexcept
 	if (m_iMemory) m_iMemory->FreeMemory(pMemory);
 }
 
+// WinAPI-конвертації замість deprecated std::wstring_convert (проєкт Windows-only).
+// Довжину скрізь передаємо явно (src.size()), а не -1: саме це зберігає вбудований
+// \0 усередині рядка — з -1 конвертація зупинилась би на першому нулі.
+// Навмисна зміна поведінки: на невалідному UTF-8/UTF-16 wstring_convert кидав
+// std::range_error; WinAPI з flags=0 підставляє символ-замінник U+FFFD і продовжує.
+// Виняток, що вилітає з ServiceTools::SafeMB2WCHAR у виклики логування й у хост 1С,
+// гірший за replacement character — тому MB_ERR_INVALID_CHARS/WC_ERR_INVALID_CHARS
+// свідомо НЕ використовуємо (вони перетворили б биту послідовність на порожній
+// рядок — тиха втрата даних).
 std::string AddInNative::WCHAR2MB(std::basic_string_view<WCHAR_T> src)
 {
-#ifdef _WINDOWS
-	static std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> cvt_utf8_utf16;
-	return cvt_utf8_utf16.to_bytes(src.data(), src.data() + src.size());
-#else
-	static std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> cvt_utf8_utf16;
-	return cvt_utf8_utf16.to_bytes(reinterpret_cast<const char16_t*>(src.data()),
-		reinterpret_cast<const char16_t*>(src.data() + src.size()));
-#endif//_WINDOWS
+	if (src.empty()) return std::string();
+	const wchar_t* wsrc = reinterpret_cast<const wchar_t*>(src.data());
+	const int srcLen = static_cast<int>(src.size());
+	const int need = ::WideCharToMultiByte(CP_UTF8, 0, wsrc, srcLen, nullptr, 0, nullptr, nullptr);
+	if (need <= 0) return std::string();
+	std::string out(static_cast<size_t>(need), '\0');
+	::WideCharToMultiByte(CP_UTF8, 0, wsrc, srcLen, out.data(), need, nullptr, nullptr);
+	return out;
 }
 
+// char16_t -> wchar_t на Windows: обидва 2-байтні, тож це поелементна копія,
+// а не перекодування.
 std::wstring AddInNative::WCHAR2WC(std::basic_string_view<WCHAR_T> src) {
-#ifdef _WINDOWS
-	return std::wstring(src);
-#else
-	std::wstring_convert<std::codecvt_utf16<wchar_t, 0x10ffff, std::little_endian>> conv;
-	return conv.from_bytes(reinterpret_cast<const char*>(src.data()),
-		reinterpret_cast<const char*>(src.data() + src.size()));
-#endif//_WINDOWS
+	return std::wstring(src.begin(), src.end());
 }
 
 std::u16string AddInNative::MB2WCHAR(std::string_view src) {
-#ifdef _WINDOWS
-	static std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> cvt_utf8_utf16;
-	std::wstring tmp = cvt_utf8_utf16.from_bytes(src.data(), src.data() + src.size());
-	return std::u16string(reinterpret_cast<const char16_t*>(tmp.data()), tmp.size());
-#else
-	static std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> cvt_utf8_utf16;
-	return cvt_utf8_utf16.from_bytes(src.data(), src.data() + src.size());
-#endif//_WINDOWS
-}
-
-// Локаль для регістронезалежного пошуку імен. НЕ глобальний об'єкт:
-// std::locale("ru_RU.UTF-8") може кинути виняток, а на етапі статичної
-// ініціалізації DLL це означає відмову завантаження компоненти в 1С.
-static const std::locale& RuLocale()
-{
-	static const std::locale loc = []() -> std::locale {
-		try { return std::locale("ru_RU.UTF-8"); }
-		catch (...) {
-			try { return std::locale("Russian_Russia.1251"); }
-			catch (...) { return std::locale::classic(); }
-		}
-	}();
-	return loc;
+	if (src.empty()) return std::u16string();
+	const int srcLen = static_cast<int>(src.size());
+	const int need = ::MultiByteToWideChar(CP_UTF8, 0, src.data(), srcLen, nullptr, 0);
+	if (need <= 0) return std::u16string();
+	std::u16string out(static_cast<size_t>(need), u'\0');
+	::MultiByteToWideChar(CP_UTF8, 0, src.data(), srcLen, reinterpret_cast<wchar_t*>(out.data()), need);
+	return out;
 }
 
 std::u16string AddInNative::upper(std::u16string& str)
 {
-	std::transform(str.begin(), str.end(), str.begin(), [](wchar_t ch) { return std::toupper(ch, RuLocale()); });
+	str = NormalizeName(str);
 	return str;
 }
 
 std::wstring AddInNative::upper(std::wstring& str)
 {
-	std::transform(str.begin(), str.end(), str.begin(), [](wchar_t ch) { return std::toupper(ch, RuLocale()); });
+	// wchar_t і char16_t — обидва 2-байтні на Windows: реінтерпретація, не перекодування.
+	std::u16string tmp(reinterpret_cast<const char16_t*>(str.data()), str.size());
+	tmp = NormalizeName(tmp);
+	str.assign(reinterpret_cast<const wchar_t*>(tmp.data()), tmp.size());
 	return str;
 }
 
@@ -782,12 +759,9 @@ void AddInNative::VariantHelper::Set<std::string>(const std::string& value)
 template <>
 void AddInNative::VariantHelper::Set<std::wstring>(const std::wstring& value)
 {
-	if (sizeof(wchar_t) == 2) {
-		Set<std::u16string>(std::u16string(reinterpret_cast<const char16_t*>(value.data()), value.size()));
-	}
-	else {
-		Set<std::string>(WC2MB(value));
-	}
+	// Проєкт Windows-only: sizeof(wchar_t) == 2 гарантовано, тож пряма
+	// реінтерпретація в std::u16string, без гілки на WC2MB (видалено разом з ним).
+	Set<std::u16string>(std::u16string(reinterpret_cast<const char16_t*>(value.data()), value.size()));
 }
 
 template <>
