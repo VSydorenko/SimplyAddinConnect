@@ -273,6 +273,18 @@ if ($dllFiles) {
         Write-Host "Warning: Manifest file not found at $manifestFile"
     }
 
+    # THIRD-PARTY-NOTICES.md їде РАЗОМ З БІНАРНИКОМ, а не лише лежить у репозиторії:
+    # UAPKI (BSD 2-Clause) і spdlog (MIT) лінкуються СТАТИЧНО, тобто їхній код фізично
+    # присутній у DLL. Обидві ліцензії вимагають зберігати текст і копірайт при
+    # розповсюдженні — а розповсюджуємо ми саме цей ZIP.
+    $noticesFile = "$PSScriptRoot\THIRD-PARTY-NOTICES.md"
+    if (Test-Path $noticesFile) {
+        Copy-Item -Path $noticesFile -Destination $stageFolder -Force
+        Write-Host "Adding third-party notices: $noticesFile"
+    } else {
+        Write-Host "WARNING: THIRD-PARTY-NOTICES.md не знайдено - архів поставки піде БЕЗ ліцензій статично злінкованих залежностей" -ForegroundColor Yellow
+    }
+
     # component-info.txt: склад компоненти поруч з артефактом, щоб не з'ясовувати його
     # заново з чужої пам'яті чи коментарів. Клас беремо з GetClassNames ЗІБРАНОЇ DLL, а не
     # зі списку REGISTER_COMPONENT у джерелах — саме тому, що вони можуть розходитись

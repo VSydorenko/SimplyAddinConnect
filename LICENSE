@@ -1,0 +1,92 @@
+MIT License
+
+Copyright (c) 2025-2026 Volodymyr Sydorenko
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+================================================================================
+SCOPE / МЕЖІ ДІЇ ЦІЄЇ ЛІЦЕНЗІЇ
+================================================================================
+
+The MIT license above covers the source code of THIS repository. It does NOT
+cover the following, which are included for build purposes and remain the
+property of their respective owners:
+
+Ліцензія вище поширюється на вихідний код ЦЬОГО репозиторію. Вона НЕ поширюється
+на перелічене нижче — воно включене для складання й лишається власністю
+відповідних правовласників:
+
+--------------------------------------------------------------------------------
+1. include/*.h — 1C:Enterprise Native Component SDK headers
+--------------------------------------------------------------------------------
+
+    include/AddInDefBase.h
+    include/ComponentBase.h
+    include/IMemoryManager.h
+    include/com.h
+    include/types.h
+
+These headers are part of the 1C:Enterprise external component technology and
+are the property of 1C Company. They are distributed on the terms of their
+rights holder, not under the MIT license above. They are included here so the
+component can be built; no ownership over them is claimed.
+
+Ці заголовки є частиною технології зовнішніх компонент 1С:Підприємство і є
+власністю фірми «1С». Вони поширюються на умовах їхнього правовласника, а не за
+ліцензією MIT вище. Їх включено, щоб компоненту можна було зібрати; жодних прав
+на них не заявляється.
+
+--------------------------------------------------------------------------------
+2. extern/* — third-party submodules
+--------------------------------------------------------------------------------
+
+Each submodule carries its own license. Full texts, versions and copyright
+notices — see THIRD-PARTY-NOTICES.md in the repository root.
+
+Кожен сабмодуль має власну ліцензію. Повні тексти, версії й копірайти — у файлі
+THIRD-PARTY-NOTICES.md у корені репозиторію.
+
+    spdlog          v1.17.0     MIT
+    nlohmann/json   v3.12.0     MIT
+    pugixml         v1.16       MIT
+    UAPKI           2.0.17      BSD 2-Clause
+
+IMPORTANT / ВАЖЛИВО: UAPKI and spdlog are linked STATICALLY into the shipped
+DLL. Their license texts therefore travel with the binary — see
+THIRD-PARTY-NOTICES.md, which is included in the release archive.
+
+UAPKI і spdlog лінкуються СТАТИЧНО в DLL, що поставляється. Тому тексти їхніх
+ліцензій їдуть разом із бінарником — див. THIRD-PARTY-NOTICES.md, який входить
+до архіву поставки.
+
+--------------------------------------------------------------------------------
+3. tests/data/* — test vectors
+--------------------------------------------------------------------------------
+
+Test certificates and signature samples are published reference data from the
+Ukrainian Central Certification Authority (czo.gov.ua) and the "Diia" qualified
+trust service provider. The test key tests/data/test-diia.p12 is an official
+TEST key issued by SE "DIIA" (CN=ДП ДІЯ (Тестування)); it expired on 2024-04-05
+and carries no production value. Its password is intentionally public:
+testpassword
+
+Тестові сертифікати й зразки підписів — опубліковані еталонні дані ЦЗО
+(czo.gov.ua) і КНЕДП «Дія». Тестовий ключ tests/data/test-diia.p12 — офіційний
+ТЕСТОВИЙ ключ ДП «ДІЯ» (CN=ДП ДІЯ (Тестування)), прострочений 2024-04-05, без
+жодної продуктивної цінності. Його пароль навмисно публічний: testpassword
