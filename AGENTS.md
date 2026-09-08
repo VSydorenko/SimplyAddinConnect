@@ -188,6 +188,7 @@ ExtDataProcessors/  # тестова зовнішня обробка 1С у фо
                     #   v8project.yaml описує цей 1С-воркспейс (source-set
                     #   EXTERNAL_DATA_PROCESSORS) для плагіна Unica / v8-runner
 docs/architecture/    # архітектура по підсистемах (README + 01..04)
+docs/tech-debt.md   # реєстр СВІДОМО відкладеного (з причиною й критерієм перевірки)
 docs/               # специфікації протоколів (ECR/UAPKI), tasks/
 extern/             # сабмодулі: spdlog, nlohmann_json, pugixml, uapki
 ```
