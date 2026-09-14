@@ -24,6 +24,17 @@ void FillPaymentDefaults(nlohmann::json& p, bool withFacepay) {
     if (!p.contains("merchantId")) p["merchantId"] = "0";
     if (withFacepay && !p.contains("facepay")) p["facepay"] = "false";
 }
+
+// Знімок долі операції для 1С. П'ять ключів (спека §6.2 №1); Task 2 їх доповнює,
+// не переписує. facts — сирі поля §5.30 як є, порожній об'єкт при невдалому запиті.
+nlohmann::json OutcomePayload(const ResultEnvelope& facts, const char* reason) {
+    return nlohmann::json{{"outcome", nlohmann::json{
+        {"state",     "resolved"},
+        {"reason",    reason},
+        {"facts",     facts.payload},
+        {"factsOk",   facts.ok},
+        {"factsCode", facts.code}}}};
+}
 }
 
 EcrPrivatJsonDriver::EcrPrivatJsonDriver() = default;
@@ -317,8 +328,14 @@ ResultEnvelope EcrPrivatJsonDriver::ExecuteInternal(const std::string& method,
     ResultEnvelope env;
     if (r.status == RequestStatus::Timeout && session_ && session_->IsDesynchronized() && !inRecovery_.load()) {
         inRecovery_.store(true);
-        env = RecoverAfterDesync();
+        // Результат з'ясування - це ФАКТИ ПРО, можливо, ЧУЖИЙ чек, а не результат нашої
+        // операції: GetReceiptInfo("") віддає останній чек у пакеті, ким би він не був
+        // започаткований (спека §1.2). Каса отримує чесне «не знаю» + факти окремим полем.
+        const ResultEnvelope facts = RecoverAfterDesync();
         inRecovery_.store(false);
+        env = ResultEnvelope::Fail("UNKNOWN_OUTCOME",
+            "Зв'язок із терміналом обірвався під час операції; доля невідома");
+        env.payload = OutcomePayload(facts, "TIMEOUT");   // таблиця 4.2: статус Timeout > desync
     } else {
         env = MapResult(r);
     }
@@ -349,9 +366,19 @@ ResultEnvelope EcrPrivatJsonDriver::RecoverAfterDesync() {
         std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
     }
     if (session_) session_->MarkSynchronized();
-    // best-effort: деталі останнього чека. ExecuteInternal (НЕ публічний GetReceiptInfo):
-    // inRecovery_ вже true → повторного recovery не станеться; interruptRequested_ не ресетиться.
-    return ExecuteInternal("GetReceiptInfo", nlohmann::json{{"invoiceNumber", std::string{}}}, kHandshakeTimeoutMs);
+    // best-effort: деталі останнього чека. НЕ через ExecuteInternal - той емітить події
+    // й підмінив би результат операції чужим чеком (дефект 1.2 спеки).
+    return RequestReceiptFacts(std::string{});
+}
+
+ResultEnvelope EcrPrivatJsonDriver::RequestReceiptFacts(const std::string& invoiceNumber) {
+    if (!session_) return ResultEnvelope::Fail("NOT_CONNECTED", "Термінал не підключено");
+    // Таймаут операційний, не хендшейковий: під авторизацією на хості 5с не вистачає (спека §1.3).
+    auto req = EcrJsonCodec::BuildRequest("GetReceiptInfo", 0,
+                                          nlohmann::json{{"invoiceNumber", invoiceNumber}});
+    GateSend();
+    RequestResult r = session_->RequestPrimary(req, kOperationTimeoutMs);
+    return MapResult(r);
 }
 
 ResultEnvelope EcrPrivatJsonDriver::Purchase(const std::string& amount, const nlohmann::json& extra) {

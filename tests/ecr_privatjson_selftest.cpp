@@ -498,6 +498,75 @@ static void TestDriverCancelNoWedge() {
     emu.Stop();
 }
 
+// Дефект 1.2 спеки: після desync драйвер віддавав результат ЧУЖОГО чека як результат
+// операції. Емулятор: Purchase мовчить (-> Timeout+desync), GetReceiptInfo віддає завідомо
+// іншу суму/RRN. Каса має отримати код 17, а не «успішну» чужу транзакцію.
+static void TestForeignReceiptNotCredited() {
+    TerminalEmulator emu;
+    emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","params":{"responseCode":"0000"},"error":false})"; });
+    emu.OnRequest("ServiceMessage", [](const nlohmann::json& q)->std::string{
+        auto mt = q.contains("params") ? q["params"].value("msgType","") : std::string{};
+        if (mt == "identify") return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"PAX","model":"s800"},"error":false})";
+        if (mt == "getLastStatMsgCode") return R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":"0"},"error":false})";
+        return "";
+    });
+    // Purchase не відповідає ніколи -> primary Timeout при живому сокеті -> desync.
+    emu.OnRequest("Purchase", [](const nlohmann::json&)->std::string{ return ""; });
+    // Чужий чек: інша сума, інший RRN - саме він раніше видавався за наш результат.
+    emu.OnRequest("GetReceiptInfo", [](const nlohmann::json&){
+        return R"({"method":"GetReceiptInfo","params":{"responseCode":"0000","invoiceNumber":"11","rrn":"999000111","amount":"777.77"},"error":false})";
+    });
+    CHECK(emu.Start(), "ForeignReceipt: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "ForeignReceipt: Connect");
+
+    // Рахуємо події: рівно ОДНА подія result на операцію, і в ній немає чужого payload.
+    std::atomic<int> resultEvents{ 0 };
+    std::string lastResultData;
+    std::mutex evMutex;
+    drv.SetEventHandler([&](const std::string& ev, const std::string& data) {
+        if (ev != "result") return;
+        resultEvents.fetch_add(1);
+        std::lock_guard<std::mutex> lk(evMutex);
+        lastResultData = data;
+    });
+
+    ResultEnvelope env = drv.Execute("Purchase",
+        nlohmann::json{{"amount","100.51"},{"discount",""},{"merchantId","0"},{"facepay","false"}}, 2000);
+
+    CHECK(!env.ok && env.code == "UNKNOWN_OUTCOME", "ForeignReceipt: операція -> ok=false, code=UNKNOWN_OUTCOME");
+    CHECK(env.payload.contains("outcome") && env.payload["outcome"].is_object(),
+          "ForeignReceipt: payload.outcome присутній");
+    const auto& oc = env.payload["outcome"];
+    // reason за таблицею 4.2: статус Timeout має пріоритет над IsDesynchronized(), тож "TIMEOUT".
+    // Значення навмисно збігається з тим, яке дасть повна таблиця в Task 2 — тест не переписується.
+    const std::string state = oc.value("state", std::string{});
+    CHECK((state == "resolved" || state == "pending") && oc.value("reason", std::string{}) == "TIMEOUT",
+          "ForeignReceipt: outcome.state заповнено, outcome.reason=TIMEOUT");
+    // Гонка з супервізором (див. шапку завдання): факти - АБО чужий чек (запит виграв гонку),
+    // АБО невдача запиту. Обидва виходи легітимні; тест перевіряє не їх, а відсутність підміни.
+    const bool gotForeign = oc["facts"].is_object() && oc["facts"].value("rrn", std::string{}) == "999000111";
+    const bool gotFailure = oc.value("factsOk", true) == false;
+    CHECK(gotForeign || gotFailure,
+          "ForeignReceipt: outcome.facts описує САМЕ запит чека (чужий чек або чесна невдача)");
+    if (gotForeign)
+        CHECK(oc.value("factsOk", false) == true && oc.value("factsCode", std::string{}) == "0000",
+              "ForeignReceipt: чужий чек прийшов - factsOk/factsCode це відображають");
+    // Головне: жодне поле чужого чека НЕ на топ-рівні payload - там раніше стояли rrn/amount.
+    CHECK(!env.payload.contains("rrn") && !env.payload.contains("amount") && !env.payload.contains("invoiceNumber"),
+          "ForeignReceipt: поля чужого чека НЕ на топ-рівні payload операції");
+    CHECK(resultEvents.load() == 1, "ForeignReceipt: рівно одна подія result на операцію");
+    {
+        std::lock_guard<std::mutex> lk(evMutex);
+        auto j = nlohmann::json::parse(lastResultData, nullptr, false);
+        CHECK(!j.is_discarded() && j.value("code", std::string{}) == "UNKNOWN_OUTCOME",
+              "ForeignReceipt: подія result несе код 17, не чужий чек");
+    }
+    drv.Disconnect();
+    emu.Stop();
+}
+
 // --- 1С-фасад: смоук через AddInNative::CreateObject ------------------------
 // Мінімальний мок платформи 1С (IMemoryManager/IAddInDefBase) для інстанціювання
 // компоненти в процесі — достатньо для реєстрації методів і смоук-виклику.
@@ -641,6 +710,7 @@ int main() {
     TestDriverAsync();
     TestDriverAsyncCancel();
     TestDriverCancelNoWedge();
+    TestForeignReceiptNotCredited();
     TestFacadeSmoke();
     TestVoidFallbackOnlyOnUnsupported();
     std::printf(g_failed ? "\nFAILED: %d\n" : "\nOK\n", g_failed);

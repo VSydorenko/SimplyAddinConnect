@@ -50,6 +50,7 @@ int BpoFacadeBase::CodeToInt(const std::string& code) {
     if (code == "UNSUPPORTED_BARCODE") return 14;
     if (code == "BARCODE_TOO_WIDE")    return 15;
     if (code == "RENDER_ERROR")        return 16;
+    if (code == "UNKNOWN_OUTCOME")     return 17;
     return -1;   // невідомий нечисловий код
 }
 

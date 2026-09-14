@@ -117,6 +117,10 @@ private:
     ResultEnvelope RecoverAfterDesync();
     static constexpr int kRecoverPollTries = 5;
 
+    /// Вузький запит чека для з'ясування долі операції: БЕЗ EmitEvent, без дотику до
+    /// lastStatus_/interruptSent_/job_. Публічний GetReceiptInfo (ПолучитьЧек) лишається як є.
+    ResultEnvelope RequestReceiptFacts(const std::string& invoiceNumber);
+
     /// Захист від рекурсивного відновлення (RecoverAfterDesync → ExecuteInternal → …).
     std::atomic<bool> inRecovery_{ false };
     /// Wire-трасування: якщо true — MakeSession чіпляє SetWireTraceHandler (діє з наступного Connect).
