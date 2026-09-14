@@ -144,6 +144,10 @@ public:
     /// знімком epoch. Викликається СИНХРОННО на потоці джоба; nullptr (дефолт) - без хука.
     void SetBeforeReadyHookForTest(std::function<void()> hook);
 
+    /// Тестовий шов: зупинити ЛИШЕ сесію (усі pending -> Stopped), не чіпаючи драйвер.
+    /// Моделює Stopped-тригер без session_.reset() під активним запитом.
+    void StopSessionForTest();
+
 private:
     std::unique_ptr<ITransport> MakeTransport(const EcrConnParams& p) const;
     /// Зібрати нову DeviceSession з колбеками (ставляться ДО Start()).

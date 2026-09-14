@@ -295,6 +295,7 @@ struct EmuBase {
     std::atomic<int> receipts{ 0 };
     std::atomic<int> statusCode{ 0 };   // що віддавати на getLastStatMsgCode
     std::atomic<bool> silentPing{ false };
+    std::atomic<int> statusPolls{ 0 };   // скільки разів питали getLastStatMsgCode
 };
 
 static void BaseHandlers(TerminalEmulator& emu, EmuBase& st) {
@@ -307,9 +308,11 @@ static void BaseHandlers(TerminalEmulator& emu, EmuBase& st) {
         const auto mt = q.contains("params") ? q["params"].value("msgType", std::string{}) : std::string{};
         if (mt == "identify")
             return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"PAX","model":"s800"},"error":false})";
-        if (mt == "getLastStatMsgCode")
+        if (mt == "getLastStatMsgCode") {
+            st.statusPolls.fetch_add(1);
             return std::string(R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":")")
                  + std::to_string(st.statusCode.load()) + R"("},"error":false})";
+        }
         return "";
     });
     emu.OnRequest("GetReceiptInfo", [&st](const nlohmann::json&) {
@@ -709,6 +712,161 @@ static void TestDisconnectInterruptsBackoff() {
     // elapsed~=38 мс, без нього (голий sleep_for) elapsed~=940 мс - восьмикратний запас
     // з обох боків порогу 300 мс.
     CHECK(elapsed < 300, "DisconnectBackoff: Отключить повернувся < 300 мс, не чекав backoff");
+    emu.Stop();
+}
+
+// №2 + №3: обрив у польоті -> 17 негайно (pending, facts=null); після реконекту фоновий
+// джоб дочікується спокою й робить знімок -> resolved, рівно одна подія outcome.
+static void TestOutcomeAfterReconnect() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    st.statusCode.store(10);                       // термінал іще веде операцію
+    emu.OnRequest("Purchase", [&](const nlohmann::json&) -> std::string {
+        st.purchases.fetch_add(1);
+        emu.DropConnection();                      // прийняв оплату й зник
+        return "";
+    });
+    CHECK(emu.Start(), "OutcomeReconnect: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    std::atomic<int> outcomeEvents{ 0 };
+    drv.SetEventHandler([&](const std::string& ev, const std::string&) {
+        if (ev == "outcome") outcomeEvents.fetch_add(1);
+    });
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "OutcomeReconnect: Connect");
+
+    ResultEnvelope env = drv.Purchase("100.51");
+    CHECK(!env.ok && env.code == "UNKNOWN_OUTCOME", "OutcomeReconnect(№2): 17 повернуто до реконекту");
+    {
+        const auto oc = env.payload["outcome"];
+        CHECK(oc.value("state", std::string{}) == "pending", "OutcomeReconnect(№2): state=pending");
+        CHECK(oc["facts"].is_null(), "OutcomeReconnect(№2): facts=null, поки доля невідома");
+        CHECK(oc.value("reason", std::string{}) == "DISCONNECTED", "OutcomeReconnect(№2): reason=DISCONNECTED");
+        CHECK(oc.value("channelConnected", true) == false, "OutcomeReconnect(№2): channelConnected=false");
+    }
+
+    // Реконект -> Ping -> Ready -> полінг статусу. Відпускаємо термінал після кількох полінгів.
+    CHECK(WaitFor([&]{ return drv.IsReady(); }, 20000), "OutcomeReconnect(№3): зв'язок відновлено Ping-ом");
+    const int pollsAtReady = st.statusPolls.load();
+    CHECK(WaitFor([&]{ return st.statusPolls.load() >= pollsAtReady + 2; }),
+          "OutcomeReconnect(№3): джоб полить статус");
+    st.statusCode.store(0);                        // термінал звільнився
+
+    CHECK(WaitFor([&]{ return OutcomeOf(drv).value("state", std::string{}) == "resolved"; }),
+          "OutcomeReconnect(№3): знімок зроблено (resolved)");
+    const auto oc = OutcomeOf(drv);
+    CHECK(oc.value("terminalIdle", false) == true, "OutcomeReconnect(№3): terminalIdle=true");
+    CHECK(oc["facts"].is_object() && oc["facts"].value("rrn", std::string{}) == "555000111",
+          "OutcomeReconnect(№3): факти чека у знімку");
+    CHECK(oc.value("generation", 0ull) == 1ull, "OutcomeReconnect(№3): generation=1 (перше питання)");
+    CHECK(outcomeEvents.load() == 1, "OutcomeReconnect(№3): подія outcome рівно одна");
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// №8: Отключить посеред Pending з активним джобом - без падінь і зависань; знімок переживає
+// перепідключення (Connect НЕ скидає lastOutcome_: факти належать операції, не сесії).
+static void TestDisconnectDuringPending() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    st.statusCode.store(10);                       // джоб застрягне в полінгу
+    emu.OnRequest("Purchase", [&](const nlohmann::json&) -> std::string {
+        st.purchases.fetch_add(1);
+        emu.DropConnection();
+        return "";
+    });
+    CHECK(emu.Start(), "DisconnectPending: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    const std::string conn = std::string("tcp://127.0.0.1:") + std::to_string(emu.Port());
+    CHECK(drv.Connect(conn), "DisconnectPending: Connect");
+    ResultEnvelope env = drv.Purchase("100.51");
+    CHECK(env.code == "UNKNOWN_OUTCOME", "DisconnectPending: 17 отримано");
+    CHECK(WaitFor([&]{ return st.statusPolls.load() > 0 && drv.IsReady(); }, 20000),
+          "DisconnectPending: джоб працює (Ready + полінг)");
+
+    const auto beforeGen = OutcomeOf(drv).value("generation", 0ull);
+    drv.Disconnect();                              // посеред роботи джоба
+    CHECK(!drv.IsReady(), "DisconnectPending: після Отключить зв'язку немає");
+
+    CHECK(drv.Connect(conn), "DisconnectPending: повторний Connect");
+    const auto oc = OutcomeOf(drv);
+    CHECK(oc.value("state", std::string{}) != "none" && oc.value("generation", 0ull) == beforeGen,
+          "DisconnectPending: lastOutcome_ переживає Отключить/Подключить");
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// №9: повторний обрив УЖЕ під час з'ясування. Перший джоб виходить ABORTED саме через
+// Disconnected від PollStatusOnce (покоління не мінялось, closing_ не ставився); після
+// другого реконекту хук бачить Pending -> джоб знову з кроку 0. Знімок один.
+static void TestSecondDropDuringCapture() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    st.statusCode.store(10);
+    emu.OnRequest("Purchase", [&](const nlohmann::json&) -> std::string {
+        st.purchases.fetch_add(1);
+        emu.DropConnection();
+        return "";
+    });
+    CHECK(emu.Start(), "SecondDrop: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    std::atomic<int> outcomeEvents{ 0 };
+    drv.SetEventHandler([&](const std::string& ev, const std::string&) {
+        if (ev == "outcome") outcomeEvents.fetch_add(1);
+    });
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "SecondDrop: Connect");
+    ResultEnvelope env = drv.Purchase("100.51");
+    CHECK(env.code == "UNKNOWN_OUTCOME", "SecondDrop: 17 отримано (gen=1)");
+
+    CHECK(WaitFor([&]{ return drv.IsReady(); }, 20000), "SecondDrop: перший реконект, Ready");
+    const int polls = st.statusPolls.load();
+    CHECK(WaitFor([&]{ return st.statusPolls.load() > polls; }), "SecondDrop: джоб полить статус");
+    emu.DropConnection();                          // другий обрив ПОСЕРЕД з'ясування
+    CHECK(WaitFor([&]{ return !drv.IsReady(); }), "SecondDrop: Ready знято вдруге");
+    CHECK(OutcomeOf(drv).value("state", std::string{}) == "pending",
+          "SecondDrop: намір лишився Pending (перший джоб вийшов без запису)");
+
+    CHECK(WaitFor([&]{ return drv.IsReady(); }, 20000), "SecondDrop: другий реконект, Ready");
+    st.statusCode.store(0);
+    CHECK(WaitFor([&]{ return OutcomeOf(drv).value("state", std::string{}) == "resolved"; }),
+          "SecondDrop: знімок зроблено після другого реконекту");
+    CHECK(OutcomeOf(drv).value("generation", 0ull) == 1ull, "SecondDrop: покоління те саме (1)");
+    CHECK(outcomeEvents.load() == 1, "SecondDrop: подія outcome одна, не дві");
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// №14: Stopped як тригер. Сесію зупиняє інший потік під час синхронної операції -
+// FinishPendingLocked завершує запит статусом Stopped, а термінал МІГ устигнути.
+static void TestStoppedIsTrigger() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    emu.OnRequest("Purchase", [&st](const nlohmann::json&) -> std::string {
+        st.purchases.fetch_add(1);
+        std::this_thread::sleep_for(std::chrono::seconds(5));    // «касир вводить пін»
+        return R"({"method":"Purchase","params":{"responseCode":"0000","invoiceNumber":"5"},"error":false})";
+    });
+    CHECK(emu.Start(), "Stopped: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    const std::string conn = std::string("tcp://127.0.0.1:") + std::to_string(emu.Port());
+    CHECK(drv.Connect(conn), "Stopped: Connect");
+
+    std::thread stopper([&]{
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        drv.StopSessionForTest();
+    });
+    ResultEnvelope env = drv.Purchase("100.51");
+    stopper.join();
+
+    CHECK(!env.ok && env.code == "UNKNOWN_OUTCOME", "Stopped: операція -> код 17");
+    CHECK(env.payload["outcome"].value("reason", std::string{}) == "STOPPED", "Stopped: reason=STOPPED");
+    CHECK(env.payload["outcome"].value("state", std::string{}) == "pending", "Stopped: state=pending");
+
+    // Ручний реконект із 1С (спека §4.4в): Connect бачить Pending і запускає з'ясування сам.
+    drv.Disconnect();
+    CHECK(drv.Connect(conn), "Stopped: повторний Connect");
+    CHECK(WaitFor([&]{ return OutcomeOf(drv).value("state", std::string{}) == "resolved"; }),
+          "Stopped: після Connect джоб зробив знімок (§4.4в)");
+    drv.Disconnect();
     emu.Stop();
 }
 
@@ -1403,6 +1561,10 @@ int main() {
     TestTerminalBusyUntilLimit();
     TestSelfHealingFromInquire();
     TestDisconnectInterruptsBackoff();
+    TestOutcomeAfterReconnect();
+    TestDisconnectDuringPending();
+    TestSecondDropDuringCapture();
+    TestStoppedIsTrigger();
     TestFacadeSmoke();
     TestVoidFallbackOnlyOnUnsupported();
     std::printf(g_failed ? "\nFAILED: %d\n" : "\nOK\n", g_failed);

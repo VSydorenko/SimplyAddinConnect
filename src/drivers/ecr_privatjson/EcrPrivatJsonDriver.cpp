@@ -703,6 +703,8 @@ void EcrPrivatJsonDriver::SetBeforeReadyHookForTest(std::function<void()> hook) 
     beforeReadyHookForTest_ = std::move(hook);
 }
 
+void EcrPrivatJsonDriver::StopSessionForTest() { if (session_) session_->Stop(); }
+
 std::uint64_t EcrPrivatJsonDriver::MarkPending(const OperationIntent& intent, const std::string& reason) {
     std::lock_guard<std::mutex> lk(outcomeMutex_);
     const std::uint64_t gen = lastOutcome_.generation + 1;   // ідентифікатор питання для 1С
