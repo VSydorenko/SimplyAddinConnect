@@ -5,13 +5,14 @@
 #include <chrono>
 #include <atomic>
 #include <functional>
+#include <cstdint>
 #include <nlohmann/json.hpp>
 #include "../../platform/ResultEnvelope.h"
 #include "../../platform/JobEngine.h"
+#include "../../transport/RequestTypes.h"
 
 class DeviceSession;
 class ITransport;
-struct RequestResult;
 
 /// Розібраний рядок підключення.
 struct EcrConnParams {
@@ -20,6 +21,29 @@ struct EcrConnParams {
     int tcpPort = 2000;      ///< для Tcp
     std::string comPort;     ///< для Com, напр. "COM3"
     int baud = 115200;       ///< для Com
+};
+
+/// Доля останньої фінансової операції (спека §4.1). None - питання не стояло;
+/// Pending - з'ясовуємо; Resolved - знімок готовий (успіх/невдача з'ясування читається
+/// з facts.ok/facts.code, окремий стан для цього зайвий).
+enum class OutcomeState { None, Pending, Resolved };
+
+/// Намір каси: що саме ми відправляли на дріт, коли зв'язок обірвався.
+struct OperationIntent {
+    std::string method;      ///< "Purchase" | "Refund"
+    std::string amount;      ///< рядком, як пішло на дріт (MoneyToString)
+    std::string rrn;         ///< для Refund; інакше порожньо
+    std::string requestId;   ///< ИдентификаторЗапроса з 1С, прозорий; "" якщо не задано
+    std::chrono::system_clock::time_point startedAt{};
+};
+
+struct LastOutcome {
+    OutcomeState    state = OutcomeState::None;
+    std::uint64_t   generation = 0;    ///< ++ на кожен перехід у Pending; ідентифікатор питання для 1С
+    OperationIntent intent;
+    std::string     reason;            ///< TIMEOUT|DISCONNECTED|SEND_FAILED|STOPPED|DESYNC
+    bool            terminalIdle = false;
+    ResultEnvelope  facts;             ///< результат RequestReceiptFacts (поля §5.30)
 };
 
 /// Пілотний драйвер ECRPrivatJSON: розбір підключення, фабрика транспорту, життєвий
@@ -84,6 +108,14 @@ public:
     // Використовуватиметься в Частині 2; тут — інфраструктура.
     void GateSend();   // блокує до дозволеного моменту, оновлює мітку
 
+    /// Знімок долі останньої операції для 1С. Мережею не ходить, працює в будь-якому стані.
+    /// НЕ const: Task 4 додасть сюди самозцілення (мутує recoveryJob_).
+    ResultEnvelope InquireLastOutcome();
+
+    /// ИдентификаторЗапроса каси, що пройде у знімок прозорим рядком. Забирається
+    /// одноразово на вході наступної фінансової операції.
+    void SetRequestId(std::string id);
+
 private:
     std::unique_ptr<ITransport> MakeTransport(const EcrConnParams& p) const;
     /// Зібрати нову DeviceSession з колбеками (ставляться ДО Start()).
@@ -123,6 +155,23 @@ private:
 
     /// Захист від рекурсивного відновлення (RecoverAfterDesync → ExecuteInternal → …).
     std::atomic<bool> inRecovery_{ false };
+
+    static bool IsFinancial(const std::string& method);   ///< WHITELIST {Purchase, Refund}: гейт §4.6 + requestId + тригер Pending; новий фінансовий метод — сюди, інакше тихо випаде (див. .cpp)
+
+    /// Зафіксувати намір: state=Pending, generation++, reason. Повертає нове покоління.
+    std::uint64_t MarkPending(const OperationIntent& intent, const std::string& reason);
+    /// Об'єкт payload.outcome (спека §4.7). Бере outcomeMutex_; мережею не ходить.
+    nlohmann::json OutcomeSnapshotJson();
+    /// Конверт коду 17 зі знімком усередині.
+    ResultEnvelope BuildUnknownOutcome();
+
+    /// Один цикл getLastStatMsgCode на service-доріжці. Спільний для PollerLoop і
+    /// з'ясування долі. code валідний ЛИШЕ при Response; інакше не чіпається.
+    RequestStatus PollStatusOnce(int& code);
+
+    mutable std::mutex outcomeMutex_;   ///< lastOutcome_ + pendingRequestId_
+    LastOutcome        lastOutcome_;
+    std::string        pendingRequestId_;
     /// Wire-трасування: якщо true — MakeSession чіпляє SetWireTraceHandler (діє з наступного Connect).
     std::atomic<bool> traceEnabled_{ false };
 

@@ -567,6 +567,44 @@ static void TestForeignReceiptNotCredited() {
     emu.Stop();
 }
 
+// №10: нефінансовий метод при збої НЕ створює наміру - каса нічого не з'ясовує.
+static void TestNonFinancialNotTracked() {
+    TerminalEmulator emu;
+    emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","params":{"responseCode":"0000"},"error":false})"; });
+    emu.OnRequest("ServiceMessage", [](const nlohmann::json& q)->std::string{
+        auto mt = q.contains("params") ? q["params"].value("msgType","") : std::string{};
+        if (mt == "identify") return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"PAX","model":"s800"},"error":false})";
+        if (mt == "getLastStatMsgCode") return R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":"0"},"error":false})";
+        return "";
+    });
+    emu.OnRequest("Audit", [](const nlohmann::json&)->std::string{ return ""; });   // мовчить -> Timeout
+    CHECK(emu.Start(), "NonFinancial: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "NonFinancial: Connect");
+
+    ResultEnvelope env = drv.Execute("Audit", nlohmann::json{{"merchantId","0"}}, 1500);
+    CHECK(!env.ok && env.code == "TIMEOUT", "NonFinancial: Audit при мовчанні -> TIMEOUT, не 17");
+
+    ResultEnvelope oc = drv.InquireLastOutcome();
+    CHECK(oc.ok && oc.code == "OK" && oc.payload["outcome"].value("state", std::string{}) == "none",
+          "NonFinancial: намір не створено (state=none)");
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// №11: ИсходПоследнейОперацииJSON без жодної операції - не помилка, а «нема про що питати».
+static void TestInquireNone() {
+    EcrPrivatJsonDriver drv;                       // навіть без Connect
+    ResultEnvelope env = drv.InquireLastOutcome();
+    CHECK(env.ok && env.code == "OK", "InquireNone: ok=true, code=OK");
+    CHECK(env.payload.contains("outcome") &&
+          env.payload["outcome"].value("state", std::string{}) == "none",
+          "InquireNone: outcome.state=none");
+    CHECK(env.payload["outcome"].value("channelConnected", true) == false,
+          "InquireNone: channelConnected=false без сесії");
+}
+
 // --- 1С-фасад: смоук через AddInNative::CreateObject ------------------------
 // Мінімальний мок платформи 1С (IMemoryManager/IAddInDefBase) для інстанціювання
 // компоненти в процесі — достатньо для реєстрації методів і смоук-виклику.
@@ -711,6 +749,8 @@ int main() {
     TestDriverAsyncCancel();
     TestDriverCancelNoWedge();
     TestForeignReceiptNotCredited();
+    TestNonFinancialNotTracked();
+    TestInquireNone();
     TestFacadeSmoke();
     TestVoidFallbackOnlyOnUnsupported();
     std::printf(g_failed ? "\nFAILED: %d\n" : "\nOK\n", g_failed);

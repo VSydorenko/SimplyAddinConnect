@@ -9,6 +9,9 @@
 #include "../../transport/Transport_COM.h"
 #include "../../helpers/ServiceTools.h"
 #include <thread>
+#include <cstdio>
+#include <ctime>
+#include <utility>
 
 namespace {
 constexpr int kHandshakeTimeoutMs = 5000;   // Ping/Identify — з запасом (Verifone 3-5с)
@@ -25,15 +28,27 @@ void FillPaymentDefaults(nlohmann::json& p, bool withFacepay) {
     if (withFacepay && !p.contains("facepay")) p["facepay"] = "false";
 }
 
-// Знімок долі операції для 1С. П'ять ключів (спека §6.2 №1); Task 2 їх доповнює,
-// не переписує. facts — сирі поля §5.30 як є, порожній об'єкт при невдалому запиті.
-nlohmann::json OutcomePayload(const ResultEnvelope& facts, const char* reason) {
-    return nlohmann::json{{"outcome", nlohmann::json{
-        {"state",     "resolved"},
-        {"reason",    reason},
-        {"facts",     facts.payload},
-        {"factsOk",   facts.ok},
-        {"factsCode", facts.code}}}};
+// ISO 8601 UTC із мілісекундами. Дефолтний time_point (наміру не було) -> порожній рядок,
+// щоб 1С не бачила фальшиве "1970-01-01".
+std::string IsoUtc(std::chrono::system_clock::time_point tp) {
+    if (tp == std::chrono::system_clock::time_point{}) return std::string{};
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()) % 1000;
+    const std::time_t t = std::chrono::system_clock::to_time_t(tp);
+    std::tm tmv{};
+    gmtime_s(&tmv, &t);
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
+                  tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                  tmv.tm_hour, tmv.tm_min, tmv.tm_sec, static_cast<int>(ms.count()));
+    return std::string(buf);
+}
+
+const char* OutcomeStateName(OutcomeState s) {
+    switch (s) {
+        case OutcomeState::Pending:  return "pending";
+        case OutcomeState::Resolved: return "resolved";
+        default:                     return "none";
+    }
 }
 }
 
@@ -272,21 +287,10 @@ void EcrPrivatJsonDriver::PollerLoop(std::atomic<bool>& stop) {
             session_->RequestService(intr, kServiceTimeoutMs);
             interruptSent_.store(true);
         }
-        auto stat = EcrJsonCodec::BuildRequest("ServiceMessage", 0, {{"msgType", "getLastStatMsgCode"}});
-        GateSend();
-        RequestResult s = session_->RequestService(stat, kServiceTimeoutMs);
-        if (s.status == RequestStatus::Response) {
-            ParsedResponse pr = EcrJsonCodec::Parse(s.frame);
-            if (pr.valid && pr.params.is_object()) {
-                std::string code = pr.params.value("LastStatMsgCode", std::string{});
-                if (!code.empty()) {
-                    try {
-                        int c = std::stoi(code);
-                        if (c != lastStatus_.exchange(c))   // статус змінився → подія в 1С
-                            EmitEvent("status", { {"code", c}, {"text", StatusText(c)}, {"state", "Running"} });
-                    } catch (...) {}
-                }
-            }
+        int code = -1;
+        if (PollStatusOnce(code) == RequestStatus::Response && code >= 0) {
+            if (code != lastStatus_.exchange(code))   // статус змінився -> подія в 1С
+                EmitEvent("status", { {"code", code}, {"text", StatusText(code)}, {"state", "Running"} });
         }
     }
 }
@@ -303,6 +307,18 @@ ResultEnvelope EcrPrivatJsonDriver::Execute(const std::string& method,
 
 ResultEnvelope EcrPrivatJsonDriver::ExecuteInternal(const std::string& method,
                                                     const nlohmann::json& params, int timeoutMs) {
+    const bool financial = IsFinancial(method);
+    // requestId забирається ОДНОРАЗОВО на самому вході фінансової операції - ДО всіх гейтів
+    // (17 / NOT_CONNECTED / RECONNECTING), під тим самим м'ютексом, що й SetRequestId (спека §4.7).
+    // Відбитий виклик до термінала не дійшов - його id помирає разом із ним; інакше він
+    // прилип би до наступної фінансової операції без сеттера (тест №26).
+    std::string requestId;
+    if (financial) {
+        std::lock_guard<std::mutex> lk(outcomeMutex_);
+        requestId = std::exchange(pendingRequestId_, std::string{});
+    }
+    const auto startedAt = std::chrono::system_clock::now();
+
     if (!IsConnected()) return ResultEnvelope::Fail("NOT_CONNECTED", "Термінал не підключено");
     lastStatus_.store(-1);
     interruptSent_.store(false);   // interruptRequested_ ТУТ НЕ чіпаємо (fix E)
@@ -324,18 +340,43 @@ ResultEnvelope EcrPrivatJsonDriver::ExecuteInternal(const std::string& method,
         r = session_->RequestPrimary(req, timeoutMs);
     }   // poller зупинено+join тут
 
-    // Обрив у польоті транзакції: session у desync — best-effort відновлення (service вільний).
+    // Тригер «доля невідома» (спека §4.2): чотири статуси АБО desync. Порядок перевірки
+    // саме такий - статус має пріоритет над desync. Busy/Unsupported/Concurrent без
+    // desync відомі однозначно й тригером не є.
+    const bool desync = session_ && session_->IsDesynchronized();
+    const char* reason = nullptr;
+    switch (r.status) {
+        case RequestStatus::Timeout:      reason = "TIMEOUT";      break;
+        case RequestStatus::Disconnected: reason = "DISCONNECTED"; break;
+        case RequestStatus::SendFailed:   reason = "SEND_FAILED";  break;
+        case RequestStatus::Stopped:      reason = "STOPPED";      break;
+        default:                          reason = desync ? "DESYNC" : nullptr; break;
+    }
+
     ResultEnvelope env;
-    if (r.status == RequestStatus::Timeout && session_ && session_->IsDesynchronized() && !inRecovery_.load()) {
-        inRecovery_.store(true);
-        // Результат з'ясування - це ФАКТИ ПРО, можливо, ЧУЖИЙ чек, а не результат нашої
-        // операції: GetReceiptInfo("") віддає останній чек у пакеті, ким би він не був
-        // започаткований (спека §1.2). Каса отримує чесне «не знаю» + факти окремим полем.
-        const ResultEnvelope facts = RecoverAfterDesync();
-        inRecovery_.store(false);
-        env = ResultEnvelope::Fail("UNKNOWN_OUTCOME",
-            "Зв'язок із терміналом обірвався під час операції; доля невідома");
-        env.payload = OutcomePayload(facts, "TIMEOUT");   // таблиця 4.2: статус Timeout > desync
+    if (financial && reason) {
+        OperationIntent intent;
+        intent.method    = method;
+        intent.amount    = params.is_object() ? params.value("amount", std::string{}) : std::string{};
+        intent.rrn       = params.is_object() ? params.value("rrn", std::string{}) : std::string{};
+        intent.requestId = requestId;
+        intent.startedAt = startedAt;
+        const std::uint64_t gen = MarkPending(intent, reason);
+
+        // ТИМЧАСОВО (до Task 4): при живому з'єднанні з'ясовуємо синхронно. Task 4
+        // замінює цей блок на EnsureRecoveryRunning() + WaitOutcomeBounded(gen).
+        if (IsConnected() && !inRecovery_.load()) {
+            inRecovery_.store(true);
+            const ResultEnvelope facts = RecoverAfterDesync();
+            inRecovery_.store(false);
+            std::lock_guard<std::mutex> lk(outcomeMutex_);
+            if (lastOutcome_.generation == gen) {
+                lastOutcome_.state        = OutcomeState::Resolved;
+                lastOutcome_.terminalIdle = (lastStatus_.load() == 0);
+                lastOutcome_.facts        = facts;
+            }
+        }
+        env = BuildUnknownOutcome();
     } else {
         env = MapResult(r);
     }
@@ -350,18 +391,10 @@ ResultEnvelope EcrPrivatJsonDriver::RecoverAfterDesync() {
     // Полимо getLastStatMsgCode ПОКИ код != "0" (bounded): "0" = термінал у спокої (спека §6.5).
     // НЕ рвемо на будь-якій Response — лише коли статус реально спокійний.
     for (int i = 0; i < kRecoverPollTries && session_; ++i) {
-        auto stat = EcrJsonCodec::BuildRequest("ServiceMessage", 0, {{"msgType", "getLastStatMsgCode"}});
-        GateSend();
-        RequestResult s = session_->RequestService(stat, kServiceTimeoutMs);
-        if (s.status == RequestStatus::Response) {
-            ParsedResponse pr = EcrJsonCodec::Parse(s.frame);
-            if (pr.valid && pr.params.is_object()) {
-                std::string code = pr.params.value("LastStatMsgCode", std::string{});
-                if (!code.empty()) {
-                    try { lastStatus_.store(std::stoi(code)); } catch (...) {}
-                    if (code == "0") break;   // термінал у спокої (спека §6.5)
-                }
-            }
+        int code = -1;
+        if (PollStatusOnce(code) == RequestStatus::Response && code >= 0) {
+            lastStatus_.store(code);                 // без події: це фон, не хід операції
+            if (code == 0) break;                    // термінал у спокої (спека §6.5)
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
     }
@@ -379,6 +412,88 @@ ResultEnvelope EcrPrivatJsonDriver::RequestReceiptFacts(const std::string& invoi
     GateSend();
     RequestResult r = session_->RequestPrimary(req, kOperationTimeoutMs);
     return MapResult(r);
+}
+
+// ⚠️ WHITELIST фінансових методів - на нього спираються і гейт §4.6, і наскрізний requestId,
+// і сам тригер Pending. Метод драйвера, що рухає гроші й не доданий сюди, ТИХО випаде з усіх
+// трьох: жодної помилки збірки, а дефект - про гроші. Це НЕ гіпотетично: протокол ПриватБанку
+// вже описує фінансові методи, яких драйвер поки не реалізує - Cashback (§5.16),
+// Preauthorization (§5.26), SaleCompletion (§5.27), Withdrawal/WithdrawalPartly, ServiceRefund,
+// ServicePbP/ServiceRefPbP (docs/ECR_Privat_JSON_Protokol.md). Реалізуєш будь-який - додай сюди
+// й у тести тригера (Task 2). Скасування (Void) протокол не має: RunVoid фасаду відкочується
+// на Refund (AcquiringFacadeBase.cpp:49-68), тому збіг переліку з командами БПО
+// {Sales, Refund, Void} сьогодні тримається на цьому відкаті.
+bool EcrPrivatJsonDriver::IsFinancial(const std::string& method) {
+    return method == "Purchase" || method == "Refund";
+}
+
+void EcrPrivatJsonDriver::SetRequestId(std::string id) {
+    std::lock_guard<std::mutex> lk(outcomeMutex_);
+    pendingRequestId_ = std::move(id);
+}
+
+std::uint64_t EcrPrivatJsonDriver::MarkPending(const OperationIntent& intent, const std::string& reason) {
+    std::lock_guard<std::mutex> lk(outcomeMutex_);
+    const std::uint64_t gen = lastOutcome_.generation + 1;   // ідентифікатор питання для 1С
+    lastOutcome_ = LastOutcome{};
+    lastOutcome_.state      = OutcomeState::Pending;
+    lastOutcome_.generation = gen;
+    lastOutcome_.intent     = intent;
+    lastOutcome_.reason     = reason;
+    return gen;
+}
+
+nlohmann::json EcrPrivatJsonDriver::OutcomeSnapshotJson() {
+    const bool channel = IsConnected();   // ПОЗА локом: чіпає сесію, не lastOutcome_
+    std::lock_guard<std::mutex> lk(outcomeMutex_);
+    return nlohmann::json{
+        {"state",      OutcomeStateName(lastOutcome_.state)},
+        {"generation", lastOutcome_.generation},
+        {"reason",     lastOutcome_.reason},
+        {"intent", nlohmann::json{
+            {"method",    lastOutcome_.intent.method},
+            {"amount",    lastOutcome_.intent.amount},
+            {"rrn",       lastOutcome_.intent.rrn},
+            {"requestId", lastOutcome_.intent.requestId},
+            {"startedAt", IsoUtc(lastOutcome_.intent.startedAt)}}},
+        {"terminalIdle", lastOutcome_.terminalIdle},
+        // facts - сирі поля §5.30 як є; null, поки доля не з'ясована.
+        {"facts", lastOutcome_.state == OutcomeState::Resolved
+                      ? lastOutcome_.facts.payload : nlohmann::json(nullptr)},
+        {"factsOk",   lastOutcome_.facts.ok},
+        {"factsCode", lastOutcome_.facts.code},
+        {"channelConnected", channel}};
+}
+
+ResultEnvelope EcrPrivatJsonDriver::BuildUnknownOutcome() {
+    ResultEnvelope env = ResultEnvelope::Fail("UNKNOWN_OUTCOME",
+        "Зв'язок із терміналом обірвався під час операції; доля невідома");
+    env.payload = nlohmann::json{{"outcome", OutcomeSnapshotJson()}};
+    return env;
+}
+
+ResultEnvelope EcrPrivatJsonDriver::InquireLastOutcome() {
+    // Task 4 додасть тут EnsureRecoveryRunning() - самозцілення (спека §4.4).
+    bool none;
+    { std::lock_guard<std::mutex> lk(outcomeMutex_); none = lastOutcome_.state == OutcomeState::None; }
+    if (!none) return BuildUnknownOutcome();
+    ResultEnvelope env = ResultEnvelope::Ok();
+    env.payload = nlohmann::json{{"outcome", OutcomeSnapshotJson()}};
+    return env;
+}
+
+RequestStatus EcrPrivatJsonDriver::PollStatusOnce(int& code) {
+    if (!session_) return RequestStatus::Disconnected;
+    auto stat = EcrJsonCodec::BuildRequest("ServiceMessage", 0, {{"msgType", "getLastStatMsgCode"}});
+    GateSend();
+    RequestResult s = session_->RequestService(stat, kServiceTimeoutMs);
+    if (s.status != RequestStatus::Response) return s.status;
+    ParsedResponse pr = EcrJsonCodec::Parse(s.frame);
+    if (pr.valid && pr.params.is_object()) {
+        const std::string c = pr.params.value("LastStatMsgCode", std::string{});
+        if (!c.empty()) { try { code = std::stoi(c); } catch (...) {} }
+    }
+    return s.status;
 }
 
 ResultEnvelope EcrPrivatJsonDriver::Purchase(const std::string& amount, const nlohmann::json& extra) {
