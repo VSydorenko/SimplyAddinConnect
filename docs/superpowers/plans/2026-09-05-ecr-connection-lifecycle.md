@@ -1719,10 +1719,21 @@ bool EcrPrivatJsonDriver::EnsureReady() {
         const std::uint64_t epoch = LinkEpoch();     // епоха, в якій шлемо цей Ping
         auto ping = EcrJsonCodec::BuildRequest("PingDevice", 0, nullptr);
         GateSend();
+        // ПЕРЕД КОЖНИМ Ping знімаємо desync (спека §4.9.2 «desync і Ping»): після таймауту
+        // primary DoRequest відбиває будь-який primary до дроту (DeviceSession.cpp:175) - Ping
+        // теж, а Timeout самого Ping ставить desync знову. Гроші тут не захищає desync, а гейт
+        // §4.6: MarkPending уже стоїть, фінансові виклики отримують 17, нефінансові - 18.
+        session_->MarkSynchronized();
         // Той самий Ping, що в Connect: провідний 0x00 «закриває» півкадр, що міг лишитись
         // у буфері термінала після обриву посеред передачі (спека §2.3).
         RequestResult r = session_->RequestPrimary(ping, pingTimeoutMs_.load(),
                                                    FrameOptions{ /*leadingDelimiter=*/true });
+        if (r.status == RequestStatus::Desynchronized) {
+            // Недосяжно після MarkSynchronized вище; лишається лише RejectBoth між зняттям і
+            // відправкою. Не аварія - повторити без backoff.
+            NEUTRAL_REPORT_WARN("ECRPrivatJSON", "EnsureReady: Desynchronized після MarkSynchronized - повтор");
+            continue;
+        }
         if (r.status == RequestStatus::Response || r.status == RequestStatus::Busy) {
             // Busy = живий, зайнятий нашою операцією - теж «чує нас». Ready із мертвої епохи
             // SetLinkState відкине сам.
@@ -2847,6 +2858,12 @@ git commit -m "feat(transport): TCP keepalive завжди — тихий обр
 > device-core — семантика кадрової синхронізації; «доля фінансової операції невідома» — семантика
 > драйвера. Драйвер, що після відновлення повертає касі чужий чек, порушує саме цю межу
 > (історія: `ECRPrivatJSON`, виправлено 2026-09; `docs/architecture/ecrprivatjson.md` §6.6-6.7).
+>
+> `desync` знімає драйвер (`MarkSynchronized()`), коли **за його критерієм** канал синхронізований;
+> критерій — його, не сесії. Наслідок для будь-якого драйвера на device-core: primary-запит
+> відновлення (хендшейк, Ping) при `desync` до дроту не вийде (`DeviceSession.cpp:175`) — драйвер
+> має зняти прапорець **перед** ним сам, а захист грошей тримати власним гейтом, не desync
+> (`ECRPrivatJSON`: спека 2026-09-05 §4.9.2 «desync і Ping»).
 
 - [ ] **Step 3: `docs/architecture/bpo-contract.md`**
 
