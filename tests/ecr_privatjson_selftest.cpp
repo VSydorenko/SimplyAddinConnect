@@ -1541,6 +1541,111 @@ static void TestVoidFallbackOnlyOnUnsupported() {
     }
 }
 
+// №4 + №5: під Pending друга оплата не йде на дріт; після Resolved гейт знято.
+static void TestGateBlocksSecondPurchase() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    st.statusCode.store(10);                         // термінал зайнятий -> Pending триває
+    std::atomic<bool> firstDone{ false };
+    emu.OnRequest("Purchase", [&](const nlohmann::json&) -> std::string {
+        const int n = st.purchases.fetch_add(1);
+        if (n == 0) { emu.DropConnection(); return ""; }        // перша - обрив
+        firstDone.store(true);
+        return R"({"method":"Purchase","params":{"responseCode":"0000","invoiceNumber":"2"},"error":false})";
+    });
+    CHECK(emu.Start(), "Gate: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "Gate: Connect");
+    CHECK(drv.Purchase("100.51").code == "UNKNOWN_OUTCOME", "Gate: перша оплата -> 17");
+    CHECK(WaitFor([&]{ return drv.IsReady(); }, 20000), "Gate: зв'язок відновлено");
+
+    // №4: доля ще не з'ясована (термінал тримає 10) - друга оплата відбивається гейтом.
+    CHECK(OutcomeOf(drv).value("state", std::string{}) == "pending", "Gate: стан ще pending");
+    const int purchasesBefore = st.purchases.load();
+    ResultEnvelope second = drv.Purchase("100.51");
+    CHECK(!second.ok && second.code == "UNKNOWN_OUTCOME", "Gate(№4): друга оплата -> 17, не на дріт");
+    CHECK(second.description.find("попередньої") != std::string::npos,
+          "Gate(№4): опис пояснює, що з'ясовується доля попередньої операції");
+    CHECK(st.purchases.load() == purchasesBefore, "Gate(№4): емулятор другого Purchase не бачив");
+
+    // №5: термінал звільнився -> знімок -> гейт знято.
+    st.statusCode.store(0);
+    CHECK(WaitFor([&]{ return OutcomeOf(drv).value("state", std::string{}) == "resolved"; }),
+          "Gate: знімок зроблено");
+    ResultEnvelope third = drv.Purchase("100.51");
+    CHECK(third.ok && third.code == "0000", "Gate(№5): після resolved оплата проходить");
+    CHECK(firstDone.load() && st.purchases.load() == purchasesBefore + 1,
+          "Gate(№5): саме ця оплата дійшла до термінала");
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// №21: Pending і Connecting одночасно -> код 17 (гейт перший), а не 18.
+static void TestGateBeforeReconnecting() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    st.statusCode.store(10);
+    emu.OnRequest("Purchase", [&](const nlohmann::json&) -> std::string {
+        st.purchases.fetch_add(1);
+        emu.DropConnection();
+        return "";
+    });
+    CHECK(emu.Start(), "GateOrder: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "GateOrder: Connect");
+    st.silentPing.store(true);                       // після реконекту термінал мовчить -> Connecting
+    CHECK(drv.Purchase("100.51").code == "UNKNOWN_OUTCOME", "GateOrder: перша оплата -> 17");
+    // ⚠️ Дефект брифу (той самий механізм, що в TestSilenceAfterReconnect/№16 і
+    // TestThreeStatesThreeCodes/№22): !IsReady() сам по собі правдивий і в Disconnected, і в
+    // Connecting - супервізор DeviceSession чекає reconnectDelayMs=1000мс ПЕРЕД першою спробою
+    // Close->Open (DeviceSession.cpp:456-462, DeviceSession.h:37), тож одразу після обриву стан
+    // - Disconnected, не Connecting. Доказ Connecting - ПАРА предикатів (спека §6.5):
+    // IsConnected()==true (сокет реально перепідключився) І !IsReady() (термінал мовчить).
+    for (int i = 0; i < 200 && !drv.IsConnected(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(drv.IsConnected() && !drv.IsReady(), "GateOrder: сокет перепідключився, Ready лишається false (Connecting)");
+    CHECK(OutcomeOf(drv).value("state", std::string{}) == "pending", "GateOrder: намір Pending");
+
+    ResultEnvelope p = drv.Purchase("100.51");
+    CHECK(!p.ok && p.code == "UNKNOWN_OUTCOME",
+          "GateOrder(№21): Pending+Connecting -> 17 (гейт §4.6 першим), не RECONNECTING");
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// №26: гейт СПОЖИВАЄ requestId відбитого виклику - id не прилипає до наступної операції без сеттера.
+// Червоний у двох дефектних станах: без гейта (виклик 2.00 іде на дріт) і з гейтом при заборі
+// requestId ПІСЛЯ нього ("B" прилипає до оплати 3.00).
+static void TestGateConsumesRequestId() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    st.statusCode.store(0);                          // термінал у спокої - з'ясування миттєве
+    emu.OnRequest("Purchase", [&](const nlohmann::json&) -> std::string {
+        st.purchases.fetch_add(1);
+        emu.DropConnection();                        // кожна оплата, що дійшла, обривається -> 17
+        return "";
+    });
+    CHECK(emu.Start(), "GateRid: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "GateRid: Connect");
+    drv.MarkPendingForTest("Purchase", "1.00", "TIMEOUT");   // Pending без джоба (як у №13)
+    drv.SetRequestId("B");
+    const int before = st.purchases.load();
+    CHECK(drv.Purchase("2.00").code == "UNKNOWN_OUTCOME", "GateRid: виклик із id B відбито гейтом");
+    CHECK(st.purchases.load() == before, "GateRid: на дріт не пішло");
+    CHECK(WaitFor([&]{ return OutcomeOf(drv).value("state", std::string{}) == "resolved"; }),
+          "GateRid: самозцілення з гейта довело попередній намір до resolved");
+
+    CHECK(drv.Purchase("3.00").code == "UNKNOWN_OUTCOME", "GateRid: оплата без сеттера обірвалась -> 17");
+    CHECK(WaitFor([&]{ return OutcomeOf(drv).value("state", std::string{}) == "resolved"; }, 20000),
+          "GateRid: знімок другого обриву готовий (після реконекту й Ping)");
+    const auto oc = OutcomeOf(drv);
+    CHECK(oc["intent"].value("amount", std::string{}) == "3.00", "GateRid: знімок про нову операцію");
+    CHECK(oc["intent"].value("requestId", std::string{}).empty(),
+          "GateRid(№26): id відбитого виклику НЕ прилип - requestId порожній, не \"B\"");
+    drv.Disconnect();
+    emu.Stop();
+}
+
 int main() {
     TestResultEnvelope();
     TestEcrJsonCodec();
@@ -1579,6 +1684,9 @@ int main() {
     TestStoppedIsTrigger();
     TestFacadeSmoke();
     TestVoidFallbackOnlyOnUnsupported();
+    TestGateBlocksSecondPurchase();
+    TestGateBeforeReconnecting();
+    TestGateConsumesRequestId();
     std::printf(g_failed ? "\nFAILED: %d\n" : "\nOK\n", g_failed);
     return g_failed ? 1 : 0;
 }

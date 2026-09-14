@@ -413,6 +413,27 @@ ResultEnvelope EcrPrivatJsonDriver::ExecuteInternal(const std::string& method,
     }
     const auto startedAt = std::chrono::system_clock::now();
 
+    // Гейт §4.6: поки доля попередньої фінансової операції невідома, нову на дріт не пускаємо.
+    // Саме тут закривається найімовірніший шлях до подвійного списання (касир тисне «Оплата»
+    // ще раз, поки фоновий GetReceiptInfo іде) і конкуренція за єдину primary-доріжку.
+    // ПЕРЕД перевірками стану зв'язку: при незавершеному намірі касир має бачити 17 із
+    // поясненням, а не NOT_CONNECTED/RECONNECTING. requestId цього виклику вже забрано вище
+    // (Task 2 крок 6) - відбитий виклик його споживає.
+    if (financial) {
+        bool pending = false;
+        { std::lock_guard<std::mutex> lk(outcomeMutex_); pending = lastOutcome_.state == OutcomeState::Pending; }
+        if (pending) {
+            EnsureRecoveryRunning();               // самозцілення §4.4
+            ResultEnvelope env = BuildUnknownOutcome();
+            // Текст - для КАСИРА: штатний код 1С показує саме description (спека §4.6).
+            // Імен методів компоненти тут не буває. Обидва варіанти містять «попередньої» (тест №4).
+            env.description = IsConnected()
+                ? "Доля попередньої карткової операції ще з'ясовується; зачекайте кілька секунд і повторіть"
+                : "Зв'язку з терміналом немає; доля попередньої карткової операції з'ясується після підключення";
+            return env;
+        }
+    }
+
     // Три різні стани - три різні коди, саме в цій послідовності (спека §4.9.4).
     // !IsReady() без IsConnected() перед ним перекрив би NOT_CONNECTED для всіх викликів
     // до Connect() і після Отключить - каса чекала б реконекту, якого нікому робити.
