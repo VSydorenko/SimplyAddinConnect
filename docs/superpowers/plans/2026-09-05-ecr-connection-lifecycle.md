@@ -602,12 +602,14 @@ RequestStatus EcrPrivatJsonDriver::PollStatusOnce(int& code) {
 
 - [ ] **Step 6: Замінити гілку Task 1 на повний тригер 4.2**
 
-`ExecuteInternal` — на початку тіла, після наявної перевірки `IsConnected()`:
+`ExecuteInternal` — **найперший** блок тіла, ДО наявної перевірки `IsConnected()` (і до гейта Task 6):
 
 ```cpp
     const bool financial = IsFinancial(method);
-    // requestId забирається ОДНОРАЗОВО на вході фінансової операції, під тим самим
-    // м'ютексом, що й SetRequestId (спека §4.7): інакше id прилип би до наступної операції.
+    // requestId забирається ОДНОРАЗОВО на самому вході фінансової операції - ДО всіх гейтів
+    // (17 / NOT_CONNECTED / RECONNECTING), під тим самим м'ютексом, що й SetRequestId (спека §4.7).
+    // Відбитий виклик до термінала не дійшов - його id помирає разом із ним; інакше він
+    // прилип би до наступної фінансової операції без сеттера (тест №26).
     std::string requestId;
     if (financial) {
         std::lock_guard<std::mutex> lk(outcomeMutex_);
@@ -1122,9 +1124,10 @@ git commit -m "feat(ecr): стан зв'язку з епохою, код RECONNE
 Найбільше завдання плану: тут з'являється `recoveryJob_`, і з ним — уся фонова механіка. Синхронний
 блок Task 2 замінюється на «запустити джоб + зачекати bounded».
 
-**Три тестові шви** (у спеці §5 названо перший; решта — рішення цього плану, бо без них сценарії №7
-і №13 неможливо відтворити за розумний час; повідомити архітектора при виконанні):
-`SetTransportFactoryForTest`, `SetOutcomeTimingForTest`, `MarkPendingForTest`.
+**Три тестові шви** (разом зі `StopSessionForTest` з Task 5 — прийняті архітектором і зафіксовані в
+спеці §5, коміт `a937ee1`; без них сценарії №7 і №13 не відтворити за розумний час):
+`SetTransportFactoryForTest`, `SetOutcomeTimingForTest`, `MarkPendingForTest`. Усі — `…ForTest`, на класі
+драйвера поруч з `EnableTrace`, без `#ifdef`; у фасади й до 1С не виходять.
 
 **Files:**
 - Modify: `src/platform/JobEngine.h/.cpp` (`startMutex_`)
@@ -2157,10 +2160,11 @@ git commit -m "test(ecr): життєвий цикл під обривами — 
 
 **Files:**
 - Modify: `src/drivers/ecr_privatjson/EcrPrivatJsonDriver.cpp` (`ExecuteInternal`, вхідні перевірки)
-- Test: `tests/ecr_privatjson_selftest.cpp` (№4, №5, №21)
+- Test: `tests/ecr_privatjson_selftest.cpp` (№4, №5, №21, №26)
 
 **Interfaces:**
-- Consumes: `IsFinancial`, `BuildUnknownOutcome`, `EnsureRecoveryRunning` (Task 2, 4).
+- Consumes: `IsFinancial`, `BuildUnknownOutcome`, `EnsureRecoveryRunning` (Task 2, 4), `MarkPendingForTest`
+  і `SetRequestId` (Task 2/4) для №26.
 - Produces: поведінку «фінансовий метод під `Pending` не йде на дріт», описану для 1С у §9 спеки.
 
 - [ ] **Step 1: Написати тести**
@@ -2229,28 +2233,65 @@ static void TestGateBeforeReconnecting() {
     drv.Disconnect();
     emu.Stop();
 }
+
+// №26: гейт СПОЖИВАЄ requestId відбитого виклику - id не прилипає до наступної операції без сеттера.
+// Червоний у двох дефектних станах: без гейта (виклик 2.00 іде на дріт) і з гейтом при заборі
+// requestId ПІСЛЯ нього ("B" прилипає до оплати 3.00).
+static void TestGateConsumesRequestId() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    st.statusCode.store(0);                          // термінал у спокої - з'ясування миттєве
+    emu.OnRequest("Purchase", [&](const nlohmann::json&) -> std::string {
+        st.purchases.fetch_add(1);
+        emu.DropConnection();                        // кожна оплата, що дійшла, обривається -> 17
+        return "";
+    });
+    CHECK(emu.Start(), "GateRid: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "GateRid: Connect");
+    drv.MarkPendingForTest("Purchase", "1.00", "TIMEOUT");   // Pending без джоба (як у №13)
+    drv.SetRequestId("B");
+    const int before = st.purchases.load();
+    CHECK(drv.Purchase("2.00").code == "UNKNOWN_OUTCOME", "GateRid: виклик із id B відбито гейтом");
+    CHECK(st.purchases.load() == before, "GateRid: на дріт не пішло");
+    CHECK(WaitFor([&]{ return OutcomeOf(drv).value("state", std::string{}) == "resolved"; }),
+          "GateRid: самозцілення з гейта довело попередній намір до resolved");
+
+    CHECK(drv.Purchase("3.00").code == "UNKNOWN_OUTCOME", "GateRid: оплата без сеттера обірвалась -> 17");
+    CHECK(WaitFor([&]{ return OutcomeOf(drv).value("state", std::string{}) == "resolved"; }, 20000),
+          "GateRid: знімок другого обриву готовий (після реконекту й Ping)");
+    const auto oc = OutcomeOf(drv);
+    CHECK(oc["intent"].value("amount", std::string{}) == "3.00", "GateRid: знімок про нову операцію");
+    CHECK(oc["intent"].value("requestId", std::string{}).empty(),
+          "GateRid(№26): id відбитого виклику НЕ прилип - requestId порожній, не \"B\"");
+    drv.Disconnect();
+    emu.Stop();
+}
 ```
 
 - [ ] **Step 2: Запустити — переконатися, що падає**
 
 Очікування: `Gate(№4)` падає — друга оплата сьогодні йде на дріт (`purchases` зростає);
-`GateOrder(№21)` падає з кодом `RECONNECTING` замість 17.
+`GateOrder(№21)` падає з кодом `RECONNECTING` замість 17; `GateRid(№26)` падає на «на дріт не пішло».
 
 - [ ] **Step 3: Поставити гейт першим на вході**
 
-`ExecuteInternal` — початок тіла (перед усіма перевірками стану):
+`ExecuteInternal` — одразу ПІСЛЯ забору `requestId` (Task 2, крок 6: `const bool financial` +
+`std::exchange`) і ПЕРЕД усіма перевірками стану (`IsConnected`/`IsReady`):
 
-⚠️ **Нового `const bool financial` тут НЕ оголошувати.** Воно вже оголошене нижче в тілі
-`ExecuteInternal` (Task 2, крок 6); друге оголошення в тому самому плоскому скоупі — помилка
-компіляції MSVC C2374. Гейт користується `IsFinancial(method)` напряму — саме так, як у §4.9.4 спеки.
+⚠️ **Нового `const bool financial` тут НЕ оголошувати** — воно вже є на самому початку тіла (Task 2,
+крок 6); друге оголошення в тому самому плоскому скоупі — помилка компіляції MSVC C2374. Гейт користується
+тим самим `financial`. Забір `requestId` іде **до** гейта навмисно (спека §4.7): відбитий виклик споживає
+свій id, інакше той прилип би до наступної оплати без сеттера (тест №26).
 
 ```cpp
     // Гейт §4.6: поки доля попередньої фінансової операції невідома, нову на дріт не пускаємо.
     // Саме тут закривається найімовірніший шлях до подвійного списання (касир тисне «Оплата»
     // ще раз, поки фоновий GetReceiptInfo іде) і конкуренція за єдину primary-доріжку.
     // ПЕРЕД перевірками стану зв'язку: при незавершеному намірі касир має бачити 17 із
-    // поясненням, а не NOT_CONNECTED/RECONNECTING.
-    if (IsFinancial(method)) {
+    // поясненням, а не NOT_CONNECTED/RECONNECTING. requestId цього виклику вже забрано вище
+    // (Task 2 крок 6) - відбитий виклик його споживає.
+    if (financial) {
         bool pending = false;
         { std::lock_guard<std::mutex> lk(outcomeMutex_); pending = lastOutcome_.state == OutcomeState::Pending; }
         if (pending) {
@@ -2273,7 +2314,8 @@ static void TestGateBeforeReconnecting() {
 - [ ] **Step 5: Негативна верифікація**
 
 Перенести гейт **після** перевірки `!IsReady()` → №21 падає (18 замість 17). Прибрати гейт зовсім →
-№4 падає (емулятор бачить другу оплату). Повернути.
+№4 падає (емулятор бачить другу оплату). Перенести забір `requestId` (Task 2 крок 6) **після** гейта →
+№26 падає (`"B"` прилипло до оплати `3.00`). Повернути.
 
 - [ ] **Step 6: Повний гейт x64 і x86, коміт**
 
@@ -2416,6 +2458,9 @@ void EcrPrivatJsonAcquiring::SetRequestId(const std::string& id) { drv_.SetReque
 ```cpp
     // Доля перерваної операції. Читається БЕЗ мережі й у будь-якому стані зв'язку - саме
     // тому доступна одразу після Ложь від платіжного методу, коли потік 1С уже живий.
+    // ІНВАРІАНТ (спека §4.7): НЕ чіпає lastError - ні ClearError(), ні SetError(). 1С читає
+    // ПолучитьОшибку() і цей знімок у довільному порядку (§9 п.1/п.4); ClearError «за симетрією
+    // з сусідами» тихо дав би 0 замість 17. Перевіряється в ecr_native_host.
     AddFunction(u"InquireLastOutcome", u"ИсходПоследнейОперацииJSON",
         Ret([this]() -> std::string {
             try {
@@ -2430,6 +2475,7 @@ void EcrPrivatJsonAcquiring::SetRequestId(const std::string& id) { drv_.SetReque
 
     // Кличеться ПЕРЕД штатною платіжною командою, у тій самій точці, де 1С пише намір
     // у реєстр. Рядок прозорий: не парситься, не валідується, не обрізається.
+    // lastError теж НЕ чіпає: код помилки належить попередній команді, поки наступна не перепише.
     AddProcedure(u"SetRequestId", u"УстановитьИдентификаторЗапроса",
         MethFunction(std::function<void(VH)>([this](VH id) {
             try { Driver().SetRequestId(VariantToString(id)); }
@@ -2527,6 +2573,15 @@ void EcrPrivatJsonAcquiring::SetRequestId(const std::string& id) { drv_.SetReque
             CHECK(oc["intent"].value("requestId", std::string{}) == "req-42",
                   "L3-bpo: ИдентификаторЗапроса пройшов крізь усі шари");
         }
+        // Інваріант §4.7: знімок НЕ чіпає lastError - 1С може читати ПолучитьОшибку() і ПІСЛЯ нього.
+        // Той самий виклик GetLastError, що вище (свіжі tVariant - OUT-рядок першого виклику не перевикористовуємо).
+        {
+            tVariant ep2, eret2; tVarInit(&ep2); tVarInit(&eret2);
+            ep2.vt = VTYPE_PWSTR; ep2.pwstrVal = nullptr; ep2.wstrLen = 0;
+            bpo->CallAsFunc(idxErr, &eret2, &ep2, 1);
+            CHECK(eret2.vt == VTYPE_I4 && eret2.lVal == 17,
+                  "L3-bpo: ПолучитьОшибку ПІСЛЯ ИсходПоследнейОперацииJSON - усе ще 17, знімок помилку не чистить");
+        }
     }
 ```
 
@@ -2570,7 +2625,9 @@ powershell -ExecutionPolicy Bypass -File run_tests.ps1 -NoUapki x86
 - [ ] **Step 8: Негативна верифікація**
 
 Прибрати `override` `InquireLastOutcome` в адаптері → e2e ловить `UNSUPPORTED` замість знімка
-(дефолт інтерфейсу), тобто CHECK «конверт знімка — код 17» падає. Повернути.
+(дефолт інтерфейсу), тобто CHECK «конверт знімка — код 17» падає. Додати `ClearError();` першим рядком у
+лямбду `ИсходПоследнейОперацииJSON` → CHECK «ПолучитьОшибку ПІСЛЯ … усе ще 17» падає (0 замість 17).
+Повернути обидва.
 
 - [ ] **Step 9: Коміт**
 
@@ -2814,6 +2871,10 @@ git commit -m "docs(ecr): життєвий цикл зв'язку, доля оп
 Емулятор моделює припущення; сім питань §7 спеки може закрити лише залізо. До цього прогону
 відповідні місця документації лишаються позначеними як припущення.
 
+**Виконує користувач** — потрібні термінал Newland N950 і жива 1С з розширенням; сесія-імплементатор
+зупиняється після Task 9 і передає ZIP та цей список сценаріїв. Task 9 має явно позначити пункти §7 у
+`docs/architecture/ecrprivatjson.md` як «припущення до живого прогону».
+
 **Files:**
 - Modify: `docs/architecture/ecrprivatjson.md` §9 (розділ «Верифікація на реальному обладнанні» —
   дописати результати), `docs/superpowers/specs/2026-09-05-ecr-connection-lifecycle-design.md` §7
@@ -2867,7 +2928,7 @@ git commit -m "docs(ecr): результати живого прогону жи�
 | Task | Залежить від | Мерджиться |
 |---|---|---|
 | 1. Чужий чек | — | **окремим PR** (спека §8) |
-| 2. Стан долі, тригер, requestId | 1 | гілка `ecr-inflight-outcome` |
+| 2. Стан долі, тригер, requestId | 1 | нова гілка від `main` (напр. `ecr-lifecycle-impl`) |
 | 3. Стан зв'язку, код 18 | 2 (спільні місця в `ExecuteInternal`) | те саме |
 | 4. Фоновий джоб | 2, 3 | те саме |
 | 5. Життєвий цикл (тести) | 4 | те саме |
@@ -2876,6 +2937,13 @@ git commit -m "docs(ecr): результати живого прогону жи�
 | 8. Keepalive | — (незалежне, але не раніше за 3: спільний гейт) | те саме |
 | 9. Документація | 1-8 | те саме |
 | 10. Живий прогін | 9 | те саме |
+
+**Гілки** (уточнено 2026-09-14). Стара `ecr-inflight-outcome` — документи (спека + план), уже в `main`
+через PR #19 (v3.1.3, `d2395e9`); **не перевикористовувати**, можна видалити. Task 1 — своя гілка від
+`main` → PR → merge. Гілка для Task 2-9 стартує від `main` **після** злиття Task 1: Task 2 переписує саме
+ту гілку `ExecuteInternal`, яку Task 1 виправив. Якщо чекати на рев'ю Task 1 не хочеться — стартувати від
+гілки Task 1 і перебазувати після злиття. Task 10 — коміт результатів у ту саму гілку або окремий docs-PR,
+залежно від того, хто проганяє.
 
 Після Task 10 — робота на боці розширення `SMP_SimplyConnect` за §9 спеки (зняття наміру з
 урахуванням 17, сеттер `requestId`, індикатор стану). Це **окрема** сесія й окремий репозиторій;
