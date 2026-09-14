@@ -450,7 +450,7 @@ struct LastOutcome {
 У приватну секцію:
 
 ```cpp
-    static bool IsFinancial(const std::string& method);   ///< kFinancialMethods = {Purchase, Refund}
+    static bool IsFinancial(const std::string& method);   ///< WHITELIST {Purchase, Refund}: гейт §4.6 + requestId + тригер Pending; новий фінансовий метод — сюди, інакше тихо випаде (див. .cpp)
 
     /// Зафіксувати намір: state=Pending, generation++, reason. Повертає нове покоління.
     std::uint64_t MarkPending(const OperationIntent& intent, const std::string& reason);
@@ -501,6 +501,13 @@ const char* OutcomeStateName(OutcomeState s) {
 Далі — реалізації:
 
 ```cpp
+// ⚠️ WHITELIST фінансових методів - на нього спираються і гейт §4.6, і наскрізний requestId,
+// і сам тригер Pending. Новий метод драйвера, що рухає гроші (Void, EmergencyVoid, PreAuth, …),
+// не доданий сюди, ТИХО випаде з усіх трьох: жодної помилки збірки, а дефект - про гроші.
+// Сьогодні власного Void у драйвера немає (EcrPrivatJsonAcquiring.h:27 - протокол ПриватJSON
+// його не має), і RunVoid фасаду відкочується на Refund (AcquiringFacadeBase.cpp:49-68) -
+// тому збіг переліку з фінансовими командами БПО {Sales, Refund, Void} випадковий.
+// Додаєш метод, що рухає гроші, - додай його сюди й у тести тригера (Task 2).
 bool EcrPrivatJsonDriver::IsFinancial(const std::string& method) {
     return method == "Purchase" || method == "Refund";
 }
@@ -2297,8 +2304,11 @@ static void TestGateConsumesRequestId() {
         if (pending) {
             EnsureRecoveryRunning();               // самозцілення §4.4
             ResultEnvelope env = BuildUnknownOutcome();
-            env.description = "З'ясовую долю попередньої операції; "
-                              "повторіть після ИсходПоследнейОперацииJSON";
+            // Текст - для КАСИРА: штатний код 1С показує саме description (спека §4.6).
+            // Імен методів компоненти тут не буває. Обидва варіанти містять «попередньої» (тест №4).
+            env.description = IsConnected()
+                ? "Доля попередньої карткової операції ще з'ясовується; зачекайте кілька секунд і повторіть"
+                : "Зв'язку з терміналом немає; доля попередньої карткової операції з'ясується після підключення";
             return env;
         }
     }
