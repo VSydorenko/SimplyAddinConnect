@@ -487,7 +487,10 @@ MarkPending(intent, reason)                  // під outcomeMutex_, generation
 EnsureRecoveryRunning()
 чекати bounded kOutcomeSyncWaitMs (8000 мс), крок kPollIntervalMs, вихід за ПЕРШОЮ з умов:
     (lastOutcome_.state == Resolved && lastOutcome_.generation == gen)   // з'ясовано
-    || recoveryJob_.State() != JobState::Running                         // джоб вийшов (ABORTED тощо)
+    || (recoveryJob_.State() != JobState::Running
+        && recoveryJob_.State() != JobState::Interrupting)               // джоб вийшов (ABORTED тощо);
+                                        // Interrupting = RequestCancel уже є, джоб ще доробляє — чекати далі,
+                                        // інакше вихід передчасний (уточнення Task 9 за кодом)
 return BuildUnknownOutcome()                 // 17 з тим, що є в lastOutcome_; TryGetResult не читаємо
 ```
 Чому чекати, якщо секція про тригери каже «повертати негайно»: там ішлося про очікування
@@ -623,7 +626,10 @@ closing_ = false
       "factsOk": true, "factsCode": "0000",
       "channelConnected": true } } }
 ```
-`facts` — сирі поля §5.30 як є; `null`, поки `state == "pending"`. `intent` і `facts` поруч — каса
+`facts` — сирі поля §5.30 як є; `null`, поки `state == "pending"`. **`factsOk` і `factsCode` присутні
+завжди**, і при `pending` теж — `false` і порожній рядок (дефолт `ResultEnvelope`); споживач, який чекає їх
+*появи* як ознаки готовності знімка, помилиться — ознака готовності лише `state == "resolved"` (уточнення
+Task 9 за кодом). `intent` і `facts` поруч — каса
 зіставляє суму/час/тип зі своїм реєстром і вирішує. Компонента ніде не пише «збіглося».
 
 `intent.amount` — рядок **у тому вигляді, в якому пішов на дріт**: `MoneyToString` (`MoneyFormat.h`) —
@@ -887,11 +893,15 @@ silence ≈ `kHandshakeTimeoutMs` + `reconnectDelayMs` ≈ 6 с, сталий, �
 Через наявний `EmitEvent` (лише прямий API, `ВключитьСобытия`), при кожній зміні `linkState_`:
 
 ```json
-{ "state": "connecting" | "ready" | "disconnected", "reason": "dropped" | "closed" | "" }
+{ "state": "connecting" | "ready" | "disconnected",
+  "reason": "dropped" | "timeout" | "closed" | "connect_failed" | "" }
 ```
 
 `reason:"closed"` — ручний `Отключить`, щоб інтерфейс не малював аварію там, де каса сама попросила.
-`reason:"dropped"` — обрив. `reason:"connect_failed"` — `Start()` персистентної сесії не вдався в
+`reason:"dropped"` — обрив (хук `up=false`). `reason:"timeout"` — таймаут операції при живому TCP: драйвер
+сам переводить у `Connecting` (4.2), бо супервізор зараз перевідкриє канал; для каси різниці з `"dropped"`
+немає, для розбору лоґу — є (у першій редакції цього переліку значення бракувало, хоч код його ставив —
+уточнення Task 9). `reason:"connect_failed"` — `Start()` персистентної сесії не вдався в
 `Connect()` (це аварія, не прохання каси — тому не `"closed"`). При `ready` — порожньо. БПО-фасади подій не мають і не матимуть (контракт БПО
 їх не передбачає, потік 1С під час виклику мертвий, `bpo-contract.md` §4); у простої ж, де й трапляється
 тихий обрив, потік живий — подія дійде касі негайно.
