@@ -36,8 +36,10 @@ void AddinECRPrivatJSON::RegisterMethods() {
             catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка Disconnect: ") + e.what()); }
         })));
 
+    // Подключен = «термінал підтвердив готовність», а не «сокет відкритий» (спека §4.9.4):
+    // «сокет є, а термінал не чує» касі нічим не корисний.
     AddFunction(u"IsConnected", u"Подключен",
-        Ret([this]() -> bool { return driver_.IsConnected(); }));
+        Ret([this]() -> bool { return driver_.IsReady(); }));
 
     // --- Синхронні операції -------------------------------------------------
     // runSync ставить this->result рядком JSON (ResultEnvelope) і повертає env.ok.

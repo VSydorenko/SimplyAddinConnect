@@ -31,6 +31,14 @@ public:
     using Logger = std::function<void(const std::string&)>;
     void SetLog(Logger log) { log_ = std::move(log); }
 
+    /// Розірвати активне з'єднання з боку «термінала» (моделювання обриву). Наступний
+    /// accept емулятор робить сам - реконект драйвера обслуговується без додаткових дій.
+    void DropConnection();
+
+    /// Закрити з'єднання ОДРАЗУ після відправки наступної відповіді: «термінал відповів
+    /// і зник». Без цього сценарій «Ping-відповідь + негайний обрив» недетермінований.
+    void DropAfterNextResponse() { dropAfterResponse_.store(true); }
+
 private:
     void Run();
     void HandleFrame(SOCKET c, const std::vector<uint8_t>& frame);
@@ -53,4 +61,6 @@ private:
 
     Logger log_;                 ///< опційний логер обміну (nullptr → не логуємо)
     std::mutex logMutex_;        ///< серіалізація рядків логу з конкурентних worker-ів
+
+    std::atomic<bool> dropAfterResponse_{ false };
 };

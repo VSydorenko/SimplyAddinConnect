@@ -50,6 +50,14 @@ const char* OutcomeStateName(OutcomeState s) {
         default:                     return "none";
     }
 }
+
+const char* LinkStateName(LinkState s) {
+    switch (s) {
+        case LinkState::Ready:      return "ready";
+        case LinkState::Connecting: return "connecting";
+        default:                    return "disconnected";
+    }
+}
 }
 
 EcrPrivatJsonDriver::EcrPrivatJsonDriver() = default;
@@ -103,8 +111,16 @@ std::unique_ptr<DeviceSession> EcrPrivatJsonDriver::MakeSession(const EcrConnPar
                                              std::make_unique<NullTerminatedFramer>(),
                                              std::make_unique<EcrPrivatJsonClassifier>());
     // Колбеки — ЛИШЕ до Start() (DeviceSession: після Start — no-op+WARN).
-    s->SetUnsolicitedHandler([](std::vector<uint8_t>) { /* deviceBusy/нотифікації — Частина 2 */ });
-    s->SetConnectionStateHandler([](bool) { /* стан зв'язку — Частина 2 (події в 1С) */ });
+    // deviceBusy без нашого запиту - лише пізній дубль на таймаутнутий запит (протокол §6.1);
+    // інших самостійних нотифікацій протокол не документує. Логуємо, щоб wire-трасування
+    // показувало, що прийшло без запиту.
+    s->SetUnsolicitedHandler([](std::vector<uint8_t> frame) {
+        NEUTRAL_REPORT_DEBUG("ECRPrivatJSON",
+            "Кадр без запиту: " + std::string(frame.begin(), frame.end()));
+    });
+    // Стан зв'язку слухає ЛИШЕ персистентна сесія - хук їй ставить Connect() (крок 3).
+    // Короткоживучі hs/id його не мають: на момент їх створення session_ уже обнулено.
+    s->SetConnectionStateHandler([](bool) {});
     if (traceEnabled_.load())
         s->SetWireTraceHandler([](bool tx, std::vector<uint8_t> b) {
             NEUTRAL_REPORT_TRACE("ECRPrivatJSON", std::string(tx ? "TX " : "RX ") + std::string(b.begin(), b.end()));
@@ -164,10 +180,28 @@ bool EcrPrivatJsonDriver::Connect(const std::string& connString) {
         id->Stop();   // дисконект
     }
 
-    // 3) Постійний режим: сесія лишається відкритою (реконект — супервізор DeviceSession).
+    // 3) Постійний режим: сесія лишається відкритою (реконект - супервізор DeviceSession).
     session_ = MakeSession(params_);
+    session_->SetConnectionStateHandler([this](bool up) {
+        // Хук іде на dispatcher-потоці сесії: сигналізуємо й повертаємось, у мережу не ходимо
+        // (блокуючий виклик звідси заморозив би dispatcher - спека §2.1).
+        if (up) return;                                    // Task 4: EnsureRecoveryRunning()
+        SetLinkState(LinkState::Connecting, "dropped");
+    });
+    // Ready ставимо ДО Start(): хендшейк-Ping пройшов секунду тому (крок 1), а хук up=true
+    // після Start уже стоїть у черзі dispatcher-а. Якби Ready ставився після Start(), хук
+    // побачив би Connecting і Task 4 запустив би зайвий Ping рівно тоді, коли 1С після
+    // Подключить одразу кличе Оплату -> CONCURRENT на першій оплаті зміни (спека §4.9.1).
+    //
+    // ⚠️ З ЯВНОЮ ЕПОХОЮ. Дефолтна 0 тут не годиться: Connect() починається з Disconnect(),
+    // після якого linkEpoch_ >= 1, і SetLinkState(Ready, "") мовчки відкинувся б - Ready не
+    // став би на КОЖНОМУ повторному Connect(). Між LinkEpoch() і записом хук нової сесії
+    // спрацювати не може: Start() ще не викликано.
+    SetLinkState(LinkState::Ready, "", LinkEpoch());
     if (!session_->Start()) {
         NEUTRAL_REPORT_ERROR("ECRPrivatJSON", "Постійний режим: не вдалося відкрити зв'язок");
+        // Не "closed": це аварія підключення, а не прохання каси відключитись (спека §4.9.3).
+        SetLinkState(LinkState::Disconnected, "connect_failed");
         session_.reset();
         return false;
     }
@@ -210,11 +244,35 @@ void EcrPrivatJsonDriver::Disconnect() {
         // щоб «нічого не сталося на терміналі» не виглядало як збій (2026-08-29).
         NEUTRAL_REPORT_INFO("ECRPrivatJSON", "Disconnect: сесії немає (вже відключено) — no-op");
     }
+    SetLinkState(LinkState::Disconnected, "closed");   // ручний розрив - не аварія
 }
 
 bool EcrPrivatJsonDriver::IsConnected() const { return session_ && session_->IsConnected(); }
 std::string EcrPrivatJsonDriver::Vendor() const { return vendor_; }
 std::string EcrPrivatJsonDriver::Model() const { return model_; }
+
+bool EcrPrivatJsonDriver::IsReady() const {
+    std::lock_guard<std::mutex> lk(linkMutex_);
+    return linkState_ == LinkState::Ready;
+}
+
+std::uint64_t EcrPrivatJsonDriver::LinkEpoch() const {
+    std::lock_guard<std::mutex> lk(linkMutex_);
+    return linkEpoch_;
+}
+
+void EcrPrivatJsonDriver::SetLinkState(LinkState target, const char* reason, std::uint64_t epoch) {
+    {
+        std::lock_guard<std::mutex> lk(linkMutex_);
+        // Ping приніс Ready з епохи, яка вже мертва (сокет упав одразу після відповіді) - ігноруємо:
+        // інакше Ready лишився б на мертвому сокеті, і наступний up=true його не полагодив би.
+        if (target == LinkState::Ready && epoch != linkEpoch_) return;
+        if (linkState_ == target) return;
+        if (linkState_ == LinkState::Ready) ++linkEpoch_;   // вихід із Ready = нова епоха
+        linkState_ = target;
+    }
+    EmitEvent("connection", { {"state", LinkStateName(target)}, {"reason", reason ? reason : ""} });
+}
 
 ResultEnvelope EcrPrivatJsonDriver::MapResult(const RequestResult& r) {
     switch (r.status) {
@@ -319,7 +377,12 @@ ResultEnvelope EcrPrivatJsonDriver::ExecuteInternal(const std::string& method,
     }
     const auto startedAt = std::chrono::system_clock::now();
 
+    // Три різні стани - три різні коди, саме в цій послідовності (спека §4.9.4).
+    // !IsReady() без IsConnected() перед ним перекрив би NOT_CONNECTED для всіх викликів
+    // до Connect() і після Отключить - каса чекала б реконекту, якого нікому робити.
     if (!IsConnected()) return ResultEnvelope::Fail("NOT_CONNECTED", "Термінал не підключено");
+    if (!IsReady())     return ResultEnvelope::Fail("RECONNECTING",
+                                                    "Зв'язок з терміналом відновлюється, повторіть за мить");
     lastStatus_.store(-1);
     interruptSent_.store(false);   // interruptRequested_ ТУТ НЕ чіпаємо (fix E)
     EmitEvent("state", { {"state", "Running"}, {"method", method} });   // старт операції → у 1С
@@ -361,6 +424,11 @@ ResultEnvelope EcrPrivatJsonDriver::ExecuteInternal(const std::string& method,
         intent.rrn       = params.is_object() ? params.value("rrn", std::string{}) : std::string{};
         intent.requestId = requestId;
         intent.startedAt = startedAt;
+        // Після Timeout primary супервізор DeviceSession негайно робить connected_=false і
+        // Close->Open (DeviceSession.cpp:436-447), навіть якщо TCP був живий. Отже «зв'язок є»
+        // тут - гонка; чесний стан - Connecting, а знімок зробить джоб після реконекту (крок 0).
+        if (r.status == RequestStatus::Timeout || desync)
+            SetLinkState(LinkState::Connecting, "timeout");
         const std::uint64_t gen = MarkPending(intent, reason);
 
         // ТИМЧАСОВО (до Task 4): при живому з'єднанні з'ясовуємо синхронно. Task 4

@@ -605,6 +605,145 @@ static void TestInquireNone() {
           "InquireNone: channelConnected=false без сесії");
 }
 
+// №20: ручний Отключить під час Connecting -> подія disconnected(closed), не dropped.
+static void TestLinkStateOnDisconnect() {
+    TerminalEmulator emu;
+    emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","params":{"responseCode":"0000"},"error":false})"; });
+    emu.OnRequest("ServiceMessage", [](const nlohmann::json& q)->std::string{
+        auto mt = q.contains("params") ? q["params"].value("msgType","") : std::string{};
+        if (mt == "identify") return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"PAX","model":"s800"},"error":false})";
+        return "";
+    });
+    CHECK(emu.Start(), "LinkDisconnect: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    std::mutex evMutex;
+    std::vector<std::pair<std::string, std::string>> conn;   // (state, reason)
+    drv.SetEventHandler([&](const std::string& ev, const std::string& data) {
+        if (ev != "connection") return;
+        auto j = nlohmann::json::parse(data, nullptr, false);
+        if (j.is_discarded()) return;
+        std::lock_guard<std::mutex> lk(evMutex);
+        conn.emplace_back(j.value("state", std::string{}), j.value("reason", std::string{}));
+    });
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "LinkDisconnect: Connect");
+    CHECK(drv.IsReady(), "LinkDisconnect: після Connect зв'язок Ready");
+
+    emu.DropConnection();
+    for (int i = 0; i < 100 && drv.IsReady(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(!drv.IsReady(), "LinkDisconnect: після обриву Ready знято");
+
+    drv.Disconnect();
+    std::lock_guard<std::mutex> lk(evMutex);
+    CHECK(conn.size() >= 3, "LinkDisconnect: події connection надійшли");
+    CHECK(conn.front().first == "ready", "LinkDisconnect: перша подія - ready (Connect)");
+    bool sawDropped = false, sawClosed = false;
+    for (const auto& e : conn) {
+        if (e.first == "connecting"   && e.second == "dropped") sawDropped = true;
+        if (e.first == "disconnected" && e.second == "closed")  sawClosed  = true;
+    }
+    CHECK(sawDropped, "LinkDisconnect: обрив -> connecting(dropped)");
+    CHECK(sawClosed,  "LinkDisconnect: Отключить -> disconnected(closed), не dropped");
+    emu.Stop();
+}
+
+// №22: три стани - три різні коди. Без правильного порядку перевірок (а) і (б) дали б 18.
+static void TestThreeStatesThreeCodes() {
+    TerminalEmulator emu;
+    // Після реконекту термінал МОВЧИТЬ на Ping (модель монополії, §2.3): інакше в Task 4
+    // фоновий джоб підняв би Ready за ~1 с після обриву, і крок (в) став би флакі -
+    // оплата встигала б пройти замість RECONNECTING. Хендшейк кроку 1 Connect() при цьому
+    // відповідає нормально: прапорець вмикається вже після успішного Connect.
+    std::atomic<bool> silentPing{ false };
+    emu.OnRequest("PingDevice", [&silentPing](const nlohmann::json&) -> std::string {
+        if (silentPing.load()) return "";
+        return R"({"method":"PingDevice","params":{"responseCode":"0000"},"error":false})";
+    });
+    emu.OnRequest("ServiceMessage", [](const nlohmann::json& q)->std::string{
+        auto mt = q.contains("params") ? q["params"].value("msgType","") : std::string{};
+        if (mt == "identify") return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"PAX","model":"s800"},"error":false})";
+        return "";
+    });
+    std::atomic<int> purchaseSeen{ 0 };
+    emu.OnRequest("Purchase", [&](const nlohmann::json&)->std::string{
+        purchaseSeen.fetch_add(1);
+        return R"({"method":"Purchase","params":{"responseCode":"0000","invoiceNumber":"1"},"error":false})";
+    });
+    CHECK(emu.Start(), "ThreeStates: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    // (а) без жодного Connect
+    ResultEnvelope a = drv.Purchase("10.00");
+    CHECK(!a.ok && a.code == "NOT_CONNECTED", "ThreeStates(а): Purchase без Connect -> NOT_CONNECTED");
+
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "ThreeStates: Connect");
+    // (в) під Connecting: рвемо з'єднання й одразу пробуємо платити
+    silentPing.store(true);          // термінал ще тримає стару сесію - Ready не повернеться
+    emu.DropConnection();
+    for (int i = 0; i < 100 && drv.IsReady(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // Ready падає МИТТЄВО (хук на дроп), а IsConnected() ще ні: DeviceSession-супервізор
+    // тримає ФІКСОВАНИЙ backoff (SessionConfig::reconnectDelayMs=1000мс, DeviceSession.h)
+    // ПЕРЕД будь-якою спробою Close->Open, навіть для щойно виявленого обриву. Без цього
+    // очікування Purchase() застав би сокет ще закритим і дав би NOT_CONNECTED замість
+    // RECONNECTING - не тому що порядок перевірок неправильний, а тому що TCP-реконект
+    // фізично не встиг. Чекаємо саме той стан, який тестує (в): сокет уже перепідключився
+    // (IsConnected()=true), термінал мовчить на Ping (silentPing) - Ready лишається false.
+    for (int i = 0; i < 200 && !drv.IsConnected(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(drv.IsConnected() && !drv.IsReady(),
+          "ThreeStates(в): сокет перепідключився, Ready лишається false (Connecting)");
+    const int before = purchaseSeen.load();
+    ResultEnvelope c = drv.Purchase("10.00");
+    CHECK(!c.ok && c.code == "RECONNECTING", "ThreeStates(в): Purchase під Connecting -> RECONNECTING");
+    CHECK(purchaseSeen.load() == before, "ThreeStates(в): на дріт нічого не пішло");
+
+    // (б) одразу після Отключить
+    drv.Disconnect();
+    ResultEnvelope b = drv.Purchase("10.00");
+    CHECK(!b.ok && b.code == "NOT_CONNECTED", "ThreeStates(б): Purchase після Отключить -> NOT_CONNECTED, не 18");
+    emu.Stop();
+}
+
+// №24: повторний Connect() мусить давати Ready. Дефолтна епоха 0 у SetLinkState зробила б
+// це мовчазним no-op (linkEpoch_ уже >= 1 після першого Отключить) - Ready не став би,
+// хук up=true запустив би зайвий Ping, і перша оплата зміни отримала б CONCURRENT.
+static void TestReconnectByHandKeepsReady() {
+    TerminalEmulator emu;
+    std::atomic<int> pings{ 0 };
+    std::atomic<int> purchases{ 0 };
+    emu.OnRequest("PingDevice", [&pings](const nlohmann::json&) {
+        pings.fetch_add(1);
+        return R"({"method":"PingDevice","params":{"responseCode":"0000"},"error":false})";
+    });
+    emu.OnRequest("ServiceMessage", [](const nlohmann::json& q)->std::string{
+        auto mt = q.contains("params") ? q["params"].value("msgType","") : std::string{};
+        if (mt == "identify") return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"PAX","model":"s800"},"error":false})";
+        if (mt == "getLastStatMsgCode") return R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":"0"},"error":false})";
+        return "";
+    });
+    emu.OnRequest("Purchase", [&purchases](const nlohmann::json&) {
+        purchases.fetch_add(1);
+        return R"({"method":"Purchase","params":{"responseCode":"0000","invoiceNumber":"3"},"error":false})";
+    });
+    CHECK(emu.Start(), "ReconnectByHand: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    const std::string conn = std::string("tcp://127.0.0.1:") + std::to_string(emu.Port());
+    CHECK(drv.Connect(conn), "ReconnectByHand: перший Connect");
+    drv.Disconnect();
+    CHECK(drv.Connect(conn), "ReconnectByHand: другий Connect");
+    CHECK(drv.IsReady(), "ReconnectByHand: Подключен=Истина одразу після другого Connect");
+
+    const int pingsAfterConnect = pings.load();      // лише хендшейки кроку 1 (по одному на Connect)
+    ResultEnvelope p = drv.Purchase("10.00");
+    CHECK(p.ok && p.code == "0000", "ReconnectByHand: перша оплата після Connect проходить");
+    CHECK(p.code != "CONCURRENT", "ReconnectByHand: не CONCURRENT");
+    CHECK(pings.load() == pingsAfterConnect,
+          "ReconnectByHand: на персистентній сесії нуль зайвих PingDevice");
+    CHECK(purchases.load() == 1, "ReconnectByHand: оплата дійшла до термінала");
+    drv.Disconnect();
+    emu.Stop();
+}
+
 // --- 1С-фасад: смоук через AddInNative::CreateObject ------------------------
 // Мінімальний мок платформи 1С (IMemoryManager/IAddInDefBase) для інстанціювання
 // компоненти в процесі — достатньо для реєстрації методів і смоук-виклику.
@@ -751,6 +890,9 @@ int main() {
     TestForeignReceiptNotCredited();
     TestNonFinancialNotTracked();
     TestInquireNone();
+    TestLinkStateOnDisconnect();
+    TestThreeStatesThreeCodes();
+    TestReconnectByHandKeepsReady();
     TestFacadeSmoke();
     TestVoidFallbackOnlyOnUnsupported();
     std::printf(g_failed ? "\nFAILED: %d\n" : "\nOK\n", g_failed);

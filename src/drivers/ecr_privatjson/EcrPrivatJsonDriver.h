@@ -37,6 +37,10 @@ struct OperationIntent {
     std::chrono::system_clock::time_point startedAt{};
 };
 
+/// Стан зв'язку з терміналом (спека §4.9.1). НЕ дублює connected_ транспорту:
+/// Ready означає «термінал відповів на Ping», а не «сокет відкрився».
+enum class LinkState { Disconnected, Connecting, Ready };
+
 struct LastOutcome {
     OutcomeState    state = OutcomeState::None;
     std::uint64_t   generation = 0;    ///< ++ на кожен перехід у Pending; ідентифікатор питання для 1С
@@ -66,6 +70,10 @@ public:
     bool Connect(const std::string& connString);
     void Disconnect();
     bool IsConnected() const;
+
+    /// «Термінал підтвердив готовність» - саме це бачить 1С у Подключен (спека §4.9.4).
+    /// Внутрішній IsConnected() лишається «сокет відкритий».
+    bool IsReady() const;
 
     std::string Vendor() const;
     std::string Model() const;
@@ -172,6 +180,16 @@ private:
     mutable std::mutex outcomeMutex_;   ///< lastOutcome_ + pendingRequestId_
     LastOutcome        lastOutcome_;
     std::string        pendingRequestId_;
+
+    /// Єдина точка зміни стану зв'язку. Пишуть три потоки: dispatcher-хук, фоновий джоб
+    /// і потік 1С. reason - для події; epoch береться до участі ЛИШЕ для Ready: Ping зі
+    /// вже мертвої епохи не має піднімати прапорець на новому сокеті.
+    void SetLinkState(LinkState target, const char* reason, std::uint64_t epoch = 0);
+    std::uint64_t LinkEpoch() const;
+
+    mutable std::mutex linkMutex_;
+    LinkState          linkState_ = LinkState::Disconnected;   ///< під linkMutex_
+    std::uint64_t      linkEpoch_ = 0;                         ///< ++ на кожен вихід із Ready
     /// Wire-трасування: якщо true — MakeSession чіпляє SetWireTraceHandler (діє з наступного Connect).
     std::atomic<bool> traceEnabled_{ false };
 

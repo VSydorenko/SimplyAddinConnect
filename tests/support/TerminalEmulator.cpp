@@ -66,6 +66,15 @@ void TerminalEmulator::Run() {
     }
 }
 
+void TerminalEmulator::DropConnection() {
+    SOCKET c = client_.exchange(INVALID_SOCKET);
+    if (c == INVALID_SOCKET) return;
+    shutdown(c, SD_BOTH);
+    closesocket(c);
+    // Read-loop у Run() вийде за помилкою recv; його client_.exchange віддасть уже
+    // INVALID_SOCKET, тож подвійного closesocket того самого хендла не буде.
+}
+
 void TerminalEmulator::Log(const std::string& line) {
     if (!log_) return;
     std::lock_guard<std::mutex> lk(logMutex_);
@@ -93,5 +102,10 @@ void TerminalEmulator::HandleFrame(SOCKET c, const std::vector<uint8_t>& frame) 
         int s = ::send(c, reinterpret_cast<const char*>(out.data()) + off, total - off, 0);
         if (s <= 0) break;
         off += s;
+    }
+    if (dropAfterResponse_.exchange(false)) {
+        shutdown(c, SD_SEND);                      // FIN ПІСЛЯ вже відправлених байтів
+        SOCKET old = client_.exchange(INVALID_SOCKET);
+        if (old != INVALID_SOCKET) closesocket(old);
     }
 }
