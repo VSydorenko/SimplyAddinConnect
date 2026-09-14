@@ -91,7 +91,12 @@
   `RequestPrimary` повернув `Disconnected` викликачу — це інший потік, і порядок не гарантований.
 - `desynchronized_` ставиться лише у двох місцях: справжній таймаут primary при живому з'єднанні
   (`:217-222`) і `RejectBoth` (`:341-359`). Знімає — лише `MarkSynchronized()` (`:548`). Service-доріжка
-  в desync дозволена, primary — ні (`:175`).
+  в desync дозволена, primary — ні (`:175`): `DoRequest` повертає `Desynchronized` **до дроту**. Прапорець
+  переживає `Close→Open`. **Наслідок для дизайну, який перша редакція §4.9.2 не застосувала до власного
+  Ping:** будь-який primary-запит відновлення при desync не вийде на дріт, доки драйвер сам не зняв прапорець
+  — і Timeout цього ж Ping ставить desync знову. Тому `EnsureReady` знімає desync перед **кожним** Ping (4.9.2);
+  знайдено на імплементації Task 4 (2026-09-14) живою трасою: перший recovery-Ping → `status=8`, джоб крутиться
+  30 с і `Ready` не досягає.
 - `SetConnectionStateHandler` працює **лише до `Start()`** (`:567-574`, після — no-op + WARN).
 - Після give-up реконекту (`reconnectMaxTries`) сесія лишається `DISCONNECTED` без автономного
   відновлення (`TestReconnectMaxTries`).
@@ -109,6 +114,13 @@
   `reconnectMaxDelayMs=15000`, **`reconnectMaxTries=0` — без обмеження**; драйвер конфіг не перевизначає
   (`MakeSession` передає три аргументи без конфігу). Тобто супервізор ніколи не здається — give-up-тупика
   за дефолтом немає, є лише «вічний стук у вимкнений термінал» з кроком до 15 с.
+- **Backoff іде ПЕРЕД першою спробою, не після невдачі** (знахідка імплементації, 2026-09-14):
+  `OnTransportState(false)` ставить `connected_=false` синхронно з обривом (`:376-380`), супервізор
+  прокидається, завершує pending як `Disconnected` і **чекає `reconnectDelayMs` = 1000 мс**
+  (`supervisorCv_.wait_for`, `:456-463`) — і лише потім `Close→Open`. Тому після будь-якого обриву стан
+  «сокета нема» (`!IsConnected()`) триває **щонайменше секунду**, і лише потім настає `Connecting`
+  (сокет є, `Ready` ще ні). Для тестів це означає: `!IsReady()` після обриву **не** доводить `Connecting` —
+  див. 6.5.
 - `TransportTCP`: `SetTimeout` (`SO_RCVTIMEO`/`SO_SNDTIMEO`, `:430-470`) існує, але **ніхто його не
   кличе** — `recv` блокуючий; `WSAETIMEDOUT` у reader ігнорується як норма простою (`:558-562`). Сокет
   стає робочим на `m_socket = sock` (`:240`) — природне місце для `setsockopt`. `<mstcpip.h>` не
@@ -236,6 +248,15 @@
 - Запозичення форми `УправлениеЭквайринговымТерминалом` (штатне вікно очікування РМК) **не заблоковане
   ціною**: у розширення тягнеться лише XML форми, BSL — власні вставки. Місце під індикатор стану й
   «з'ясовую долю операції» у РМК — реалізовне; рішення про форму — за користувачем.
+- **Конфігурація ru відключає пристрій після кожної команди — для мережевого обладнання або пристрою,
+  який підключила сама команда** (`МенеджерОборудованияКлиент.ОтключитьОборудованиеПослеВыполнениеКоманды:2327`,
+  умова `ОтключениеОборудования Или СетевоеОборудование`; сесія розширення, 2026-09-14) — раніше, ніж
+  розширення отримає результат. Пристрій, підключений при відкритті РМК і **не** позначений мережевим,
+  після команди не відключається. Ознака `СетевоеОборудование` береться з `ДанныеУстройства` (`:190`);
+  **чи потрапляє під неї наш TCP-драйвер — не звірено** (найімовірніше так, але це поки припущення). Якщо
+  так — на БПО-шляху ru постійна сесія живе **в межах команди**, і після `Ложь`+17 штатний `Отключить`
+  зупинить фонове з'ясування (4.5), якщо розширення цьому не запобіжить (§9 п.5); перехоплення
+  відключення покриває обидві причини. Для ua — не звірено.
 
 ---
 
@@ -259,8 +280,9 @@
    чіпаємо. **«Готовність» — окремий стан драйвера**, не `connected_` транспорту.
 7. **TCP keepalive у транспорті — завжди увімкнений**, без опції. Протокольного heartbeat у простої не
    робимо.
-8. **`Подключен` = «термінал підтвердив готовність»**; окремого `СостояниеСвязи` не додаємо (споживача
-   немає); подія `connection` — додаємо.
+8. **`Подключен` = «термінал підтвердив готовність»**; окремого методу `СостояниеСвязи` не додаємо, але
+   стан зв'язку іде **полем `linkState` у знімку долі** (4.7; споживач — полінг §9 п.5, уточнення
+   2026-09-14); подія `connection` — додаємо.
 9. **`ИдентификаторЗапроса` розширення проходить через компоненту прозорим рядком** у
    `outcome.intent.requestId` — точна звірка замість евристики. Механізм — сеттер прямого API перед
    штатною БПО-командою.
@@ -311,9 +333,10 @@ JobEngine          recoveryJob_;       // другий екземпляр, не 
 std::atomic<bool>  closing_{ false };
 
 enum class LinkState { Disconnected, Connecting, Ready };          // §4.9
-mutable std::mutex     linkMutex_;                                 // серіалізує SetLinkState з трьох потоків
+mutable std::mutex     linkEmitMutex_;                             // ЗОВНІШНІЙ: перехід + емісія як одна дія (порядок подій = порядок переходів, 4.9.3)
+mutable std::mutex     linkMutex_;                                 // серіалізує SetLinkState з трьох потоків; порядок узяття: linkEmitMutex_ → linkMutex_
 LinkState              linkState_ = LinkState::Disconnected;       // під linkMutex_
-std::uint64_t          linkEpoch_ = 0;                             // ++ на кожен перехід із Ready; Ready пишеться лише зі збіжною епохою
+std::uint64_t          linkEpoch_ = 0;                             // покоління з'єднання: ++ на кожен запис не-Ready; Ready пишеться лише зі збіжною епохою
 // bool IsReady() const — публічний геттер для «Подключен» (§4.9.4); IsConnected() лишається «сокет».
 ```
 
@@ -327,8 +350,9 @@ std::uint64_t          linkEpoch_ = 0;                             // ++ на к
 джобів різних поколінь у штатному потоці неможливий (гейт 4.6 не пускає нову фінансову операцію під час
 `Pending`, `Disconnect()` приєднує джоб), тож guard — дешевий пояс безпеки, не основний механізм.
 
-Під `outcomeMutex_` — жодного мережевого виклику й жодного `EmitEvent` (той самий стиль, що
-`eventMutex_`).
+Під `outcomeMutex_` і `linkMutex_` — жодного мережевого виклику й жодного `EmitEvent` (той самий стиль,
+що `eventMutex_`). Єдиний навмисний виняток — зовнішній `linkEmitMutex_` (4.9.1/4.9.3): він **має**
+накривати емісію `connection`, бо існує саме для порядку подій; мережі під ним теж немає.
 
 ### 4.2. Тригер: коли доля вважається невідомою
 
@@ -401,6 +425,12 @@ startMutex_` навколо всього `Start()` (три рядки, `src/plat
    Те саме — для статусу RequestReceiptFacts у кроці 4.
 2. terminalIdle = (код == "0").
 3. MarkSynchronized() — коли термінал у спокої (код "0") АБО після вичерпання kOutcomeIdleWaitMs.
+   Ідемпотентний: desync уже зняв EnsureReady перед Ping (4.9.2, «desync і Ping»); тут — засвідчення
+   протокольного спокою, не зняття блокування. Для ECRPrivatJSON цей виклик надлишковий на ВСІХ
+   досяжних шляхах: обидва джерела desync — Timeout primary (:221) і RejectBoth (:356) — ставлять
+   і reconnectRequested_, тож перед CaptureOutcome завжди відпрацьовує цикл EnsureReady. Негативно
+   перевірити його неможливо (Task 4 крок 13 п.3 застарів); лишаємо як намір і як захист на випадок
+   класифікатора/сесії, де desync прийде без реконекту.
    Дефект 1.3 сьогодні — не в безумовності як такій, а в тому, що вона настає через 2.5 с
    (5×500 мс), коли термінал ще веде операцію. Після 120 с без спокою термінал зависнув або в
    нештатному стані — і лишати сесію в desync НАЗАВЖДИ (зняти більше нікому: гейт 4.6 після
@@ -467,7 +497,10 @@ MarkPending(intent, reason)                  // під outcomeMutex_, generation
 EnsureRecoveryRunning()
 чекати bounded kOutcomeSyncWaitMs (8000 мс), крок kPollIntervalMs, вихід за ПЕРШОЮ з умов:
     (lastOutcome_.state == Resolved && lastOutcome_.generation == gen)   // з'ясовано
-    || recoveryJob_.State() != JobState::Running                         // джоб вийшов (ABORTED тощо)
+    || (recoveryJob_.State() != JobState::Running
+        && recoveryJob_.State() != JobState::Interrupting)               // джоб вийшов (ABORTED тощо);
+                                        // Interrupting = RequestCancel уже є, джоб ще доробляє — чекати далі,
+                                        // інакше вихід передчасний (уточнення Task 9 за кодом)
 return BuildUnknownOutcome()                 // 17 з тим, що є в lastOutcome_; TryGetResult не читаємо
 ```
 Чому чекати, якщо секція про тригери каже «повертати негайно»: там ішлося про очікування
@@ -601,9 +634,27 @@ closing_ = false
                  "responseCode": "0000", "txnType": "1", "approvalCode": "…", "pan": "…",
                  "receipt": "…" },
       "factsOk": true, "factsCode": "0000",
-      "channelConnected": true } } }
+      "channelConnected": false,
+      "linkState": "connecting" } } }
+// channelConnected:false одразу після обриву — НОРМА, канал ще не перевідкрито (§9 п.5). Перша редакція
+// прикладу показувала true при reason DISCONNECTED — найменш типову комбінацію як зразкову (бік 1С, 2026-09-14).
 ```
-`facts` — сирі поля §5.30 як є; `null`, поки `state == "pending"`. `intent` і `facts` поруч — каса
+**`linkState`** — `"disconnected"` | `"connecting"` | `"ready"` (4.9.1), знімок `linkState_` під `linkMutex_` у
+момент побудови; додано 2026-09-14 за потребою §9 п.5 (**рекомендовано в гілці задачі, один рядок у
+`OutcomeSnapshotJson` + CHECK**): `channelConnected:false` сам не каже, чи канал перевідкриє супервізор
+(сесія жива, `connecting` — чекати), чи сесії вже нема (`disconnected` після `Отключить` — з'ясування не
+відбудеться без `Подключить`). Без цього поля розширення мусить пам'ятати, що робило само; з ним — читає.
+Контракт поля (споживач підтвердив, 2026-09-14): **присутнє в кожному знімку, включно зі `state:"none"`**
+(`InquireLastOutcome` при `none` теж іде через `OutcomeSnapshotJson`); **значення — той самий автомат і та
+сама функція імен, що й подія `connection`** (`LinkStateName`), розійтися фізично не можуть. Другий
+споживач, якого не було в задумі: індикатор зв'язку в РМК **звичайним полінгом**, без підписки на
+`ВнешнееСобытие` — поле знімає з розширення окрему роботу цілком. Логіка споживання (§9 п.5): `ready`/
+`connecting` → полити далі; `disconnected` → **одна** спроба `Подключить`, невдача = термінал мертвий, далі
+розбір оператором без повторних спроб (кожна спроба — синхронний TCP-таймаут у клієнтському потоці).
+`facts` — сирі поля §5.30 як є; `null`, поки `state == "pending"`. **`factsOk` і `factsCode` присутні
+завжди**, і при `pending` теж — `false` і порожній рядок (дефолт `ResultEnvelope`); споживач, який чекає їх
+*появи* як ознаки готовності знімка, помилиться — ознака готовності лише `state == "resolved"` (уточнення
+Task 9 за кодом). `intent` і `facts` поруч — каса
 зіставляє суму/час/тип зі своїм реєстром і вирішує. Компонента ніде не пише «збіглося».
 
 `intent.amount` — рядок **у тому вигляді, в якому пішов на дріт**: `MoneyToString` (`MoneyFormat.h`) —
@@ -690,7 +741,8 @@ payload.outcome{…}` — щоб 1С мала один парсер на оби�
 
 ### 4.8. Що свідомо не робимо
 
-- Не змінюємо `DeviceSession` — ні `desync` при обриві, ні нові хуки, ні `MarkDesynchronized()`.
+- Не змінюємо `DeviceSession` — ні `desync` при обриві, ні нові хуки, ні `MarkDesynchronized()`, ні
+  обхід desync для Ping усередині сесії: драйвер знімає desync наявним `MarkSynchronized()` (4.9.2).
 - Не зіставляємо чек з наміром у компоненті — жодного `if (amount == intent.amount) ok = true`.
 - Не повторюємо й не сторнуємо фінансову операцію автоматично.
 - Не додаємо «додаткову дію» БПО для з'ясування (адміністраторська форма).
@@ -716,15 +768,18 @@ payload.outcome{…}` — щоб 1С мала один парсер на оби�
 
 ```cpp
 // Єдина точка зміни. reason — для події; epoch — лише для Ready (з якої епохи зв'язку Ping).
+// linkEpoch_ — ПОКОЛІННЯ З'ЄДНАННЯ: росте на КОЖНОМУ записі не-Ready (обрив, таймаут, Отключить),
+// навіть якщо стан не змінився (Connecting → Connecting на повторному обриві). Не «покоління Ready».
 void SetLinkState(LinkState target, const char* reason, std::uint64_t epoch = 0) {
+    std::lock_guard<std::mutex> emitLk(linkEmitMutex_);   // перехід + емісія = одна дія (4.9.3)
     LinkState prev;
     { std::lock_guard<std::mutex> lk(linkMutex_);
       if (target == LinkState::Ready && epoch != linkEpoch_) return;   // Ping з уже мертвої епохи — ігнор
+      if (target != LinkState::Ready) ++linkEpoch_;                    // ДО перевірки «той самий стан»
       prev = linkState_;
-      if (prev == target) return;
-      if (prev == LinkState::Ready) ++linkEpoch_;                      // вихід із Ready = нова епоха
+      if (prev == target) return;                                      // без події: стан не змінився
       linkState_ = target; }
-    EmitEvent("connection", { {"state", Name(target)}, {"reason", reason} });   // поза локом
+    EmitEvent("connection", { {"state", Name(target)}, {"reason", reason} });   // поза linkMutex_, під linkEmitMutex_
 }
 std::uint64_t LinkEpoch() const { std::lock_guard<std::mutex> lk(linkMutex_); return linkEpoch_; }
 bool IsReady() const          { std::lock_guard<std::mutex> lk(linkMutex_); return linkState_ == LinkState::Ready; }
@@ -736,6 +791,19 @@ bool IsReady() const          { std::lock_guard<std::mutex> lk(linkMutex_); retu
 хук `Connecting` → `linkEpoch_++`; джоб приносить `Ready` зі старою епохою → відкинуто; наступний `up=true`
 → джоб → Ping → `Ready` з новою. Той самий патерн, що `DeviceSession::epoch_` і `generation` у 4.1.
 
+**Дефект першої редакції (рев'ю Task 4, 2026-09-14):** код інкрементував епоху лише на **виході з
+`Ready`**, а перевірку «той самий стан» робив раніше. Але в цій гонці джоб працює в `EnsureReady`, тобто
+стан **уже** `Connecting`; хук `up=false` при другому обриві потрапляв на `prev == target` і виходив **без
+інкременту** — і `Ready` зі старою епохою проходив guard. Прозу вище («хук `Connecting` → `linkEpoch_++`»)
+код не виконував саме в тому переплетенні, заради якого був написаний. Тест №23 цього не бачив: його
+предикат «немає двох `ready` підряд» істинний в обох переплетеннях (див. 6.2 №23) — тому негативна
+верифікація й не відтворювалась за 40 прогонів, а не через імовірність гонки. Виправлення — семантика
+епохи стає **«покоління з'єднання»**: інкремент на кожному записі не-`Ready` до перевірки «той самий
+стан», подія при незміненому стані не емітиться. Ping, відправлений у сокет S, не піднімає `Ready`, якщо
+сокета S уже нема — незалежно від того, в якому стані ми були на момент його падіння. Ручний
+`Disconnect()` теж інкрементує — це нічому не шкодить: джоб перед тим приєднано (4.5), а `Connect()` читає
+`LinkEpoch()` безпосередньо перед своїм `Ready`.
+
 Хто рухає:
 
 - `Connect()`: `Ready` ставиться **до** `session_->Start()` у кроці 3 (хендшейк-Ping уже пройшов у кроці 1
@@ -744,7 +812,11 @@ bool IsReady() const          { std::lock_guard<std::mutex> lk(linkMutex_); retu
   `linkEpoch_ ≥ 1`, і виклик з 0 мовчки відкинеться — `Ready` не стане, хук `up=true` запустить зайвий Ping,
   і перша оплата зміни отримає `CONCURRENT`. Між `LinkEpoch()` і записом хук нової сесії спрацювати не
   може — `Start()` ще не викликано. Той самий патерн, що в `EnsureReady`. При невдачі `Start()` →
-  `Disconnected`, `reason:"connect_failed"` (не `"closed"` — це не ручний `Отключить`). Порядок важливий:
+  `Disconnected`, `reason:"connect_failed"` (не `"closed"` — це не ручний `Отключить`), і **`session_->Stop()`
+  перед `session_.reset()`** (рев'ю Task 4): `DeviceSession::Start()` при `opened == false` лишає dispatcher і
+  супервізор живими, а хук уже стоїть; якби супервізор підняв зв'язок у вікні між `Start()==false` і
+  `reset()`, хук на dispatcher-потоці виконав би `EnsureRecoveryRunning()` над знищеною сесією —
+  use-after-free. До Task 4 тіло хука `session_` не чіпало, експозицію додав саме джоб. Порядок важливий:
   `Start()` повертає після `state(true)` (`DeviceSession.cpp:79`), а хук `up=true` при цьому вже в черзі
   dispatcher і виконається асинхронно. Якби `Ready` ставився після `Start()`, хук побачив би `Connecting`
   і запустив зайвий Ping — який тримає primary-доріжку рівно тоді, коли 1С після `Подключить` одразу
@@ -763,6 +835,7 @@ EnsureReady():
   backoff = kReconnectDelayMs (1000)
   while (!closing_ && IsConnected() && !IsReady()):
       epoch = LinkEpoch()                                  // епоха зв'язку, в якій шлемо цей Ping
+      session_->MarkSynchronized()                         // ПЕРЕД КОЖНИМ Ping — див. «desync і Ping» нижче
       r = RequestPrimary(BuildRequest("PingDevice"), kHandshakeTimeoutMs (5000),
                          FrameOptions{leadingDelimiter=true})       // провідний 0x00 — §2.3
       switch r.status:
@@ -770,6 +843,8 @@ EnsureReady():
                                // Busy = живий, зайнятий нашою операцією; epoch не збіглась = обрив після Ping,
                                // Ready відкинуто, цикл продовжиться на наступному тригері
         Disconnected, Stopped → return false            // сокет упав знову — хук перезапустить
+        Desynchronized      → недосяжний після MarkSynchronized вище; якщо все ж прийшов — WARN і
+                               повторити без backoff один раз (RejectBoth між зняттям і відправкою)
         Timeout, інше       → SleepInterruptible(backoff); backoff = min(backoff*2, kReconnectMaxDelayMs (15000))
   return IsReady()
 
@@ -782,6 +857,51 @@ SleepInterruptible(ms): сон кроками по 100 мс з перевірк�
 `kReconnectDelayMs`/`kReconnectMaxDelayMs` — константи **драйвера**, що навмисно дублюють значення
 дефолтів `SessionConfig` (`DeviceSession.h:35-38`): сесія конфіг назовні не віддає, а ритм Ping-повторів
 має збігатися з ритмом супервізора.
+
+**desync і Ping** (рішення 2026-09-14 за знахідкою імплементації Task 4 — дефект першої редакції цієї
+секції, не коду). Після таймауту primary сесія в desync, і `DoRequest` відбиває **кожен** primary до дроту
+(`:175`, §2.1) — Ping теж; знімає прапорець лише `MarkSynchronized()`, який у першій редакції кликався
+лише в `CaptureOutcome`, тобто **після** `EnsureReady`. Замкнене коло: перший же recovery-Ping →
+`Desynchronized`, `Ready` недосяжний, і не лише після фінансової операції — Timeout самого Ping у silence
+ставить desync знову, тож один мовчазний Ping отруював усі наступні (№16, №25).
+
+Рішення — `EnsureReady` знімає desync **перед кожним Ping**, не лише на вході й не лише у відповідь на
+`Desynchronized`: перше не переживає Timeout власного Ping, друге витрачає завідомо відбитий запит і читається
+як «шлемо, знаючи, що не дійде». Чому це не послаблення захисту:
+- **Роль desync №1 — пізня відповідь таймаутнутого primary не має зматчитись на наступний primary.**
+  Основний захист тут — реконект із закриттям сокета, який той самий Timeout і замовляє (`:221`,
+  `reconnectRequested_`), плюс epoch-guard (`:275-288`); класифікатор корелює за `method` (`Classify:25-28`),
+  тож пізній `Purchase` при pending-Ping — `Unsolicited`, не збіг. Зматчитись пізній Ping може лише на
+  наступний Ping, і наслідок цього — не гроші, а прапорець готовності на один цикл раніше.
+- **Роль desync №2 — не пускати нову фінансову операцію, доки попередня не з'ясована.** У цьому дизайні її
+  несе гейт 4.6: `MarkPending` іде **до** `EnsureRecoveryRunning` (4.4а), тож на момент першого Ping
+  `Pending` уже стоїть і будь-який фінансовий виклик отримує 17, а нефінансовий — 18 (`!IsReady()`).
+  Між зняттям desync і `Ready` на дріт від користувача не виходить **нічого**; після `Ready` нефінансові
+  виклики можуть застати зайнятий термінал — чесний `deviceBusy`/`CONCURRENT` (4.6). Гейт **сильніший** за
+  desync: тримається до `Resolved`, тоді як desync у 4.3 крок 3 знімався б і після ліміту без спокою.
+- Ping службовою доріжкою — **не працює**, перевірено імплементацією: відповідь має `method == "PingDevice"`
+  ≠ `"ServiceMessage"`, класифікатор корелює її лише з primary (`Classify:25-28`); при service-запиті вона
+  `Unsolicited` → Timeout. І `deviceBusy` → `RejectPrimary` лише при pending primary — статус `Busy`, на який
+  спирається цей цикл і тест №17, приходить саме з primary-доріжки. Міняти класифікатор заради цього —
+  протокольна семантика під тестовий сценарій; відкинуто.
+- `DeviceSession` не змінюється (4.8): `MarkSynchronized()` — наявний публічний API, яким драйвер уже
+  користується. Інваріант device-core «desync знімає драйвер, коли вважає канал синхронізованим» тримається;
+  змінюється лише **критерій драйвера**: синхронізацію каналу засвідчує Ping, з'ясування долі грошей — гейт.
+
+`MarkSynchronized()` у 4.3 крок 3 лишається — тепер ідемпотентний; його зміст там — «протокольний спокій
+підтверджено або ліміт вичерпано», не зняття блокування.
+
+**Фактичний ритм Ping у silence — і чому backoff цього циклу не росте** (знахідка імплементації, №25).
+Кожен Timeout Ping ставить `reconnectRequested_` (`:221`) — супервізор рве з'єднання посеред backoff-сну,
+умова циклу `IsConnected()` провалюється, `EnsureReady` виходить; після `Close→Open` хук `up=true` стартує
+**свіжий** `EnsureReady` з `backoff = kReconnectDelayMs`. Супервізор свій backoff після вдалого `Open`
+скидає (`:479`). Тож для `ECRPrivatJSON` подвоєння до 15 с у псевдокоді вище **не настає ніколи**: ритм у
+silence ≈ `kHandshakeTimeoutMs` + `reconnectDelayMs` ≈ 6 с, сталий, і кожний цикл — нове TCP-з'єднання
+(що бачить термінал — §7 п.7). Псевдокод лишаємо як є: подвоєння коштує рядок і стане чинним, якщо
+супервізор колись перестане рвати сесію на Timeout primary. Наслідок для 4.5 і №25: без
+`SleepInterruptible` `Disconnect()` чекав би **до ~1 с** (залишок першого сну), не до 15 с — `SleepInterruptible`
+усе одно потрібен (§4.5 обіцяє швидкий `Join`), але поріг тесту рахується від зміряного, не від 15 с
+(6.5 п.5).
 
 Той самий Ping, що в `Connect()` — той самий провідний `0x00`, той самий таймаут. Identify не повторюємо:
 вендор/модель відомі. Окремих сесій між кроками не робимо. `DeviceSession` не змінюється. `Timeout` тут
@@ -798,14 +918,38 @@ SleepInterruptible(ms): сон кроками по 100 мс з перевірк�
 Через наявний `EmitEvent` (лише прямий API, `ВключитьСобытия`), при кожній зміні `linkState_`:
 
 ```json
-{ "state": "connecting" | "ready" | "disconnected", "reason": "dropped" | "closed" | "" }
+{ "state": "connecting" | "ready" | "disconnected",
+  "reason": "dropped" | "timeout" | "closed" | "connect_failed" | "" }
 ```
 
 `reason:"closed"` — ручний `Отключить`, щоб інтерфейс не малював аварію там, де каса сама попросила.
-`reason:"dropped"` — обрив. `reason:"connect_failed"` — `Start()` персистентної сесії не вдався в
+`reason:"dropped"` — обрив (хук `up=false`). `reason:"timeout"` — таймаут операції при живому TCP: драйвер
+сам переводить у `Connecting` (4.2), бо супервізор зараз перевідкриє канал; для каси різниці з `"dropped"`
+немає, для розбору лоґу — є (у першій редакції цього переліку значення бракувало, хоч код його ставив —
+уточнення Task 9). `reason:"connect_failed"` — `Start()` персистентної сесії не вдався в
 `Connect()` (це аварія, не прохання каси — тому не `"closed"`). При `ready` — порожньо. БПО-фасади подій не мають і не матимуть (контракт БПО
 їх не передбачає, потік 1С під час виклику мертвий, `bpo-contract.md` §4); у простої ж, де й трапляється
 тихий обрив, потік живий — подія дійде касі негайно.
+
+**Гарантія порядку (контракт для 1С): порядок подій `connection` = порядок переходів; остання отримана
+подія відповідає поточному стану зв'язку.** Без цього індикатор у РМК, який §9 п.9 будує саме за подіями,
+брехав би рівно там, де потрібен. Дефект першої редакції (рев'ю Task 4, 2026-09-14, один раз упав старий
+CHECK у зеленому прогоні): `SetLinkState` тримав `linkMutex_` лише на зміну стану, а `EmitEvent` кликав
+поза локом — правильно щодо обмеження «під `linkMutex_` жодного `EmitEvent`», але порядок емісій ніхто не
+відновлював. Переплетення: джоб записав `Ready` і його витіснили; хук `up=false` записав `Connecting`,
+`++linkEpoch_` і емітнув `connecting`; джоб прокинувся й емітнув `ready`. Стан — `Connecting`, журнал у
+1С — `connecting`, `ready`. Це **не** дефект епохи (4.9.1): стан правильний, бреше послідовність.
+Виправлення — зовнішній `linkEmitMutex_` навколо всього `SetLinkState`: перехід і його емісія — одна
+неподільна дія. Порядок узяття `linkEmitMutex_ → linkMutex_` і `linkEmitMutex_ → eventMutex_` (усередині
+`EmitEvent`); зворотного немає — жоден хендлер події не кличе `SetLinkState`, ніхто не бере `linkMutex_`
+чи `eventMutex_` перед `linkEmitMutex_`. Обмеження «під `linkMutex_` жодного `EmitEvent`» тримається
+дослівно; `linkEmitMutex_` — навмисний виняток, який і має накривати емісію. Ціна — dispatcher-хук може
+зачекати чужий `PostExternalEvent`, який і так синхронний і в 1С лише ставить подію в чергу. Відкинуто
+`seq` у події: лагодило б у кожному споживачі й міняло контракт. **Інші події цієї форми не мають:**
+`outcome` пише один потік (recovery-джоб) і несе `generation`; `status` емітить один poller на операцію,
+`state`/`result` — потік операції, і poller join-иться **до** `result` (`PollerJoin`); операції серіалізує
+`job_`. `connection` — єдина подія з двома конкурентними писачами одного стану. Перевірка — інваріант у
+№23 (6.2): після завершення активності стан останньої події `connection` ⇔ `IsReady()`.
 
 #### 4.9.4. `Подключен` і операції під час `Connecting`
 
@@ -814,7 +958,9 @@ SleepInterruptible(ms): сон кроками по 100 мс з перевірк�
 драйвера не змінюється** — лишається «сокет відкритий»: його використовують `EnsureRecoveryRunning`
 (без сокета Ping не піде) і фасад БПО в `CloseDevice` (`AcquiringFacadeBase.cpp:131-133`) — якби він
 повертав `false` під час `Connecting`, `Close()` не викликався б і сесія висіла б. Окремий
-`СостояниеСвязи` не додаємо — споживача немає; стан видно з `Подключен` і події.
+методу `СостояниеСвязи` не додаємо; але споживач стану зв'язку **з'явився** — полінг знімка в §9 п.5 має
+розрізняти «сесія жива, супервізор перевідкриє» і «сесії нема» — тому стан іде **полем `linkState` у знімку
+долі** (4.7), без окремого методу і без мережі. `Подключен` (лише `Ready`/не `Ready`) цієї різниці не дає.
 `EcrPrivatJsonAcquiring::IsConnected()` для БПО-фасаду — так само **сокет**, без змін: `CloseDevice` має
 закривати сесію в будь-якому стані. БПО-шлях різницю `Connecting`/`Ready` бачить не через нього, а через
 код 18 — від операцій і від `ТестУстройства` (`Probe()` = `Execute("GetTerminalInfo")`,
@@ -878,7 +1024,7 @@ heartbeat у простої не робимо: він не розв'язує (б
 
 | Файл | Тип | Що |
 |---|---|---|
-| `src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h/.cpp` | зміна | **А:** `LastOutcome` (+`requestId`), `outcomeMutex_`, `pendingRequestId_`, `recoveryJob_`, `closing_`; `kFinancialMethods`, `kOutcomeSyncWaitMs`, `kOutcomeIdleWaitMs`; `MarkPending`, `EnsureRecoveryRunning`, `RecoveryJob`, `CaptureOutcome` (з `RecoverAfterDesync`), `RequestReceiptFacts`, `RequestStatus PollStatusOnce(int&)`, `BuildUnknownOutcome`, `InquireLastOutcome` (не const), `SetRequestId`; тригер у `ExecuteInternal` за 4.2/4.4; гейт 4.6; `Disconnect()` за 4.5; `inRecovery_` прибрано. **Б:** `LinkState`, `linkMutex_`, `linkState_`, `linkEpoch_`, `SetLinkState` (+подія `connection`), `LinkEpoch()`, **`bool IsReady() const`** (публічний, для `Подключен`), `EnsureReady` (Ping-цикл 4.9.2), `kReconnectDelayMs`/`kReconnectMaxDelayMs` (дублюють дефолти `SessionConfig` навмисно); хук стану на `session_` у `Connect()` крок 3 + `Ready` до `Start()` + `EnsureRecoveryRunning` після; порядок перевірок `NOT_CONNECTED`/`RECONNECTING` на вході `ExecuteInternal` (4.9.4); `SetUnsolicitedHandler` → DEBUG-лог (4.9.6). **Тестові шви** (усі `…ForTest`, поруч із `EnableTrace`): `SetTransportFactoryForTest(std::function<std::unique_ptr<ITransport>(const EcrConnParams&)>)` — `MakeTransport` кличе фабрику, якщо задана (тест №6, стаб транспорту з `Send<0` без закриття); `SetOutcomeTimingForTest(int idleWaitMs, int syncWaitMs, int pingTimeoutMs = -1)` (`-1` — не чіпати; так виклик у №7 лишається двоаргументним) — `kOutcomeIdleWaitMs`/`kOutcomeSyncWaitMs`/таймаут Ping у `EnsureReady` стають `std::atomic<int>` з тими самими дефолтами (дефолт Ping продубльовано числом під `static_assert(kHandshakeTimeoutMs == 5000)`, бо константа в анонімному namespace `.cpp`) (тест №7: інакше двохвилинний тест у гейті; тест №25: без короткого `pingTimeoutMs` джоб на момент `Отключить` стоїть у `RequestPrimary`, а не в `SleepInterruptible`, і тест зелений без переривного сну); `MarkPendingForTest(method, amount, reason)` — `MarkPending` без `EnsureRecoveryRunning` (тест №13: вікно «Pending є, джоб не Running» штатним шляхом не створити); `StopSessionForTest()` — рівно `session_->Stop()` (тест №14: моделює `FinishPendingLocked(Stopped)`; справжній `Disconnect()` з іншого потоку під час `RequestPrimary` дав би UAF на `session_.reset()`, §2.4) |
+| `src/drivers/ecr_privatjson/EcrPrivatJsonDriver.h/.cpp` | зміна | **А:** `LastOutcome` (+`requestId`), `outcomeMutex_`, `pendingRequestId_`, `recoveryJob_`, `closing_`; `kFinancialMethods`, `kOutcomeSyncWaitMs`, `kOutcomeIdleWaitMs`; `MarkPending`, `EnsureRecoveryRunning`, `RecoveryJob`, `CaptureOutcome` (з `RecoverAfterDesync`), `RequestReceiptFacts`, `RequestStatus PollStatusOnce(int&)`, `BuildUnknownOutcome`, `InquireLastOutcome` (не const), `SetRequestId`; тригер у `ExecuteInternal` за 4.2/4.4; гейт 4.6; `Disconnect()` за 4.5; `inRecovery_` прибрано. **Б:** `LinkState`, `linkMutex_`, `linkEmitMutex_` (зовнішній, порядок подій 4.9.3), `linkState_`, `linkEpoch_` (покоління з'єднання), `SetLinkState` (+подія `connection`), `LinkEpoch()`, **`bool IsReady() const`** (публічний, для `Подключен`), `EnsureReady` (Ping-цикл 4.9.2), `kReconnectDelayMs`/`kReconnectMaxDelayMs` (дублюють дефолти `SessionConfig` навмисно); хук стану на `session_` у `Connect()` крок 3 + `Ready` до `Start()` + `EnsureRecoveryRunning` після; порядок перевірок `NOT_CONNECTED`/`RECONNECTING` на вході `ExecuteInternal` (4.9.4); `SetUnsolicitedHandler` → DEBUG-лог (4.9.6). **Тестові шви** (усі `…ForTest`, поруч із `EnableTrace`): `SetTransportFactoryForTest(std::function<std::unique_ptr<ITransport>(const EcrConnParams&)>)` — `MakeTransport` кличе фабрику, якщо задана (тест №6, стаб транспорту з `Send<0` без закриття); `SetOutcomeTimingForTest(int idleWaitMs, int syncWaitMs, int pingTimeoutMs = -1)` (`-1` — не чіпати; так виклик у №7 лишається двоаргументним) — `kOutcomeIdleWaitMs`/`kOutcomeSyncWaitMs`/таймаут Ping у `EnsureReady` стають `std::atomic<int>` з тими самими дефолтами (дефолт Ping продубльовано числом під `static_assert(kHandshakeTimeoutMs == 5000)`, бо константа в анонімному namespace `.cpp`) (тест №7: інакше двохвилинний тест у гейті; тест №25: без короткого `pingTimeoutMs` джоб на момент `Отключить` стоїть у `RequestPrimary`, а не в `SleepInterruptible`, і тест зелений без переривного сну); `MarkPendingForTest(method, amount, reason)` — `MarkPending` без `EnsureRecoveryRunning` (тест №13: вікно «Pending є, джоб не Running» штатним шляхом не створити); `StopSessionForTest()` — рівно `session_->Stop()` (тест №14: моделює `FinishPendingLocked(Stopped)`; справжній `Disconnect()` з іншого потоку під час `RequestPrimary` дав би UAF на `session_.reset()`, §2.4); **`SetBeforeReadyHookForTest(std::function<void()>)`** (рекомендовано, Task 5) — хук між `Response` на Ping і `SetLinkState(Ready)` в `EnsureReady`, для детермінованого №23-біс: гонка епохи вікном у мікросекунди штатно не відтворюється |
 | `src/platform/JobEngine.h/.cpp` | зміна | `startMutex_` — серіалізація `Start()` для двох викликачів (4.3) |
 | `src/transport/Transport_TCP.h/.cpp` | зміна | `SO_KEEPALIVE` + `SIO_KEEPALIVE_VALS` після `m_socket = sock` (`:240`), `#include <mstcpip.h>`; константи `kKeepAliveIdleMs`/`kKeepAliveIntervalMs` (4.9.5); тестовий шов **`SOCKET GetSocketForTest() const`** за аналогією до `SetSendFunctionForTest` — для тесту №18 |
 | `src/components/BpoFacadeBase.cpp` | зміна | `CodeToInt`: `UNKNOWN_OUTCOME` → 17, `RECONNECTING` → 18 |
@@ -930,16 +1076,17 @@ Ping і зник» інакше недетермінований. Емулято
 | 13 | **Самозцілення.** Вікно 4.4 створюється швом `MarkPendingForTest` (`Pending` є, джоб не `Running`, зв'язок є) → викликати `InquireLastOutcome` | джоб стартує; за ним `state=resolved` |
 | 14 | `Stopped` як тригер: `StopSessionForTest()` з іншого потоку під час синхронного `Purchase` (моделює `FinishPendingLocked(Stopped)`; справжній `Disconnect()` дав би UAF, §2.4) | 17, `reason="STOPPED"`, `Pending`; після `Disconnect()`+`Connect()` (4.4в) — знімок |
 | 15 | **Ping після реконекту → `Ready`.** `Connect()` → `DropConnection()` → емулятор приймає нове з'єднання і відповідає на `PingDevice` | послідовність подій `connection`: `connecting`(dropped) → `ready`; `Подключен` = `Истина` лише після `ready`; емулятор отримав рівно один `PingDevice` на новому з'єднанні (провідний `0x00` емулятор побачити не може — порожній кадр відкидається, `TerminalEmulator.cpp:53-58`; він покривається тим самим `FrameOptions{leadingDelimiter}`, що й у `Connect()`) |
-| 16 | **Silence після реконекту (монополія).** Як 15, але емулятор на нове з'єднання **не відповідає** N секунд, потім починає | `Подключен` = `Ложь` увесь час silence; `Purchase` у цей час → **`RECONNECTING`**, на дріт не пішов; Ping повторюється з backoff (лічильник ≥ 2); після першої відповіді — `ready` |
+| 16 | **Silence після реконекту (монополія).** Як 15, але емулятор на нове з'єднання **не відповідає** N секунд, потім починає. **Перед `Purchase` — доказ стану (6.5):** дочекатись `IsConnected() && !IsReady()` (сокет перепідключився після backoff ≥ 1 с, Ping ще без відповіді) і зафіксувати це CHECK-ом; `!IsReady()` самого по собі недостатньо — у першу секунду після обриву сокета ще нема, і `Purchase` чесно дав би `NOT_CONNECTED` | `Подключен` = `Ложь` увесь час silence; `Purchase` у стані `Connecting` → **`RECONNECTING`**, на дріт не пішов; Ping повторюється з backoff (лічильник ≥ 2); після першої відповіді — `ready` |
 | 17 | `deviceBusy` на Ping після реконекту (термінал веде нашу операцію) | `ready`; далі, якщо `Pending`, — з'ясування чекає спокою (тест 3) |
 | 18 | **Keepalive увімкнений** (юніт транспорту, `wire_selftest`): після `Open()` — `getsockopt(SO_KEEPALIVE)` | `== 1`; без правки — `0` (негативна верифікація). Виявлення мертвої лінії за ~20 с — лише на залізі (§7) |
 | 19 | `УстановитьИдентификаторЗапроса("abc")` → `Purchase` → обрив | `intent.requestId == "abc"` у 17 і в `ИсходПоследнейОперацииJSON`; другий `Purchase` без сеттера → `requestId == ""` (одноразовість) |
 | 20 | `Отключить` під `Connecting` | подія `connection` `disconnected`(closed), не `dropped`; `Подключен` = `Ложь` |
-| 21 | Порядок перевірок на вході: `Pending` + `Connecting` одночасно | `Purchase` → 17 (гейт 4.6 першим), не 18 |
-| 22 | **Три стани — три коди.** (а) `Purchase` без жодного `Connect()`; (б) `Purchase` одразу після `Отключить`; (в) `Purchase` під `Connecting` (тест 16) | (а) і (б) → `NOT_CONNECTED`=1, **не** 18; (в) → 18. Без правильного порядку (а)/(б) дали б 18 — негативна верифікація |
-| 23 | **Епоха зв'язку.** Емулятор відповідає на `PingDevice` і **негайно** рве з'єднання (`DropAfterNextResponse()`, 6.1) | `Ready` **не** записано (епоха змінилась); після наступного реконекту — знову Ping, тоді `ready`; послідовність подій без `ready` між двома `connecting` |
+| 21 | Порядок перевірок на вході: `Pending` + `Connecting` одночасно. **Доказ стану (6.5) обов'язковий:** перед `Purchase` — CHECK `IsConnected() && !IsReady()` і `state == "pending"`. Без нього тест зелений, але доводить лише «гейт раніше за `NOT_CONNECTED`» — у першу секунду після обриву `Connecting` ще не настав, і 18 у цю мить недосяжний | `Purchase` у стані `Pending` + `Connecting` → 17 (гейт 4.6 першим), не 18 |
+| 22 | **Три стани — три коди.** (а) `Purchase` без жодного `Connect()`; (б) `Purchase` одразу після `Отключить`; (в) `Purchase` під `Connecting` (тест 16) — **з доказом стану** `IsConnected() && !IsReady()` перед викликом (6.5), інакше (в) вироджується в (б) і третій код не досягається ніколи | (а) і (б) → `NOT_CONNECTED`=1, **не** 18; (в) → 18. Без правильного порядку (а)/(б) дали б 18 — негативна верифікація |
+| 23 | **Епоха зв'язку.** Емулятор відповідає на `PingDevice` і **негайно** рве з'єднання (`DropAfterNextResponse()`, 6.1). Переплетення «джоб пише `Ready`» / «хук пише `Connecting`» тест не контролює — обидва легальні: у першому короткий `ready` перед `connecting` (Ping справді отримав відповідь на тому сокеті), у другому `Ready` відкинуто епохою | **Предикат — про те, що має бути істинним в обох переплетеннях:** після обриву `Ready` настає **лише після нового Ping на новому сокеті** — емулятор бачить ≥ 2 `PingDevice` на персистентних сесіях, і фінальний `ready` іде після другого; `Ready` не переживає обрив без Ping. Предикат першої редакції «немає двох `ready` підряд» був істинний і **з дефектом** (`Ready` на мертвому сокеті → жодного нового `ready` взагалі) — тому не розрізняв нічого (4.9.1, дефект першої редакції). Без guard-а червоний лише в переплетенні «хук першим» — імовірнісно; детермінований шлях — №23-біс. **Плюс інваріант порядку подій (4.9.3):** після завершення активності стан останньої події `connection` ⇔ `IsReady()` (`ready` ⇔ `true`). Замінює старий CHECK «немає двох `ready` підряд», який упав раз у зеленому прогоні саме через інверсію емісій і нічого іншого не доводив. Без `linkEmitMutex_` падає з частотою тієї інверсії — імовірнісна негативна; швом її не детермінувати (хук перед `SetLinkState(Ready)` змушує епоху відкинути `Ready`, і `ready` не емітиться взагалі) |
+| 23-біс | **Епоха зв'язку, детерміновано** (рекомендовано в Task 5, поруч зі `StopSessionForTest`). Шов `SetBeforeReadyHookForTest(std::function<void()>)` — хук викликається в `EnsureReady` **між** отриманням `Response` на Ping і `SetLinkState(Ready, "", epoch)`; тест у хуку робить `emu.DropConnection()` і чекає `!drv.IsConnected()` (хук `up=false` → `Connecting`, `++linkEpoch_`), потім `SetLinkState` отримує стару епоху | `IsReady() == false` одразу після виходу з `EnsureReady` цього циклу; далі — як у №23. Негативна: прибрати перевірку епохи → `Ready` записано при мертвому сокеті → червоний детерміновано |
 | 24 | **Повторний `Connect()` без зайвого Ping.** `Connect()` → `Отключить` → `Connect()` → одразу `Purchase` | `Purchase` проходить, **не** `CONCURRENT`; емулятор отримав на персистентній сесії **нуль** `PingDevice` (Ping лише в хендшейку кроку 1); `Подключен` = `Истина` одразу після `Connect()`. Негативна верифікація: `SetLinkState(Ready, "")` без епохи → `Ready` відкинуто після другого `Connect()`, зайвий Ping, тест червоний |
-| 25 | **`Disconnect()` під backoff-сном.** `SetOutcomeTimingForTest(…, pingTimeoutMs=200)`; silence (тест 16); дочекатись `pings ≥ 2` (перший Ping таймаутнув, джоб проспав 1 с, другий Ping відправлено), потім ще `pingTimeoutMs + 50 мс` — джоб гарантовано **у `SleepInterruptible(2000)`**, не в `RequestPrimary` → `Отключить` | `Disconnect()` повертається **< 1 с**; без `SleepInterruptible` — ~2 с, червоний. Чекати лише першого Ping недостатньо: тоді джоб у `RequestPrimary`, `Stop()` будить його через `cv_` → `Stopped`, і тест зелений незалежно від сну |
+| 25 | **`Disconnect()` під backoff-сном.** `SetOutcomeTimingForTest(…, pingTimeoutMs=200)`; silence (тест 16); дочекатись `pings ≥ 2`, потім ще `pingTimeoutMs + 50 мс` — джоб у **свіжому** `EnsureReady` після примусового реконекту, у `SleepInterruptible(1000)` (не 2000: backoff не росте, 4.9.2 «фактичний ритм»), не в `RequestPrimary` → `Отключить` | `Disconnect()` повертається **< 300 мс**. Поріг доведено двома вимірами (6.5 п.5): зі `SleepInterruptible` — 38 мс, з голим `sleep_for` — ≈940 мс (залишок першого секундного сну); перший поріг `< 1000` був зелений в обох станах. Чекати лише першого Ping недостатньо: тоді джоб у `RequestPrimary`, `Stop()` будить його через `cv_` → `Stopped`, і тест зелений незалежно від сну |
 | 26 | **Гейт споживає `requestId`.** `MarkPendingForTest` (як у №13) → `SetRequestId("B")` → `Purchase("2.00")` → гейт (17, на дріт не йде; самозцілення доводить попередній намір до `resolved`) → `Purchase("3.00")` **без сеттера**, емулятор рве з'єднання → знімок | `intent.amount == "3.00"`, `intent.requestId == ""` — не `"B"`. Червоний і без гейта (виклик `2.00` іде на дріт), і з гейтом при заборі **після** нього (`"B"` прилипає до `3.00`) |
 
 ### 6.3. Через DLL (`ecr_native_host`)
@@ -954,6 +1101,58 @@ Ping і зник» інакше недетермінований. Емулято
 Кожен новий CHECK перевіряється на червоне: тимчасово повернути стару поведінку (напр. `env = facts`
 замість `BuildUnknownOutcome()`, або зняти гейт 4.6) і побачити падіння. Тест, що не падає на дефектній
 поведінці, не тест.
+
+### 6.5. Доказ стану перед перевіркою
+
+**Сценарій не має права перевіряти поведінку в стані X, доки не довів CHECK-ом, що система в стані X.**
+Очікування виходу з попереднього стану доказом не є: між сусідніми станами може лежати третій.
+
+Породу дефекту знайдено на імплементації (сесія `simplyaddinconnect-ea`, 2026-09-14) і вона **інша**, ніж та,
+яку ловить негативна верифікація 6.4: тест може бути червоним на дефектній поведінці й усе одно працювати
+не в тому стані, який називає. Чотири сценарії плану були однієї породи — №22 падав детерміновано, №16 упав
+би так само, №21 **проходив зеленим і мовчки не перевіряв суть**, №24/№25 були зелені без фічі. Механізм
+спільний (2.1): після обриву `!IsReady()` задовольняється за мілісекунди, а `Connecting` (сокет є, `Ready`
+ні) настає лише після backoff супервізора ≥ 1 с; сценарій, що чекав `!IsReady()` і одразу викликав
+`Purchase`, працював у стані `Disconnected` і отримував `NOT_CONNECTED` — або, з гейтом попереду, 17 «за
+неправильною причиною».
+
+Пастка буває **двох сортів**, і небезпечніший — другий. Перший **падає** (№22: очікував 18, отримав 1) — його
+видно одразу, і він сам змушує розібратись. Другий **зеленіє** (№21: гейт стоїть найпершим і повертає 17 у
+будь-якому стані зв'язку, тож CHECK проходить, доводячи «гейт раніше за `NOT_CONNECTED`» замість заявленого
+«раніше за `RECONNECTING`») — його не видно ніколи, і він живе в гейті роками як покриття, якого немає.
+Негативна верифікація 6.4 його **не** ловить: зняти гейт — тест почервоніє, тож виглядатиме справним.
+Єдиний спосіб побачити другий сорт — п.1-2 нижче: CHECK стану перед перевіркою, чий текст називає те, що
+справді доведено.
+
+Правило застосування:
+1. Стан доводиться **тією самою парою предикатів, якою код розрізняє його від сусідів** — для зв'язку це
+   `IsConnected() && !IsReady()` (`Connecting`), `!IsConnected()` (`Disconnected`), `IsReady()` (`Ready`); для
+   долі операції — `state` зі знімка (`pending`/`resolved`/`none`) разом із `generation`; для джоба —
+   `recoveryJob_.State()`. Один предикат із пари — не доказ.
+2. Очікування — до **цільового** стану, з таймаутом і подальшим CHECK, що стан досягнуто; текст CHECK-а
+   називає стан, який він справді доводить. «GateOrder: стан Connecting» над `WaitFor(!IsReady())` — саме
+   той текст, якому вірити не можна.
+3. Якщо цільовий стан штатним шляхом не створити або не втримати (вікно «Pending без джоба», №13; джоб у
+   `SleepInterruptible`, №25) — його створює тестовий шов або керований емулятор (`silentPing`,
+   `DropAfterNextResponse`), і CHECK стану стоїть усе одно.
+4. Порода ширша за стан зв'язку: те саме стосується будь-якої перевірки «поведінка в стані X», включно з
+   `Pending` — друга оплата в №4 має піти, поки намір **ще** `pending` (джоб при `statusCode=10` не довів
+   його до `resolved`), і №4 це вже доводить окремим CHECK `state == "pending"` перед викликом; без такого
+   CHECK-а зелений результат означав би або гейт, або просто вчасно знятий гейт після `resolved`.
+5. **Поріг вимірювання доводиться двома вимірами — з фічею і без неї.** Якщо сценарій міряє величину й
+   порівнює з порогом, поріг має лежати між двома фактично зміряними значеннями із запасом в обидва боки;
+   тест, зелений в обох станах, не перевіряє нічого, хоч би як правильно був написаний у решті. Це третій
+   прояв породи (знахідка імплементації Task 4, ruling R8): №25 мав поріг `elapsed < 1000` від
+   **припущеного** залишку двосекундного сну, а зміряно 38 мс зі `SleepInterruptible` і ≈940 мс з голим
+   `sleep_for` — обидва менші за 1000, механізм працює (25-кратна різниця), CHECK не дискримінує. Поріг
+   знижено до 300 мс (восьмикратний запас з обох боків), а обидва виміри під новим порогом і є негативною
+   верифікацією цього пункту. Числа в коментарі тесту — з вимірів, не з розрахунку.
+
+Приклад із виправленого №22 (в):
+```cpp
+for (int i = 0; i < 200 && !drv.IsConnected(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+CHECK(drv.IsConnected() && !drv.IsReady(), "…: сокет перепідключився, Ready лишається false (Connecting)");
+```
 
 ---
 
@@ -1119,9 +1318,34 @@ PollStatusOnce(int&)`; тести №10, №11 (для №11 — тимчасо�
    `ВнешнееСобытие`) — окрема нова робота, не «один виклик»: обробника в розширенні немає, і треба
    вирішити, з якої точки РМК його тримати.
 5. **Якщо `state == "pending"`** — компонента ще з'ясовує (термінал зайнятий або зв'язок відновлюється).
-   Поллити `ИсходПоследнейОперацииJSON` із кроком ~1 с через `ПодключитьОбработчикОжидания`;
-   `channelConnected:false` означає, що з'ясування почнеться після реконекту. Показати касиру стан, не
-   помилку.
+   Поллити `ИсходПоследнейОперацииJSON` із кроком ~1 с через `ПодключитьОбработчикОжидания` (чи це
+   працює з точки перехоплення — §7 п.8-9). Показати касиру стан, не помилку. Три речі, без яких цей
+   пункт **не працює** (бік 1С, 2026-09-14, по коду ru):
+   - **Конфігурація сама відключає пристрій після команди.** Штатний менеджер обладнання відключає
+     мережеве обладнання **після кожної команди**, раніше, ніж розширення отримає результат
+     (`ОтключитьОборудованиеПослеВыполнениеКоманды:2327`, умова `ОтключениеОборудования Или
+     СетевоеОборудование`). Наш `Отключить` зупиняє супервізор і фоновий джоб (4.5) — з'ясовувати стає
+     нікому, знімок лишається `pending` **назавжди**, і виглядає це як відмова компоненти з'ясовувати.
+     При коді 17 розширення має цьому **запобігти** (у ru — перехопленням відключення) **або** саме
+     викликати `Подключить` перед полінгом: `Connect()` при збереженому `Pending` запускає з'ясування
+     (4.4в). Як саме — справа редакції; що це потрібно — частина контракту. Умова відключення — «мережеве
+     обладнання або пристрій, підключений самою командою»; чи підпадає наш драйвер під ознаку
+     `СетевоеОборудование` — не звірено (§2.4). Якщо підпадає, на БПО-шляху ru сесія живе **в межах
+     команди**, а не зміни — постійна сесія, keepalive і супервізор працюють у прямому API й усередині
+     команди.
+   - **`channelConnected:false` — не привід закривати форму, скасовувати операцію чи кликати
+     `Подключить`, поки сесія жива.** Це звичайний стан, доки супервізор не перевідкрив канал: секунди при
+     короткому обриві, довше, якщо термінал недоступний; компонента відновлює канал сама, з'ясування
+     продовжиться без участі каси. **`Подключить` тут не прискорює, а вбиває самовідновлення:** `Connect()`
+     починається з `Disconnect()` (зупиняє супервізор і джоб), а на недоступному терміналі повертає `Ложь`
+     ще на хендшейку й лишає драйвер без сесії — обрив, який компонента виправила б сама, стає постійною
+     зупинкою з'ясування до наступного вдалого `Подключить`. (Бік 1С, маючи попередню редакцію цього
+     пункту перед очима, все одно поставив у свою спеку «`channelConnected:false` → закрити форму» — тому
+     антипатерн названо явно.)
+   - **Як розрізнити два попередні випадки** — за `linkState` у знімку (4.7): `"connecting"` — сесія жива,
+     чекати; `"disconnected"` — сесії нема (хтось викликав `Отключить`), без `Подключить` з'ясування не
+     буде; `"ready"` при `pending` — термінал чує, джоб полить статус, чекати. Без цього поля розширення
+     має пам'ятати, чи саме воно запобігло відключенню.
 6. **Коли `state == "resolved"`** — два **різних** питання, два різних ключі (уточнено 2026-09-14):
    - **Про який намір знімок?** — `intent.requestId` == `ИдентификаторЗапроса` запису. Збігся — знімок про
      цей запис. Не збігся — знімок про інший (попередній) намір, а цей запис до термінала не дійшов
@@ -1148,8 +1372,13 @@ PollStatusOnce(int&)`; тести №10, №11 (для №11 — тимчасо�
    закрити як невиконану; `factsOk:false` (`factsCode` `TERMINAL_BUSY`/`TIMEOUT`/…) → компонента чек не
    дістала — розбір оператором, запис лишається відкритим. Вважати `facts` нашими лише через збіг
    `requestId` — це дефект §1.2, перенесений у 1С.
-7. **`generation`** — ідентифікатор знімка. Той самий `generation`, що вже оброблено, обробляти вдруге
-   не треба. **Знімок у компоненті один і смертний:** наступний перехід у `Pending` (`MarkPending`
+7. **`generation`** — ідентифікатор знімка **у межах об'єкта драйвера**, і об'єкт цей обслуговує рівно
+   **один** термінал: базова УНФ кешує один об'єкт компоненти на клас драйвера на сеанс клієнта
+   (`ПодключаемоеОборудованиеДрайверКлиент:196`, за сесією розширення), а фасад тримає один драйвер, один
+   `ИДУстройства` (`"ECR-1"`) і один знімок — другий термінал того ж класу на одному робочому місці **не
+   підтримується** (`docs/tech-debt.md` TD-8: сьогодні друге `Подключить` тихо перепідключає той самий
+   драйвер на іншу адресу; рекомендований фікс — чесна відмова). Той самий `generation`, що вже оброблено,
+   обробляти вдруге не треба. **Знімок у компоненті один і смертний:** наступний перехід у `Pending` (`MarkPending`
    затирає `lastOutcome_` цілком, з новим `generation`) знищує його безповоротно. Успішна операція знімок
    **не** чіпає; але після `resolved` гейт спав, і перша ж наступна оплата з невідомою долею — навіть
    через кілька хвилин — стирає факти попередньої, а `GetReceiptInfo("")` уже віддасть новий чек. Тому

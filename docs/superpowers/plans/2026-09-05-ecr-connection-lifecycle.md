@@ -21,7 +21,7 @@
 - **`DeviceSession` не змінюється** (спека §3, принцип архітектора): ні `desync` при обриві, ні нові хуки, ні зміни `MarkSynchronized()`.
 - **Коди 0..16 не рухаються.** Нові — `UNKNOWN_OUTCOME`=17, `RECONNECTING`=18, і тільки символьні (числова гілка `CodeToInt` віддала б цифру за код термінала).
 - **Компонента не вгадує про гроші:** жодного зіставлення чека з наміром, жодного автоповтору/сторно, жодного запису фактів чужого чека в OUT-параметри БПО.
-- **Під `outcomeMutex_`/`linkMutex_` — жодного мережевого виклику й жодного `EmitEvent`** (той самий стиль, що `eventMutex_`).
+- **Під `outcomeMutex_`/`linkMutex_` — жодного мережевого виклику й жодного `EmitEvent`** (той самий стиль, що `eventMutex_`). Єдиний навмисний виняток — зовнішній `linkEmitMutex_` у `SetLinkState`: він **має** накривати емісію `connection` (порядок подій = порядок переходів, спека §4.9.3); порядок узяття `linkEmitMutex_ → linkMutex_ → (eventMutex_ усередині EmitEvent)`, зворотного ніде не робити.
 - **`min`/`max` не використовувати** (windows.h визначає їх макросами — тихо ламає збірку): писати тернарний вибір.
 - **Гейт кожного завдання — зелений на x64 і x86.** Швидкий цикл:
   ```
@@ -948,9 +948,10 @@ enum class LinkState { Disconnected, Connecting, Ready };
     void SetLinkState(LinkState target, const char* reason, std::uint64_t epoch = 0);
     std::uint64_t LinkEpoch() const;
 
-    mutable std::mutex linkMutex_;
+    mutable std::mutex linkEmitMutex_;   ///< ЗОВНІШНІЙ: перехід + емісія connection як одна дія (спека §4.9.3)
+    mutable std::mutex linkMutex_;       ///< порядок узяття: linkEmitMutex_ → linkMutex_
     LinkState          linkState_ = LinkState::Disconnected;   ///< під linkMutex_
-    std::uint64_t      linkEpoch_ = 0;                         ///< ++ на кожен вихід із Ready
+    std::uint64_t      linkEpoch_ = 0;                         ///< покоління з'єднання: ++ на кожен запис не-Ready
 ```
 
 - [ ] **Step 5: Реалізувати `SetLinkState` з епохою**
@@ -981,13 +982,21 @@ std::uint64_t EcrPrivatJsonDriver::LinkEpoch() const {
 }
 
 void EcrPrivatJsonDriver::SetLinkState(LinkState target, const char* reason, std::uint64_t epoch) {
+    // Перехід + емісія - одна неподільна дія (спека §4.9.3): без цього емісії з двох потоків
+    // (джоб: Ready, хук: Connecting) міняються місцями, і 1С бачить ready останнім при
+    // фактичному Connecting. Порядок узяття: linkEmitMutex_ -> linkMutex_ -> eventMutex_.
+    std::lock_guard<std::mutex> emitLk(linkEmitMutex_);
     {
         std::lock_guard<std::mutex> lk(linkMutex_);
         // Ping приніс Ready з епохи, яка вже мертва (сокет упав одразу після відповіді) - ігноруємо:
         // інакше Ready лишився б на мертвому сокеті, і наступний up=true його не полагодив би.
         if (target == LinkState::Ready && epoch != linkEpoch_) return;
-        if (linkState_ == target) return;
-        if (linkState_ == LinkState::Ready) ++linkEpoch_;   // вихід із Ready = нова епоха
+        // linkEpoch_ - ПОКОЛІННЯ З'ЄДНАННЯ (спека §4.9.1, дефект першої редакції, рев'ю Task 4):
+        // росте на КОЖНОМУ записі не-Ready, ДО перевірки «той самий стан». Перша редакція
+        // інкрементувала лише на виході з Ready - і в гонці «Ping відповіли, сокет упав» стан уже
+        // Connecting (джоб у EnsureReady), хук виходив без інкременту, Ready проходив guard.
+        if (target != LinkState::Ready) ++linkEpoch_;
+        if (linkState_ == target) return;                    // без події: стан не змінився
         linkState_ = target;
     }
     EmitEvent("connection", { {"state", LinkStateName(target)}, {"reason", reason ? reason : ""} });
@@ -1036,6 +1045,10 @@ void EcrPrivatJsonDriver::SetLinkState(LinkState target, const char* reason, std
         NEUTRAL_REPORT_ERROR("ECRPrivatJSON", "Постійний режим: не вдалося відкрити зв'язок");
         // Не "closed": це аварія підключення, а не прохання каси відключитись (спека §4.9.3).
         SetLinkState(LinkState::Disconnected, "connect_failed");
+        // Stop() ПЕРЕД reset() (рев'ю Task 4): при opened==false Start() лишає dispatcher і
+        // супервізор живими, хук уже стоїть - без Stop() хук міг би виконати EnsureRecoveryRunning()
+        // над знищеною сесією (use-after-free у вікні до першої спроби реконекту).
+        session_->Stop();
         session_.reset();
         return false;
     }
@@ -1565,15 +1578,20 @@ static void TestDisconnectInterruptsBackoff() {
     // pings >= 2: перший Ping таймаутнув (200 мс), джоб проспав backoff 1 с, відправив другий.
     CHECK(WaitFor([&]{ return st.pings.load() >= pingsBefore + 2; }, 20000),
           "DisconnectBackoff: джоб зробив другий Ping (перший цикл backoff пройдено)");
-    // Даємо другому Ping таймаутнути - після цього джоб гарантовано в SleepInterruptible(2000).
+    // Даємо другому Ping таймаутнути. Реальний механізм (спека §4.9.2 «фактичний ритм»): Timeout Ping
+    // замовляє реконект супервізора, той рве з'єднання, цикл EnsureReady виходить по !IsConnected(),
+    // а після Close→Open хук up=true стартує СВІЖИЙ EnsureReady з backoff=1000. Джоб зараз - у
+    // SleepInterruptible(1000) цього свіжого циклу, не в SleepInterruptible(2000).
     std::this_thread::sleep_for(std::chrono::milliseconds(kPingMs + 50));
 
     const auto t0 = std::chrono::steady_clock::now();
     drv.Disconnect();
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::steady_clock::now() - t0).count();
-    // Зі SleepInterruptible - до 100 мс на крок сну; з голим sleep_for - решта 2 с інтервалу.
-    CHECK(elapsed < 1000, "DisconnectBackoff: Отключить повернувся < 1 с, не чекав backoff");
+    // Поріг доведено двома вимірами (спека §6.5 п.5): зі SleepInterruptible - 38 мс,
+    // з голим sleep_for - ~940 мс (залишок першого секундного сну). 300 - восьмикратний запас
+    // з обох боків; перший поріг < 1000 був зелений в обох станах і не перевіряв нічого.
+    CHECK(elapsed < 300, "DisconnectBackoff: Отключить повернувся < 300 мс, не чекав backoff");
     emu.Stop();
 }
 ```
@@ -1719,10 +1737,21 @@ bool EcrPrivatJsonDriver::EnsureReady() {
         const std::uint64_t epoch = LinkEpoch();     // епоха, в якій шлемо цей Ping
         auto ping = EcrJsonCodec::BuildRequest("PingDevice", 0, nullptr);
         GateSend();
+        // ПЕРЕД КОЖНИМ Ping знімаємо desync (спека §4.9.2 «desync і Ping»): після таймауту
+        // primary DoRequest відбиває будь-який primary до дроту (DeviceSession.cpp:175) - Ping
+        // теж, а Timeout самого Ping ставить desync знову. Гроші тут не захищає desync, а гейт
+        // §4.6: MarkPending уже стоїть, фінансові виклики отримують 17, нефінансові - 18.
+        session_->MarkSynchronized();
         // Той самий Ping, що в Connect: провідний 0x00 «закриває» півкадр, що міг лишитись
         // у буфері термінала після обриву посеред передачі (спека §2.3).
         RequestResult r = session_->RequestPrimary(ping, pingTimeoutMs_.load(),
                                                    FrameOptions{ /*leadingDelimiter=*/true });
+        if (r.status == RequestStatus::Desynchronized) {
+            // Недосяжно після MarkSynchronized вище; лишається лише RejectBoth між зняттям і
+            // відправкою. Не аварія - повторити без backoff.
+            NEUTRAL_REPORT_WARN("ECRPrivatJSON", "EnsureReady: Desynchronized після MarkSynchronized - повтор");
+            continue;
+        }
         if (r.status == RequestStatus::Response || r.status == RequestStatus::Busy) {
             // Busy = живий, зайнятий нашою операцією - теж «чує нас». Ready із мертвої епохи
             // SetLinkState відкине сам.
@@ -1914,13 +1943,22 @@ bin\Release\ecr_privatjson_selftest_x64.exe
 Три перевірки, кожну — окремо, з поверненням коду після неї:
 1. Прибрати `EnsureRecoveryRunning()` з хука `up=true` → `PingReconnect` не дочекається `Ready`.
 2. Прибрати перевірку `epoch != linkEpoch_` у `SetLinkState` → `LinkEpoch` рано чи пізно ловить
-   два `ready` підряд (повторити прогін 5 разів, гонка не щоразу).
-3. Повернути `MarkSynchronized()` під умову `if (idle)` → `TerminalBusy` падає на CHECK
-   «після ліміту сесія не лишилась у desync».
-4. Замінити `SleepInterruptible(backoff)` на `std::this_thread::sleep_for` → №25 падає:
-   `elapsed` стає ≈2 с (залишок backoff-інтервалу) проти порога 1 с. Саме заради цієї перевірки
-   тест чекає ДРУГОГО Ping і його таймауту — інакше джоб стояв би в очікуванні відповіді, і
-   `Stop()` завершував би його миттєво навіть без `SleepInterruptible` (тест зеленів би завжди).
+   два `ready` підряд. **Результат виконання (2026-09-14): не відтворено за 40 прогонів** — вікно
+   гонки мікросекундне, штатним шляхом не створюється. Паркується як задокументоване обмеження
+   (спека §6.2 №23); детермінований шлях — шов `SetBeforeReadyHookForTest` і тест №23-біс у Task 5
+   (рекомендовано, не обов'язково).
+3. ~~Повернути `MarkSynchronized()` під умову `if (idle)` → `TerminalBusy` падає~~ — **застарів разом із
+   рішенням «desync і Ping» (спека §4.9.2):** `EnsureReady` знімає desync перед кожним Ping і для
+   ECRPrivatJSON завжди відпрацьовує раніше за `CaptureOutcome` (обидва джерела desync — Timeout `:221`
+   і RejectBoth `:356` — замовляють реконект). Виклик у `CaptureOutcome` надлишковий на всіх досяжних
+   шляхах, негативно не перевіряється; лишити як намір (спека §4.3 крок 3). Тест №7 лишається.
+4. Замінити `SleepInterruptible(backoff)` на `std::this_thread::sleep_for` → №25 падає: `elapsed` ≈ 940 мс
+   (залишок **першого секундного** сну свіжого `EnsureReady` після примусового реконекту — до
+   `SleepInterruptible(2000)` джоб не доходить ніколи, спека §4.9.2 «фактичний ритм») проти порога
+   **300 мс**; зі `SleepInterruptible` — 38 мс. Перший поріг `< 1000` був зелений в обох станах
+   (спека §6.5 п.5): обидва виміри під новим порогом і є ця перевірка. Тест чекає ДРУГОГО Ping і його
+   таймауту — інакше джоб стояв би в очікуванні відповіді, і `Stop()` завершував би його миттєво навіть
+   без `SleepInterruptible`.
 
 - [ ] **Step 14: Повний гейт x64 і x86, коміт**
 
@@ -1949,6 +1987,12 @@ git commit -m "feat(ecr): фоновий джоб — Ping до готовнос
 
 **Interfaces:**
 - Consumes: усе з Task 4.
+- Produces (рекомендовано, не обов'язково): `void SetBeforeReadyHookForTest(std::function<void()>);` — хук,
+  який `EnsureReady` кличе **між** `Response`/`Busy` на Ping і `SetLinkState(Ready, "", epoch)`; порожній за
+  замовчуванням. Для детермінованого тесту №23-біс (спека §6.2): у хуку `emu.DropConnection()` + чекати
+  `!drv.IsConnected()` → `SetLinkState` отримує стару епоху → `IsReady()==false`; негативна — прибрати
+  перевірку епохи → червоний детерміновано. Причина: гонка епохи вікном у мікросекунди штатно не
+  відтворюється (Task 4 крок 13 п.2 — 0 падінь за 40 прогонів).
 - Produces: `void StopSessionForTest();` — зупиняє **сесію** (не драйвер), щоб змоделювати
   `Stopped`-тригер без `session_.reset()` під активним запитом. Прямий `Disconnect()` з іншого потоку
   під час синхронної операції архітектурою не передбачений (спека §2.4) і в тесті дав би
@@ -2834,7 +2878,10 @@ git commit -m "feat(transport): TCP keepalive завжди — тихий обр
    виклику, форма `payload.outcome`, події `outcome`/`connection`, що компонента **не** робить
    (не зіставляє, не повторює, не сторнує, не тримає стан між сеансами).
 4. **§6.1 «Потокова модель»** — додати `recoveryJob_` і правило «під `outcomeMutex_`/`linkMutex_` —
-   ні мережі, ні подій»; згадати, що `JobEngine::Start` тепер серіалізовано.
+   ні мережі, ні подій»; виняток `linkEmitMutex_` (зовнішній, накриває емісію `connection` навмисно) і
+   порядок узяття `linkEmitMutex_ → linkMutex_ → eventMutex_`; гарантія «порядок подій `connection` =
+   порядок переходів, остання подія = поточний стан» (спека §4.9.3); `linkEpoch_` — покоління з'єднання;
+   згадати, що `JobEngine::Start` тепер серіалізовано.
 5. **§9 «Тестовий контур»** — перелічити нові сценарії №1-25 і чотири тестові шви драйвера
    (`SetTransportFactoryForTest`, `SetOutcomeTimingForTest`, `MarkPendingForTest`, `StopSessionForTest`)
    плюс два режими обриву в емуляторі (`DropConnection`, `DropAfterNextResponse`).
@@ -2847,6 +2894,12 @@ git commit -m "feat(transport): TCP keepalive завжди — тихий обр
 > device-core — семантика кадрової синхронізації; «доля фінансової операції невідома» — семантика
 > драйвера. Драйвер, що після відновлення повертає касі чужий чек, порушує саме цю межу
 > (історія: `ECRPrivatJSON`, виправлено 2026-09; `docs/architecture/ecrprivatjson.md` §6.6-6.7).
+>
+> `desync` знімає драйвер (`MarkSynchronized()`), коли **за його критерієм** канал синхронізований;
+> критерій — його, не сесії. Наслідок для будь-якого драйвера на device-core: primary-запит
+> відновлення (хендшейк, Ping) при `desync` до дроту не вийде (`DeviceSession.cpp:175`) — драйвер
+> має зняти прапорець **перед** ним сам, а захист грошей тримати власним гейтом, не desync
+> (`ECRPrivatJSON`: спека 2026-09-05 §4.9.2 «desync і Ping»).
 
 - [ ] **Step 3: `docs/architecture/bpo-contract.md`**
 
@@ -2893,10 +2946,10 @@ git commit -m "feat(transport): TCP keepalive завжди — тихий обр
    |---|---|---|---|
    | `AuthorizeSales` | `Purchase` на дріт | так | так |
    | `AuthorizeRefund` | `Refund` на дріт | так | так |
-   | `AuthorizeVoid` | `Refund` на дріт (відкат `RunVoid`→`RunRefund`; параметр `VoidAsRefund`, дефолт увімкнено); при вимкненому — `UNSUPPORTED`, без дроту | так / ні | так, `intent.method="Refund"` / ні |
+   | `AuthorizeVoid` | `Refund` на дріт — відкат `RunVoid`→`RunRefund` **лише** на `UNSUPPORTED` від драйвера (`AcquiringFacadeBase.cpp:58`), і лише якщо `VoidAsRefund` увімкнено (дефолт) **і** RRN непорожній. **Дві** гілки без дроту: `VoidAsRefund` вимкнено → `UNSUPPORTED`; RRN порожній → `BAD_INPUT` (`:60-64`) | так / ні | так, `intent.method="Refund"` / ні |
    | `PayByPaymentCardWithCashWithdrawal` | нічого, `UNSUPPORTED` (`AcquiringBpo4000.cpp:127-131`) | ні | ні |
    | `EmergencyVoid` | нічого, `UNSUPPORTED` (адаптер не перевизначає, `EcrPrivatJsonAcquiring.h:27`) | ні | ні |
-   | `Settlement` | `DayTotals`, нефінансовий | ні | ні |
+   | `Settlement` (`ИтогиДняПоКартам`) | `RunDayTotals` → `DayTotals()` адаптера → **`Verify("0")`** на дріт (`EcrPrivatJsonAcquiring.cpp:148-150`; у першій редакції цієї таблиці стояло «`DayTotals`» — метода з таким ім'ям у протоколі немає), нефінансовий | ні | ні |
 
 - [ ] **Step 5: Перевірка узгодженості**
 
