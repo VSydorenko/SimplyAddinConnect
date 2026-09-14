@@ -332,9 +332,21 @@ static bool WaitFor(F cond, int timeoutMs = 15000) {
     return cond();
 }
 
+// Безпечний доступ до payload.outcome (рев'ю Task 5: діагностованість гейта).
+// Прямий OutcomeObj(env).value(...) на конверті БЕЗ ключа "outcome" кидає
+// nlohmann::json::type_error 306, і main() його не ловить: процес падає ДО того, як
+// CHECK надрукує [FAIL] з іменем перевірки. Тобто регресія, що прибирає ключ, у гейті
+// виглядає як краш із порожнім виводом замість читаного «яка саме перевірка не пройшла».
+// Порожній об'єкт тут дає дефолтні значення у .value(), тож CHECK падає нормально.
+static nlohmann::json OutcomeObj(const ResultEnvelope& env) {
+    return (env.payload.is_object() && env.payload.contains("outcome") &&
+            env.payload["outcome"].is_object())
+               ? env.payload["outcome"] : nlohmann::json::object();
+}
+
 // Знімок долі як JSON-об'єкт outcome.
 static nlohmann::json OutcomeOf(EcrPrivatJsonDriver& drv) {
-    return drv.InquireLastOutcome().payload["outcome"];
+    return OutcomeObj(drv.InquireLastOutcome());
 }
 
 // №15: після реконекту Ready дає лише протокольний Ping, а не відкритий сокет.
@@ -598,7 +610,7 @@ static void TestSendFailedResolvesInline() {
     breakPurchase.store(false);
 
     CHECK(!env.ok && env.code == "UNKNOWN_OUTCOME", "SendFailed: операція -> код 17");
-    const auto oc = env.payload["outcome"];
+    const auto oc = OutcomeObj(env);
     CHECK(oc.value("reason", std::string{}) == "SEND_FAILED", "SendFailed: reason=SEND_FAILED");
     CHECK(oc.value("state", std::string{}) == "resolved", "SendFailed: знімок з'явився в тому ж виклику");
     CHECK(oc.value("channelConnected", false) == true, "SendFailed: channelConnected=true (сокет живий)");
@@ -626,7 +638,7 @@ static void TestTerminalBusyUntilLimit() {
     ResultEnvelope env = drv.Execute("Purchase",
         nlohmann::json{{"amount","100.51"},{"discount",""},{"merchantId","0"},{"facepay","false"}}, 1500);
     CHECK(!env.ok && env.code == "UNKNOWN_OUTCOME", "TerminalBusy: операція -> код 17");
-    CHECK(env.payload["outcome"].value("reason", std::string{}) == "TIMEOUT", "TerminalBusy: reason=TIMEOUT");
+    CHECK(OutcomeObj(env).value("reason", std::string{}) == "TIMEOUT", "TerminalBusy: reason=TIMEOUT");
 
     // Знімок читаємо ОКРЕМО, а не з env: Timeout ставить desync, тож за повним критерієм §4.2
     // синхронного очікування немає - 17 повертається негайно, а з'ясування йде після реконекту
@@ -737,7 +749,7 @@ static void TestOutcomeAfterReconnect() {
     ResultEnvelope env = drv.Purchase("100.51");
     CHECK(!env.ok && env.code == "UNKNOWN_OUTCOME", "OutcomeReconnect(№2): 17 повернуто до реконекту");
     {
-        const auto oc = env.payload["outcome"];
+        const auto oc = OutcomeObj(env);
         CHECK(oc.value("state", std::string{}) == "pending", "OutcomeReconnect(№2): state=pending");
         CHECK(oc["facts"].is_null(), "OutcomeReconnect(№2): facts=null, поки доля невідома");
         CHECK(oc.value("reason", std::string{}) == "DISCONNECTED", "OutcomeReconnect(№2): reason=DISCONNECTED");
@@ -858,8 +870,8 @@ static void TestStoppedIsTrigger() {
     stopper.join();
 
     CHECK(!env.ok && env.code == "UNKNOWN_OUTCOME", "Stopped: операція -> код 17");
-    CHECK(env.payload["outcome"].value("reason", std::string{}) == "STOPPED", "Stopped: reason=STOPPED");
-    CHECK(env.payload["outcome"].value("state", std::string{}) == "pending", "Stopped: state=pending");
+    CHECK(OutcomeObj(env).value("reason", std::string{}) == "STOPPED", "Stopped: reason=STOPPED");
+    CHECK(OutcomeObj(env).value("state", std::string{}) == "pending", "Stopped: state=pending");
 
     // Ручний реконект із 1С (спека §4.4в): Connect бачить Pending і запускає з'ясування сам.
     drv.Disconnect();
@@ -1245,7 +1257,7 @@ static void TestNonFinancialNotTracked() {
     CHECK(!env.ok && env.code == "TIMEOUT", "NonFinancial: Audit при мовчанні -> TIMEOUT, не 17");
 
     ResultEnvelope oc = drv.InquireLastOutcome();
-    CHECK(oc.ok && oc.code == "OK" && oc.payload["outcome"].value("state", std::string{}) == "none",
+    CHECK(oc.ok && oc.code == "OK" && OutcomeObj(oc).value("state", std::string{}) == "none",
           "NonFinancial: намір не створено (state=none)");
     drv.Disconnect();
     emu.Stop();
@@ -1257,9 +1269,9 @@ static void TestInquireNone() {
     ResultEnvelope env = drv.InquireLastOutcome();
     CHECK(env.ok && env.code == "OK", "InquireNone: ok=true, code=OK");
     CHECK(env.payload.contains("outcome") &&
-          env.payload["outcome"].value("state", std::string{}) == "none",
+          OutcomeObj(env).value("state", std::string{}) == "none",
           "InquireNone: outcome.state=none");
-    CHECK(env.payload["outcome"].value("channelConnected", true) == false,
+    CHECK(OutcomeObj(env).value("channelConnected", true) == false,
           "InquireNone: channelConnected=false без сесії");
 }
 
