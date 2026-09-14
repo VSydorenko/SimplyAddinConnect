@@ -134,6 +134,11 @@ public:
     void SetOutcomeTimingForTest(int idleWaitMs, int syncWaitMs, int pingTimeoutMs = -1);
     /// Зафіксувати намір БЕЗ старту джоба - модель вікна «Pending без виконавця» (спека §4.4).
     void MarkPendingForTest(const std::string& method, const std::string& amount, const std::string& reason);
+    /// Детермінований тест №23-біс (рев'ю Task 4, I1): хук викликається в EnsureReady МІЖ
+    /// отриманням Response/Busy на Ping і SetLinkState(Ready, "", epoch) - у вікні, де тест сам
+    /// рве з'єднання, епоха встигає піти вперед, і Ready записується зі СВІДОМО застарілим
+    /// знімком epoch. Викликається СИНХРОННО на потоці джоба; nullptr (дефолт) - без хука.
+    void SetBeforeReadyHookForTest(std::function<void()> hook);
 
 private:
     std::unique_ptr<ITransport> MakeTransport(const EcrConnParams& p) const;
@@ -187,6 +192,10 @@ private:
     JobEngine          recoveryJob_;      ///< ДРУГИЙ движок: job_ несе контракт СостояниеОперации
     std::atomic<bool>  closing_{ false }; ///< Disconnect у процесі: джоб і хук виходять
     TransportFactory   transportFactory_; ///< тестовий шов; nullptr -> справжні транспорти
+    /// Тестовий шов №23-біс: кличеться в EnsureReady МІЖ Response на Ping і SetLinkState(Ready).
+    /// mutable не потрібен - EnsureReady не const; захисту мютексом не потребує (ставиться ДО
+    /// Connect(), як і transportFactory_, читається лише на одному потоці джоба).
+    std::function<void()> beforeReadyHookForTest_;
     std::atomic<int>   outcomeIdleWaitMs_{ kOperationTimeoutMs };  ///< скільки чекати спокою
     std::atomic<int>   outcomeSyncWaitMs_{ kOutcomeSyncWaitMs };   ///< скільки чекати в синхронному виклику
     /// Таймаут Ping у EnsureReady. Дефолт = kHandshakeTimeoutMs (.cpp); поле, а не константа,

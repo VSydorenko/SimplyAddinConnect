@@ -207,6 +207,10 @@ bool EcrPrivatJsonDriver::Connect(const std::string& connString) {
         NEUTRAL_REPORT_ERROR("ECRPrivatJSON", "Постійний режим: не вдалося відкрити зв'язок");
         // Не "closed": це аварія підключення, а не прохання каси відключитись (спека §4.9.3).
         SetLinkState(LinkState::Disconnected, "connect_failed");
+        // Stop() ПЕРЕД reset() (рев'ю Task 4): при opened==false Start() лишає dispatcher і
+        // супервізор живими, хук уже стоїть - без Stop() хук міг би виконати EnsureRecoveryRunning()
+        // над знищеною сесією (use-after-free у вікні до першої спроби реконекту).
+        session_->Stop();
         session_.reset();
         return false;
     }
@@ -279,8 +283,12 @@ void EcrPrivatJsonDriver::SetLinkState(LinkState target, const char* reason, std
         // Ping приніс Ready з епохи, яка вже мертва (сокет упав одразу після відповіді) - ігноруємо:
         // інакше Ready лишився б на мертвому сокеті, і наступний up=true його не полагодив би.
         if (target == LinkState::Ready && epoch != linkEpoch_) return;
-        if (linkState_ == target) return;
-        if (linkState_ == LinkState::Ready) ++linkEpoch_;   // вихід із Ready = нова епоха
+        // linkEpoch_ - ПОКОЛІННЯ З'ЄДНАННЯ (спека §4.9.1, дефект першої редакції, рев'ю Task 4):
+        // росте на КОЖНОМУ записі не-Ready, ДО перевірки «той самий стан». Перша редакція
+        // інкрементувала лише на виході з Ready - і в гонці «Ping відповіли, сокет упав» стан уже
+        // Connecting (джоб у EnsureReady), хук виходив без інкременту, Ready проходив guard.
+        if (target != LinkState::Ready) ++linkEpoch_;
+        if (linkState_ == target) return;                    // без події: стан не змінився
         linkState_ = target;
     }
     EmitEvent("connection", { {"state", LinkStateName(target)}, {"reason", reason ? reason : ""} });
@@ -499,23 +507,31 @@ bool EcrPrivatJsonDriver::EnsureReady() {
     while (!closing_.load() && IsConnected() && !IsReady()) {
         const std::uint64_t epoch = LinkEpoch();     // епоха, в якій шлемо цей Ping
         auto ping = EcrJsonCodec::BuildRequest("PingDevice", 0, nullptr);
-        GateSend();
-        // ПЕРЕД КОЖНИМ Ping знімаємо desync (спека §4.9.2 «desync і Ping»): після таймауту
-        // primary DoRequest відбиває будь-який primary до дроту (DeviceSession.cpp:175) - Ping
-        // теж, а Timeout самого Ping ставить desync знову. Гроші тут не захищає desync, а гейт
-        // §4.6: MarkPending уже стоїть, фінансові виклики отримують 17, нефінансові - 18.
-        session_->MarkSynchronized();
-        // Той самий Ping, що в Connect: провідний 0x00 «закриває» півкадр, що міг лишитись
-        // у буфері термінала після обриву посеред передачі (спека §2.3).
-        RequestResult r = session_->RequestPrimary(ping, pingTimeoutMs_.load(),
-                                                   FrameOptions{ /*leadingDelimiter=*/true });
-        if (r.status == RequestStatus::Desynchronized) {
-            // Недосяжно після MarkSynchronized вище; лишається лише RejectBoth між зняттям і
-            // відправкою. Не аварія - повторити без backoff.
+        RequestResult r;
+        // Спека §4.9.2 «desync і Ping»: до ДВОХ спроб на ітерацію - другу БЕЗ backoff.
+        // Desynchronized недосяжний після MarkSynchronized нижче; лишається лише вузьке вікно
+        // RejectBoth між зняттям і відправкою (DeviceSession.cpp:355). Обмежуємо повтор ОДНИМ
+        // разом (не нескінченним continue, як у першій редакції коду): при потоці RejectBoth
+        // нескінченний continue дав би цикл Ping-ів ~10 Гц (єдиний гальмівник - GateSend, 100 мс).
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            GateSend();
+            // ПЕРЕД КОЖНИМ Ping знімаємо desync (спека §4.9.2 «desync і Ping»): після таймауту
+            // primary DoRequest відбиває будь-який primary до дроту (DeviceSession.cpp:175) - Ping
+            // теж, а Timeout самого Ping ставить desync знову. Гроші тут не захищає desync, а гейт
+            // §4.6: MarkPending уже стоїть, фінансові виклики отримують 17, нефінансові - 18.
+            session_->MarkSynchronized();
+            // Той самий Ping, що в Connect: провідний 0x00 «закриває» півкадр, що міг лишитись
+            // у буфері термінала після обриву посеред передачі (спека §2.3).
+            r = session_->RequestPrimary(ping, pingTimeoutMs_.load(),
+                                         FrameOptions{ /*leadingDelimiter=*/true });
+            if (r.status != RequestStatus::Desynchronized) break;
             NEUTRAL_REPORT_WARN("ECRPrivatJSON", "EnsureReady: Desynchronized після MarkSynchronized - повтор");
-            continue;
         }
         if (r.status == RequestStatus::Response || r.status == RequestStatus::Busy) {
+            // Тестовий шов №23-біс (I1): МІЖ Response і SetLinkState тест сам рве з'єднання,
+            // щоб детерміновано (без гонки потоків) відтворити «epoch пішла вперед, поки Ready
+            // ще не записаний». У продакшені хук не встановлюється (nullptr) - без ефекту.
+            if (beforeReadyHookForTest_) beforeReadyHookForTest_();
             // Busy = живий, зайнятий нашою операцією - теж «чує нас». Ready із мертвої епохи
             // SetLinkState відкине сам.
             SetLinkState(LinkState::Ready, "", epoch);
@@ -523,8 +539,9 @@ bool EcrPrivatJsonDriver::EnsureReady() {
         }
         if (r.status == RequestStatus::Disconnected || r.status == RequestStatus::Stopped)
             return false;                            // сокет упав знову - перезапустить хук
-        // Timeout тут - не аварія, а очікуваний стан «термінал ще тримає стару сесію»
-        // (монополія, спека §2.3), тож повторюємо без обмеження кількості.
+        // Timeout тут (або Desynchronized ЩЕ РАЗ після повтору вище - вкрай малоймовірно) -
+        // не аварія, а очікуваний стан «термінал ще тримає стару сесію» (монополія, спека
+        // §2.3), тож повторюємо з backoff без обмеження кількості циклів.
         SleepInterruptible(backoff);
         const int next = backoff * 2;
         backoff = (next > kReconnectMaxDelayMs) ? kReconnectMaxDelayMs : next;
@@ -609,6 +626,7 @@ void EcrPrivatJsonDriver::WaitOutcomeBounded(std::uint64_t generation) {
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(outcomeSyncWaitMs_.load());
     while (std::chrono::steady_clock::now() < deadline) {
+        if (closing_.load()) return;   // Disconnect у процесі - не тримати job_.Join() до кінця syncWait
         {
             std::lock_guard<std::mutex> lk(outcomeMutex_);
             if (lastOutcome_.generation != generation) return;
@@ -663,6 +681,10 @@ void EcrPrivatJsonDriver::MarkPendingForTest(const std::string& method, const st
     intent.amount    = amount;
     intent.startedAt = std::chrono::system_clock::now();
     MarkPending(intent, reason);
+}
+
+void EcrPrivatJsonDriver::SetBeforeReadyHookForTest(std::function<void()> hook) {
+    beforeReadyHookForTest_ = std::move(hook);
 }
 
 std::uint64_t EcrPrivatJsonDriver::MarkPending(const OperationIntent& intent, const std::string& reason) {

@@ -432,6 +432,26 @@ static void TestPingBusyIsReady() {
 }
 
 // №23: Ready з мертвої епохи не записується - інакше прапорець завис би на мертвому сокеті.
+// №23: Ready з мертвої епохи не записується - інакше прапорець завис би на мертвому сокеті.
+//
+// ⚠️ Предикат ОНОВЛЕНО (рев'ю Task 4, спека §4.9.1/§4.9.2, 2026-09-14). Предикат першої редакції
+// «немає двох ready підряд» був істинний і З ДЕФЕКТОМ епохи, і без нього: із дефектом Ready на
+// мертвому сокеті просто ЗАСТРЯГАЄ (жодного НОВОГО ready взагалі не буде, up=true побачить
+// needReady==false і Ping на новому сокеті не зробить) - тому «двох підряд» і не траплялось.
+// Предикат не розрізняв нічого (40 прогонів без жодного FAIL - задокументовано в task-4-report.md).
+//
+// Новий предикат архітектора: після обриву Ready настає ЛИШЕ ПІСЛЯ НОВОГО Ping НА НОВОМУ сокеті -
+// емулятор бачить >= 2 PingDevice, і фінальний ready іде СТРОГО після другого. Перший Ping отримує
+// відповідь і одразу вмирає (DropAfterNextResponse) - якщо Ready застряг би одразу після нього
+// (дефект епохи), другого Ping ніколи не буде, і ready лишиться "після першого" назавжди.
+//
+// Це переплетення двох потоків - джоб (пише Ready) і хук (пише Connecting) - тест НЕ контролює:
+// обидва порядки легальні. У порядку «джоб першим» обидва (старий і новий код) поводяться
+// однаково (короткий ready перед connecting, епоха коректно росте на виході з Ready - це НІКОЛИ
+// не було дефектом). Дефект проявляється ЛИШЕ в порядку «хук першим»: Connecting->Connecting
+// без інкременту епохи (стара редакція) дає застряглий Ready. Тому негативна верифікація тут,
+// як і зазначено в спеці, ІМОВІРНІСНА - детермінований варіант (№23-біс, шов
+// SetBeforeReadyHookForTest) заплановано в Task 5.
 static void TestLinkEpochRejectsStaleReady() {
     TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
     CHECK(emu.Start(), "LinkEpoch: емулятор стартував");
@@ -446,6 +466,7 @@ static void TestLinkEpochRejectsStaleReady() {
         states.push_back(j.value("state", std::string{}));
     });
     CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "LinkEpoch: Connect");
+    const int pingsAfterConnect = st.pings.load();
 
     emu.DropAfterNextResponse();   // відповість на Ping реконекту й одразу зникне
     emu.DropConnection();
@@ -453,6 +474,12 @@ static void TestLinkEpochRejectsStaleReady() {
     // Другий обрив стався одразу після відповіді на Ping: Ready з тієї епохи має бути відкинутий,
     // а зв'язок відновитись лише наступним Ping - на живому сокеті.
     CHECK(WaitFor([&]{ return drv.IsReady(); }, 20000), "LinkEpoch: зрештою Ready на живому сокеті");
+    // Новий предикат: фінальний ready настав СТРОГО після ДРУГОГО PingDevice (перший на живому
+    // з'єднанні відповів і одразу зник разом із DropAfterNextResponse), не одразу після першого.
+    // Якщо Ready застряг на мертвому сокеті одразу після першого - саме той дефект, що ловить ця
+    // перевірка (гонка «хук пише Connecting раніше за джоб Ready» - не в кожному прогоні).
+    CHECK(st.pings.load() >= pingsAfterConnect + 2,
+          "LinkEpoch: фінальний ready настав після ДРУГОГО PingDevice, не першого (мертвий сокет)");
 
     drv.Disconnect();
     std::lock_guard<std::mutex> lk(evMutex);
@@ -462,6 +489,60 @@ static void TestLinkEpochRejectsStaleReady() {
             return;
         }
     CHECK(true, "LinkEpoch: жодного ready поверх мертвої епохи");
+}
+
+// №23-біс: епоха зв'язку, ДЕТЕРМІНОВАНО (рев'ю Task 4, I1; рекомендація архітектора - шов
+// SetBeforeReadyHookForTest, спека design.md рядок 1027).
+//
+// №23 ловить дефект I1 лише в переплетенні потоків «хук пише Connecting РАНІШЕ за джоб Ready» -
+// це один із ДВОХ легальних порядків, тест його не контролює (звідси 3 FAIL із 15 у негативній
+// верифікації I1, а не 15 із 15 - див. task-4-report.md). Тут переплетення ПРИМУШУЄМО хуком:
+// SetBeforeReadyHookForTest кличеться в EnsureReady МІЖ отриманням Response на Ping і
+// SetLinkState(Ready, "", epoch) - точнісінько у вікні, де стара редакція коду відкидала б
+// інкремент епохи (стан уже Connecting, друга транзиція Connecting->Connecting).
+static void TestLinkEpochStaleReadyDeterministic() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    CHECK(emu.Start(), "LinkEpochBis: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "LinkEpochBis: Connect");
+
+    // Перший обрив: Ready -> Connecting. Ця транзиція НІКОЛИ не була дефектною (епоха коректно
+    // росте на виході з Ready і в старій, і в новій редакції) - вона лише готує стан Connecting,
+    // з якого стартує дефектна ДРУГА транзиція нижче.
+    emu.DropConnection();
+    CHECK(WaitFor([&]{ return !drv.IsReady(); }), "LinkEpochBis: Ready знято після першого обриву");
+
+    // Хук: точно в момент, коли відновлювальний Ping ЩОЙНО отримав відповідь (стан УСЕ ЩЕ
+    // Connecting - SetLinkState(Ready, epoch) іще не викликано), тест сам рве з'єднання ЗНОВУ.
+    // Це друга, дефектна транзиція I1: Connecting -> Connecting (стан не змінюється, подія не
+    // емітується - тому спостерігати її напряму через events нічим, лише через побічний ефект
+    // на epoch). Чекаємо !IsConnected() (DeviceSession зафіксував обрив синхронно, на
+    // reader-потоці) - за цей час dispatcher встигає прогнати чергу й викликати наш хук
+    // стану (окремий, завжди готовий потік; затримка практично мікросекунди), а отже й
+    // SetLinkState(Connecting) - ДО того, як ми вийдемо з хука і EnsureReady запише Ready.
+    std::atomic<bool> hookFired{ false };
+    drv.SetBeforeReadyHookForTest([&]{
+        hookFired.store(true);
+        emu.DropConnection();
+        for (int i = 0; i < 250 && drv.IsConnected(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    });
+
+    CHECK(WaitFor([&]{ return hookFired.load(); }, 20000), "LinkEpochBis: хук спрацював (Ping отримав відповідь)");
+    CHECK(WaitFor([&]{ return !drv.IsConnected(); }, 5000),
+          "LinkEpochBis: другий обрив зареєстровано (сокет справді впав)");
+    // Ключова перевірка I1: одразу після виходу з ЦЬОГО циклу EnsureReady, Ready НЕ повинен
+    // бути записаний зі старою (знятою ДО хука) епохою - guard має її відкинути. Це і є
+    // дефект I1, зловлений детерміновано: без фіксу епоха не зрушила б, і Ready записався б
+    // на вже мертвому сокеті.
+    CHECK(!drv.IsReady(), "LinkEpochBis: Ready НЕ записано зі старою епохою (дефект I1 відсутній)");
+
+    // Зрештою (після реального реконекту й НОВОГО Ping на НОВОМУ сокеті) зв'язок відновлюється.
+    drv.SetBeforeReadyHookForTest(nullptr);   // прибрати хук - далі звичайний потік без утручань
+    CHECK(WaitFor([&]{ return drv.IsReady(); }, 20000), "LinkEpochBis: зрештою Ready на живому сокеті");
+
+    drv.Disconnect();
+    emu.Stop();
 }
 
 // №6: SendFailed при ЖИВОМУ з'єднанні - з'ясування одразу, факти в тому ж виклику.
@@ -1300,6 +1381,7 @@ int main() {
     TestSilenceAfterReconnect();
     TestPingBusyIsReady();
     TestLinkEpochRejectsStaleReady();
+    TestLinkEpochStaleReadyDeterministic();
     TestSendFailedResolvesInline();
     TestTerminalBusyUntilLimit();
     TestSelfHealingFromInquire();
