@@ -185,7 +185,10 @@ private:
     /// гейт §4.6, InquireLastOutcome, Connect() після старту сесії.
     void EnsureRecoveryRunning();
     /// Тіло фонового джоба: крок 0 - готовність (Ping), крок 1 - з'ясування долі.
-    ResultEnvelope RecoveryJob(std::uint64_t generation);
+    /// БЕЗ параметра покоління: намір з'ясовується той, що існує НА МОМЕНТ ГОТОВНОСТІ, а не
+    /// на момент старту джоба (джоб міг стартувати з хука up=true ще до MarkPending) - див.
+    /// коментар у .cpp.
+    ResultEnvelope RecoveryJob();
     /// Крок 0: цикл Ping із backoff, доки термінал не відповість (Response або deviceBusy).
     bool EnsureReady();
     /// Крок 1: полінг статусу до спокою -> MarkSynchronized -> RequestReceiptFacts -> знімок.

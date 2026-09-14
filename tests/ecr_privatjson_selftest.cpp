@@ -446,6 +446,28 @@ static void TestPingBusyIsReady() {
     emu.Stop();
 }
 
+// Хендшейк Connect() приймає deviceBusy нарівні з Response - те саме рішення, що в EnsureReady
+// (рев'ю гілки, фінальний раунд). Сценарій оператора: каса дістала код 17, касир тисне
+// Отключить/Подключить, поки термінал ще тримає нерозв'язану транзакцію. EnsureReady такий
+// стан приймав («живий, зайнятий»), а Connect - ні, і ручне перепідключення провалювалось
+// цілком, хоча автоматичний реконект той самий стан проходив.
+static void TestConnectAcceptsBusyHandshake() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    emu.OnRequest("PingDevice", [&st](const nlohmann::json&) -> std::string {
+        st.pings.fetch_add(1);
+        return R"({"method":"ServiceMessage","params":{"msgType":"deviceBusy"},"error":false})";
+    });
+    CHECK(emu.Start(), "ConnectBusy: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())),
+          "ConnectBusy: deviceBusy на хендшейк-Ping -> Connect успішний");
+    CHECK(st.pings.load() >= 1, "ConnectBusy: хендшейк-Ping справді пішов");
+    CHECK(drv.IsConnected(), "ConnectBusy: постійна сесія відкрита");
+    drv.Disconnect();
+    emu.Stop();
+}
+
 // №23: Ready з мертвої епохи не записується - інакше прапорець завис би на мертвому сокеті.
 // №23: Ready з мертвої епохи не записується - інакше прапорець завис би на мертвому сокеті.
 //
@@ -675,6 +697,54 @@ static void TestSelfHealingFromInquire() {
     CHECK(WaitFor([&]{ return OutcomeOf(drv).value("state", std::string{}) == "resolved"; }),
           "SelfHeal: джоб стартував сам і довів справу до resolved");
     CHECK(st.receipts.load() >= 1, "SelfHeal: чек справді запитано");
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// №13-біс: джоб відновлення з'ясовує НАМІР, ЩО ІСНУЄ НА МОМЕНТ ГОТОВНОСТІ (рев'ю гілки,
+// фінальний раунд). Гонка: обрив посеред оплати -> RAII-join поллера забирає до ~3.5 с ->
+// супервізор устигає реконектитись раніше, і хук up=true стартує джоб ЩЕ ДО MarkPending. Джоб
+// стартує з поколінням 0 (наміру ще немає); потік операції фіксує намір поколінням 1, а його
+// EnsureRecoveryRunning() повертає false - джоб уже йде. Стара редакція звіряла покоління,
+// ЗАХОПЛЕНЕ НА СТАРТІ, бачила 1 != 0 і виходила Ok(): Pending лишався без виконавця, і каса
+// діставала 17 зі state:"pending" замість готового знімка.
+//
+// Відтворюємо ДЕТЕРМІНОВАНО, без гонки потоків: хук SetBeforeReadyHookForTest виконується
+// СИНХРОННО на потоці джоба МІЖ відповіддю на Ping і SetLinkState(Ready) - тобто гарантовано
+// ПІСЛЯ старту джоба й ДО того, як той читає намір. Саме там і фіксуємо намір швом
+// MarkPendingForTest (він НЕ стартує джоба - як і реальний MarkPending, чий
+// EnsureRecoveryRunning у цій гонці впирається в «джоб уже йде»).
+static void TestRecoveryJobTakesCurrentIntent() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    CHECK(emu.Start(), "FreshIntent: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    drv.SetOutcomeTimingForTest(/*idleWaitMs=*/2000, /*syncWaitMs=*/2000);
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "FreshIntent: Connect");
+
+    std::atomic<bool> marked{ false };
+    drv.SetBeforeReadyHookForTest([&]{
+        if (marked.exchange(true)) return;          // рівно один раз
+        drv.MarkPendingForTest("Purchase", "100.51", "TIMEOUT");
+    });
+
+    const int receiptsBefore = st.receipts.load();
+    emu.DropConnection();          // -> Connecting -> реконект -> хук up=true стартує джоб БЕЗ наміру
+    CHECK(WaitFor([&]{ return marked.load(); }, 20000),
+          "FreshIntent: джоб стартував без наміру й дійшов до готовності");
+
+    // Ключова перевірка. Чек у цьому тесті запитує ЛИШЕ CaptureOutcome (інших викликів немає),
+    // тож лічильник емулятора - прямий доказ, що джоб узявся за СВІЖИЙ намір. Спостерігаємо
+    // саме його, а не InquireLastOutcome: той САМ запускає самозцілення (№13) і замаскував би
+    // дефект. На старій редакції джоб виходить Ok(), лічильник не рухається - CHECK падає.
+    CHECK(WaitFor([&]{ return st.receipts.load() >= receiptsBefore + 1; }, 20000),
+          "FreshIntent: джоб з'ясував долю свіжого наміру (чек запитано)");
+    drv.SetBeforeReadyHookForTest(nullptr);
+    const auto oc = OutcomeOf(drv);
+    CHECK(oc.value("state", std::string{}) == "resolved", "FreshIntent: знімок готовий (resolved)");
+    CHECK(oc["facts"].is_object() && oc["facts"].value("rrn", std::string{}) == "555000111",
+          "FreshIntent: у знімку факти чека");
+
     drv.Disconnect();
     emu.Stop();
 }
@@ -1715,11 +1785,13 @@ int main() {
     TestPingAfterReconnect();
     TestSilenceAfterReconnect();
     TestPingBusyIsReady();
+    TestConnectAcceptsBusyHandshake();
     TestLinkEpochRejectsStaleReady();
     TestLinkEpochStaleReadyDeterministic();
     TestSendFailedResolvesInline();
     TestTerminalBusyUntilLimit();
     TestSelfHealingFromInquire();
+    TestRecoveryJobTakesCurrentIntent();
     TestDisconnectInterruptsBackoff();
     TestOutcomeAfterReconnect();
     TestRequestIdIsOneShot();

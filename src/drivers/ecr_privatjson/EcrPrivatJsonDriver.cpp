@@ -160,7 +160,13 @@ bool EcrPrivatJsonDriver::Connect(const std::string& connString) {
         auto ping = EcrJsonCodec::BuildRequest("PingDevice", 0, nullptr);
         GateSend();
         RequestResult r = hs->RequestPrimary(ping, kHandshakeTimeoutMs, FrameOptions{/*leadingDelimiter=*/true});
-        if (r.status != RequestStatus::Response) {
+        // Busy приймаємо нарівні з Response - те саме рішення, що в EnsureReady (крок 0):
+        // deviceBusy означає «термінал живий і чує нас, але зайнятий нашою ж нерозв'язаною
+        // операцією», а не «зв'язку немає». Інакше ручний Отключить/Подключить під час
+        // нерозв'язаної транзакції провалював би Connect цілком - тоді як автоматичний
+        // реконект той самий стан обробляє правильно. Після коду 17 касир тисне
+        // «перепідключити» саме в цьому стані (рев'ю гілки, фінальний раунд).
+        if (r.status != RequestStatus::Response && r.status != RequestStatus::Busy) {
             NEUTRAL_REPORT_ERROR("ECRPrivatJSON", "Хендшейк PingDevice не вдався");
             return false;
         }
@@ -514,29 +520,38 @@ void EcrPrivatJsonDriver::SleepInterruptible(int ms) {
 void EcrPrivatJsonDriver::EnsureRecoveryRunning() {
     if (closing_.load() || !IsConnected()) return;   // без сокета ні Ping, ні з'ясування
     const bool needReady = !IsReady();
-    std::uint64_t gen = 0;
     bool needOutcome = false;
     {
         std::lock_guard<std::mutex> lk(outcomeMutex_);
         needOutcome = lastOutcome_.state == OutcomeState::Pending;
-        gen = lastOutcome_.generation;
     }
     if (!needReady && !needOutcome) return;
+    // Покоління джобу НЕ передаємо (рев'ю гілки, фінальний раунд): див. коментар у RecoveryJob.
     // false = джоб уже йде; це нормальний, найчастіший результат.
-    recoveryJob_.Start([this, gen] { return RecoveryJob(gen); });
+    recoveryJob_.Start([this] { return RecoveryJob(); });
 }
 
-ResultEnvelope EcrPrivatJsonDriver::RecoveryJob(std::uint64_t generation) {
+ResultEnvelope EcrPrivatJsonDriver::RecoveryJob() {
     // Крок 0: спершу термінал має підтвердити, що чує нас. Полінг статусу в тишу монополії
     // дав би хибний TERMINAL_BUSY (спека §4.4).
     if (!EnsureReady()) return ResultEnvelope::Fail("ABORTED", "Зв'язок не підтверджено");
+    // Покоління читаємо ТУТ, а не беремо захоплене на СТАРТІ джоба (рев'ю гілки, фінальний
+    // раунд). Джоб міг стартувати з хука up=true ще ДО того, як потік операції зафіксував
+    // намір (MarkPending): RAII-join поллера забирає до ~3.5 с, і супервізор встигає
+    // реконектитись раніше. Порівняння зі "своїм" поколінням тоді давало "намір не мій",
+    // джоб виходив Ok(), а свіжий Pending лишався без виконавця - рівно той клас, під який
+    // спека §4.4 будувала самозцілення. З'ясовуємо намір, що існує НА МОМЕНТ ГОТОВНОСТІ.
+    std::uint64_t current = 0;
     bool pending = false;
     {
         std::lock_guard<std::mutex> lk(outcomeMutex_);
-        pending = lastOutcome_.state == OutcomeState::Pending && lastOutcome_.generation == generation;
+        pending  = lastOutcome_.state == OutcomeState::Pending;
+        current  = lastOutcome_.generation;
     }
     if (!pending) return ResultEnvelope::Ok();       // готовність відновлено, питання про долю немає
-    return CaptureOutcome(generation);
+    // Захист від перезапису чужим поколінням лишається в CaptureOutcome: воно звіряє
+    // generation під outcomeMutex_ і в циклі полінгу, і безпосередньо під локом запису.
+    return CaptureOutcome(current);
 }
 
 bool EcrPrivatJsonDriver::EnsureReady() {
