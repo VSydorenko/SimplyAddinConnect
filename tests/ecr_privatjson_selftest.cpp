@@ -741,8 +741,12 @@ static void TestOutcomeAfterReconnect() {
 
     EcrPrivatJsonDriver drv;
     std::atomic<int> outcomeEvents{ 0 };
-    drv.SetEventHandler([&](const std::string& ev, const std::string&) {
-        if (ev == "outcome") outcomeEvents.fetch_add(1);
+    drv.SetEventHandler([&](const std::string& ev, const std::string& data) {
+        if (ev != "outcome") return;
+        outcomeEvents.fetch_add(1);
+        auto j = nlohmann::json::parse(data, nullptr, false);
+        CHECK(!j.is_discarded() && j.contains("state") && !j.contains("code"),
+              "Подія outcome несе сам знімок, без конверта ok/code");
     });
     CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "OutcomeReconnect: Connect");
 
@@ -771,6 +775,45 @@ static void TestOutcomeAfterReconnect() {
           "OutcomeReconnect(№3): факти чека у знімку");
     CHECK(oc.value("generation", 0ull) == 1ull, "OutcomeReconnect(№3): generation=1 (перше питання)");
     CHECK(outcomeEvents.load() == 1, "OutcomeReconnect(№3): подія outcome рівно одна");
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// №19: id каси проходить у знімок прозоро й забирається ОДНОРАЗОВО - друга операція
+// без сеттера не має успадкувати чужий ключ (інакше 1С зшила б не ту транзакцію).
+static void TestRequestIdIsOneShot() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    emu.OnRequest("Purchase", [&](const nlohmann::json&) -> std::string {
+        st.purchases.fetch_add(1);
+        emu.DropConnection();
+        return "";
+    });
+    CHECK(emu.Start(), "RequestId: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    const std::string conn = std::string("tcp://127.0.0.1:") + std::to_string(emu.Port());
+    CHECK(drv.Connect(conn), "RequestId: Connect");
+
+    drv.SetRequestId("abc-123");
+    ResultEnvelope first = drv.Purchase("100.51");
+    CHECK(first.code == "UNKNOWN_OUTCOME", "RequestId: перша оплата -> 17");
+    CHECK(first.payload["outcome"]["intent"].value("requestId", std::string{}) == "abc-123",
+          "RequestId: id каси у знімку операції");
+    CHECK(OutcomeOf(drv)["intent"].value("requestId", std::string{}) == "abc-123",
+          "RequestId: той самий id у ИсходПоследнейОперацииJSON");
+    CHECK(OutcomeOf(drv)["intent"].value("amount", std::string{}) == "100.51",
+          "RequestId: сума у знімку - рядком, як пішла на дріт");
+    CHECK(!OutcomeOf(drv)["intent"].value("startedAt", std::string{}).empty(),
+          "RequestId: startedAt заповнено (ISO 8601 UTC)");
+
+    // Друга оплата БЕЗ сеттера: id має бути порожнім, а не успадкованим.
+    CHECK(WaitFor([&]{ return drv.IsReady(); }, 20000), "RequestId: реконект");
+    CHECK(WaitFor([&]{ return OutcomeOf(drv).value("state", std::string{}) == "resolved"; }),
+          "RequestId: перший знімок готовий (гейт знято)");
+    ResultEnvelope second = drv.Purchase("55.00");
+    CHECK(second.code == "UNKNOWN_OUTCOME", "RequestId: друга оплата теж обірвалась");
+    CHECK(second.payload["outcome"]["intent"].value("requestId", std::string{}).empty(),
+          "RequestId: без сеттера id порожній (одноразовість)");
     drv.Disconnect();
     emu.Stop();
 }
@@ -1679,6 +1722,7 @@ int main() {
     TestSelfHealingFromInquire();
     TestDisconnectInterruptsBackoff();
     TestOutcomeAfterReconnect();
+    TestRequestIdIsOneShot();
     TestDisconnectDuringPending();
     TestSecondDropDuringCapture();
     TestStoppedIsTrigger();

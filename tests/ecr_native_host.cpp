@@ -251,6 +251,26 @@ int main() {
         }
     }
 
+    // 5-біс) Прямий API: знімок долі доступний і тут, тими самими іменами.
+    {
+        long idxSetId = comp->FindMethod(L"SetRequestId");
+        CHECK(idxSetId >= 0, "L3: метод УстановитьИдентификаторЗапроса знайдено в ECRPrivatJSON");
+        long idxOutcome = comp->FindMethod(L"InquireLastOutcome");
+        CHECK(idxOutcome >= 0, "L3: метод ИсходПоследнейОперацииJSON знайдено в ECRPrivatJSON");
+        if (idxOutcome >= 0) {
+            bool rb = false; std::string rs; bool gotStr = false;
+            callFunc(comp, idxOutcome, {}, rb, rs, gotStr);
+            CHECK(gotStr && !rs.empty(), "L3: ИсходПоследнейОперацииJSON повернув рядок");
+            json j = json::parse(rs, nullptr, false);
+            // Оплата на кроці 5 пройшла успішно, тож питання про долю не стояло взагалі.
+            CHECK(!j.is_discarded() && j.value("ok", false) == true &&
+                  j.value("code", std::string{}) == "OK",
+                  "L3: після успішної оплати знімок - ok/OK, не помилка");
+            CHECK(j["payload"]["outcome"].value("state", std::string{}) == "none",
+                  "L3: state=none - з'ясовувати нема чого");
+        }
+    }
+
     // 6) Відключити прямий клас — доступ до термінала монопольний, і БПО-фасад
     //    нижче має підключитися сам.
     comp->FindMethod(L"Disconnect") >= 0
@@ -582,6 +602,99 @@ int main() {
                     long st = (ret.vt == VTYPE_I4) ? ret.lVal : (long)ret.dblVal;
                     CHECK(st == 0, "L3-bpo: СостояниеОперации == 0 (Idle) без активної операції");
                 }
+            }
+
+            // ---- Обрив під час оплати: БПО віддає Ложь + 17, OUT-параметри лишаються порожні ----
+            {
+                emu.OnRequest("Purchase", [&emu](const json&) -> std::string {
+                    emu.DropConnection();          // термінал прийняв оплату й зник
+                    return "";
+                });
+                emu.OnRequest("GetReceiptInfo", [](const json&) {
+                    return std::string(R"({"method":"GetReceiptInfo","params":{"responseCode":"0000","invoiceNumber":"88","rrn":"555999000","amount":"100.50"},"error":false})");
+                });
+
+                long idxSetId = bpo->FindMethod(L"SetRequestId");
+                CHECK(idxSetId >= 0, "L3-bpo: метод УстановитьИдентификаторЗапроса знайдено");
+                if (idxSetId >= 0) {
+                    // ІН-рядок мусить бути malloc'd (setInStr), інакше VariantHelper::clear()
+                    // спробує звільнити чужу пам'ять std::wstring::c_str() -> STATUS_HEAP_CORRUPTION
+                    // (див. коментар при оголошенні setInStr вище).
+                    tVariant p;
+                    setInStr(p, u8to16("req-42"));
+                    bpo->CallAsProc(idxSetId, &p, 1);
+                    if (p.vt == VTYPE_PWSTR && p.pwstrVal) free(p.pwstrVal);
+                }
+
+                long idxPay = bpo->FindMethod(L"PayByPaymentCard");
+                tVariant p[7];
+                for (int i = 0; i < 7; ++i) tVarInit(&p[i]);
+                setInStr(p[0], u8to16(deviceId));       // ИДУстройства - РЕАЛЬНИЙ, інакше CheckDeviceId відхилить ДО Purchase
+                p[2].vt = VTYPE_R8; p[2].dblVal = 100.50;   // СуммаОперации - позиція 2 (не 1, там НомерКарты)
+                for (int i = 1; i < 7; ++i)
+                    if (i != 2) { p[i].vt = VTYPE_PWSTR; p[i].pwstrVal = nullptr; p[i].wstrLen = 0; }
+                tVariant ret; tVarInit(&ret);
+                bpo->CallAsFunc(idxPay, &ret, p, 7);
+                if (p[0].vt == VTYPE_PWSTR && p[0].pwstrVal) free(p[0].pwstrVal);
+                CHECK(ret.vt == VTYPE_BOOL && ret.bVal == false, "L3-bpo: оплата при обриві -> Ложь");
+                // OUT-параметри (СсылочныйНомер/КодАвторизации/ТекстСлипЧека) лишаються порожні:
+                // класти туди поля чужого чека - та сама підміна іншим каналом (спека §4.7).
+                bool outEmpty = true;
+                for (int i = 3; i < 7; ++i)
+                    if (p[i].vt == VTYPE_PWSTR && p[i].wstrLen > 0) outEmpty = false;
+                CHECK(outEmpty, "L3-bpo: OUT-параметри при 17 лишились порожні");
+
+                long idxErr = bpo->FindMethod(L"GetLastError");
+                tVariant ep, eret; tVarInit(&ep); tVarInit(&eret);
+                ep.vt = VTYPE_PWSTR; ep.pwstrVal = nullptr; ep.wstrLen = 0;
+                bpo->CallAsFunc(idxErr, &eret, &ep, 1);
+                CHECK(eret.vt == VTYPE_I4 && eret.lVal == 17, "L3-bpo: ПолучитьОшибку = 17 (UNKNOWN_OUTCOME)");
+
+                long idxOutcome = bpo->FindMethod(L"InquireLastOutcome");
+                CHECK(idxOutcome >= 0, "L3-bpo: метод ИсходПоследнейОперацииJSON знайдено");
+                if (idxOutcome >= 0) {
+                    bool rb = false; std::string rs; bool gotStr = false;
+                    callFunc(bpo, idxOutcome, {}, rb, rs, gotStr);
+                    CHECK(gotStr && !rs.empty(), "L3-bpo: ИсходПоследнейОперацииJSON повернув рядок");
+                    json j = json::parse(rs, nullptr, false);
+                    CHECK(!j.is_discarded() && j.value("code", std::string{}) == "UNKNOWN_OUTCOME",
+                          "L3-bpo: конверт знімка - код 17");
+                    // Порожній об'єкт тут (а не j["payload"]["outcome"] напряму) дає дефолтні
+                    // значення у .value() нижче, тож негативна верифікація (override прибрано ->
+                    // outcome відсутній) дає читаний CHECK-FAIL, а не необроблений виняток
+                    // nlohmann (.value() на не-об'єкті кидає type_error.302). Той самий ідіом,
+                    // що OutcomeObj у ecr_privatjson_selftest.cpp: contains+is_object, НЕ
+                    // .value(..., object()) - інакше дефолт-об'єкт сам проходить перевірку
+                    // is_object(), і гілка з відсутнім ключем помилково береться "правдивою".
+                    const auto payload = j.is_object() ? j.value("payload", nlohmann::json::object())
+                                                        : nlohmann::json::object();
+                    const auto oc = (payload.is_object() && payload.contains("outcome") &&
+                                      payload["outcome"].is_object())
+                        ? payload["outcome"] : nlohmann::json::object();
+                    CHECK(oc.value("state", std::string{}) != "none", "L3-bpo: знімок має стан");
+                    // .value() (не oc["intent"]) - те саме застереження: на const json
+                    // відсутній ключ у operator[] кидає out_of_range, а не тихо повертає null.
+                    const auto intent = oc.value("intent", nlohmann::json::object());
+                    CHECK(intent.value("requestId", std::string{}) == "req-42",
+                          "L3-bpo: ИдентификаторЗапроса пройшов крізь усі шари");
+                }
+                // Інваріант §4.7: знімок НЕ чіпає lastError - 1С може читати ПолучитьОшибку() і ПІСЛЯ нього.
+                // Той самий виклик GetLastError, що вище (свіжі tVariant - OUT-рядок першого виклику не перевикористовуємо).
+                {
+                    tVariant ep2, eret2; tVarInit(&ep2); tVarInit(&eret2);
+                    ep2.vt = VTYPE_PWSTR; ep2.pwstrVal = nullptr; ep2.wstrLen = 0;
+                    bpo->CallAsFunc(idxErr, &eret2, &ep2, 1);
+                    CHECK(eret2.vt == VTYPE_I4 && eret2.lVal == 17,
+                          "L3-bpo: ПолучитьОшибку ПІСЛЯ ИсходПоследнейОперацииJSON - усе ще 17, знімок помилку не чистить");
+                }
+
+                // Термінал спільний з наступним блоком (БПО 4000): повертаємо штатний
+                // успішний responder Purchase, інакше PayByPaymentCard там теж обірветься.
+                emu.OnRequest("Purchase", [](const json&) {
+                    return std::string(R"({"method":"Purchase","params":{"responseCode":"0000","invoiceNumber":"77",)"
+                                       R"("rrn":"555000111","approvalCode":"A12345","cardPAN":"444455**1234",)"
+                                       R"("amount":"100.50","receiptText":"СЛІП\nрядок 2"},"error":false})");
+                });
             }
 
             long idxBpoDisc = bpo->FindMethod(L"Disconnect");

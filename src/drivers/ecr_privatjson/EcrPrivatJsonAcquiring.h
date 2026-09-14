@@ -34,6 +34,9 @@ public:
     int  LastStatus() const override;
     void CancelOperation() override;
 
+    ResultEnvelope InquireLastOutcome() override;
+    void SetRequestId(const std::string& id) override;
+
 private:
     static std::string BuildConnectionString(const std::map<std::string, std::string>& params);
     EcrPrivatJsonDriver drv_;
