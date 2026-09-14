@@ -2946,10 +2946,10 @@ git commit -m "feat(transport): TCP keepalive завжди — тихий обр
    |---|---|---|---|
    | `AuthorizeSales` | `Purchase` на дріт | так | так |
    | `AuthorizeRefund` | `Refund` на дріт | так | так |
-   | `AuthorizeVoid` | `Refund` на дріт (відкат `RunVoid`→`RunRefund`; параметр `VoidAsRefund`, дефолт увімкнено); при вимкненому — `UNSUPPORTED`, без дроту | так / ні | так, `intent.method="Refund"` / ні |
+   | `AuthorizeVoid` | `Refund` на дріт — відкат `RunVoid`→`RunRefund` **лише** на `UNSUPPORTED` від драйвера (`AcquiringFacadeBase.cpp:58`), і лише якщо `VoidAsRefund` увімкнено (дефолт) **і** RRN непорожній. **Дві** гілки без дроту: `VoidAsRefund` вимкнено → `UNSUPPORTED`; RRN порожній → `BAD_INPUT` (`:60-64`) | так / ні | так, `intent.method="Refund"` / ні |
    | `PayByPaymentCardWithCashWithdrawal` | нічого, `UNSUPPORTED` (`AcquiringBpo4000.cpp:127-131`) | ні | ні |
    | `EmergencyVoid` | нічого, `UNSUPPORTED` (адаптер не перевизначає, `EcrPrivatJsonAcquiring.h:27`) | ні | ні |
-   | `Settlement` | `DayTotals`, нефінансовий | ні | ні |
+   | `Settlement` (`ИтогиДняПоКартам`) | `RunDayTotals` → `DayTotals()` адаптера → **`Verify("0")`** на дріт (`EcrPrivatJsonAcquiring.cpp:148-150`; у першій редакції цієї таблиці стояло «`DayTotals`» — метода з таким ім'ям у протоколі немає), нефінансовий | ні | ні |
 
 - [ ] **Step 5: Перевірка узгодженості**
 
