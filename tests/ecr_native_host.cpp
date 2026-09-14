@@ -671,7 +671,12 @@ int main() {
                     const auto oc = (payload.is_object() && payload.contains("outcome") &&
                                       payload["outcome"].is_object())
                         ? payload["outcome"] : nlohmann::json::object();
-                    CHECK(oc.value("state", std::string{}) != "none", "L3-bpo: знімок має стан");
+                    // contains("state") ОБОВ'ЯЗКОВИЙ (рев'ю Task 7): без нього предикат вакуумно
+                    // істинний — при повністю відсутньому outcome value() дає "", а "" != "none",
+                    // і CHECK проходить, нічого не довівши. Текст CHECK-а обіцяє «знімок має стан»,
+                    // тож він і мусить падати, коли знімка немає.
+                    CHECK(oc.contains("state") && oc.value("state", std::string{}) != "none",
+                          "L3-bpo: знімок має стан");
                     // .value() (не oc["intent"]) - те саме застереження: на const json
                     // відсутній ключ у operator[] кидає out_of_range, а не тихо повертає null.
                     const auto intent = oc.value("intent", nlohmann::json::object());
