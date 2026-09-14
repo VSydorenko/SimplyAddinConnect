@@ -409,7 +409,7 @@ if (!IsReady())                        return Fail("RECONNECTING",  …);   // 1
 `CaptureOutcome`:
 
 1. `PollStatusOnce(code)` циклом із кроком `kPollIntervalMs` (500 мс), доки код не стане `0`
-   («термінал у спокої», §6.2), але не довше `kOutcomeIdleWaitMs` (= `kOperationTimeoutMs`, 120 с —
+   («термінал у спокої», §6.2), але не довше `outcomeIdleWaitMs_` (дефолт `kOperationTimeoutMs`, 120 с; скорочується швом `SetOutcomeTimingForTest` —
    стільки термінал може вести операцію: касир вводить пін). Кожна ітерація перевіряє `closing_` і
    покоління; `Disconnected`/`Stopped` від `PollStatusOnce` → вихід **без запису** (`ABORTED`) —
    продовжувати на непідтвердженому з'єднанні не можна, наступний `up=true` приведе сюди знову
@@ -460,8 +460,9 @@ if (!IsReady())                        return Fail("RECONNECTING",  …);   // 1
 **Тригер.** Після `RequestPrimary` **фінансового** методу (`IsFinancial` — whitelist
 `{Purchase, Refund}`) доля вважається невідомою, якщо статус ∈ {`Timeout`, `Disconnected`,
 `SendFailed`, `Stopped`} **або** `session_->IsDesynchronized()`. Друга частина ловить `RejectBoth`,
-який переліком статусів пропускається. `Busy`, `Unsupported` (без desync), `Concurrent` відомі
-однозначно й тригером не є; нефінансові методи при обриві поводяться як раніше.
+який переліком статусів пропускається. `Busy`, `Unsupported` і `Concurrent` — **усі три за
+відсутності desync** — відомі однозначно й тригером не є; при `desync` кожен із них іде гілкою
+`DESYNC`. Нефінансові методи при обриві поводяться як раніше.
 
 | Умова (перевіряються саме в цьому порядку) | `reason` |
 |---|---|
@@ -500,7 +501,7 @@ if (!IsReady())                        return Fail("RECONNECTING",  …);   // 1
 ліміту спроб. Три випадки, коли `Ready` не настає: сокета нема (платити все одно нікуди; щойно за
 адресою з'явиться термінал — `Connect()` → `Ready` → знімок → гейт знято); TCP є, термінал мовчить
 (тоді **всі** операції й без `Pending` отримують `RECONNECTING`); термінал не виходить із «зайнятий»
-(крок 1 обмежено `kOutcomeIdleWaitMs`, `Resolved` настане з `terminalIdle:false`). Тому окремого
+(крок 1 обмежено `outcomeIdleWaitMs_`, `Resolved` настане з `terminalIdle:false`). Тому окремого
 квитування, TTL наміру чи байпасу гейта **немає** — кнопка «забути нерозв'язане питання про гроші»
 була б неправильним стимулом для касира.
 
