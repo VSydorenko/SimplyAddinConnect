@@ -502,12 +502,14 @@ const char* OutcomeStateName(OutcomeState s) {
 
 ```cpp
 // ⚠️ WHITELIST фінансових методів - на нього спираються і гейт §4.6, і наскрізний requestId,
-// і сам тригер Pending. Новий метод драйвера, що рухає гроші (Void, EmergencyVoid, PreAuth, …),
-// не доданий сюди, ТИХО випаде з усіх трьох: жодної помилки збірки, а дефект - про гроші.
-// Сьогодні власного Void у драйвера немає (EcrPrivatJsonAcquiring.h:27 - протокол ПриватJSON
-// його не має), і RunVoid фасаду відкочується на Refund (AcquiringFacadeBase.cpp:49-68) -
-// тому збіг переліку з фінансовими командами БПО {Sales, Refund, Void} випадковий.
-// Додаєш метод, що рухає гроші, - додай його сюди й у тести тригера (Task 2).
+// і сам тригер Pending. Метод драйвера, що рухає гроші й не доданий сюди, ТИХО випаде з усіх
+// трьох: жодної помилки збірки, а дефект - про гроші. Це НЕ гіпотетично: протокол ПриватБанку
+// вже описує фінансові методи, яких драйвер поки не реалізує - Cashback (§5.16),
+// Preauthorization (§5.26), SaleCompletion (§5.27), Withdrawal/WithdrawalPartly, ServiceRefund,
+// ServicePbP/ServiceRefPbP (docs/ECR_Privat_JSON_Protokol.md). Реалізуєш будь-який - додай сюди
+// й у тести тригера (Task 2). Скасування (Void) протокол не має: RunVoid фасаду відкочується
+// на Refund (AcquiringFacadeBase.cpp:49-68), тому збіг переліку з командами БПО
+// {Sales, Refund, Void} сьогодні тримається на цьому відкаті.
 bool EcrPrivatJsonDriver::IsFinancial(const std::string& method) {
     return method == "Purchase" || method == "Refund";
 }
@@ -1775,6 +1777,7 @@ ResultEnvelope EcrPrivatJsonDriver::CaptureOutcome(std::uint64_t generation) {
     if (idle && (facts.code == "DISCONNECTED" || facts.code == "STOPPED"))
         return ResultEnvelope::Fail("ABORTED", "Зв'язок обірвався під час отримання чека");
 
+    OperationIntent snapIntent; std::string snapReason;     // копії для лоґу - читаються поза локом
     {
         std::lock_guard<std::mutex> lk(outcomeMutex_);
         if (lastOutcome_.generation != generation)
@@ -1782,6 +1785,27 @@ ResultEnvelope EcrPrivatJsonDriver::CaptureOutcome(std::uint64_t generation) {
         lastOutcome_.state        = OutcomeState::Resolved;
         lastOutcome_.terminalIdle = idle;
         lastOutcome_.facts        = facts;
+        snapIntent = lastOutcome_.intent;
+        snapReason = lastOutcome_.reason;
+    }
+    // Єдиний слід знімка, якщо каса його не забрала, а наступний Pending затер (спека §4.3 крок 6,
+    // §9 п.7). БЕЗ pan і без тексту чека. Конкатенація, без printf-стилю (AGENTS.md). Обидва часи -
+    // startedAt і capturedAt - на прохання боку 1С: спільний якір із їхнім реєстром при розборі.
+    {
+        const auto fp = [&](const char* key) {
+            return facts.payload.is_object() ? facts.payload.value(key, std::string{}) : std::string{};
+        };
+        NEUTRAL_REPORT_WARN("ECRPrivatJSON",
+            "Доля операції з'ясована: generation=" + std::to_string(generation)
+            + " reason=" + snapReason + " requestId=" + snapIntent.requestId
+            + " intent=" + snapIntent.method + "/" + snapIntent.amount
+            + " startedAt=" + IsoUtc(snapIntent.startedAt)
+            + " capturedAt=" + IsoUtc(std::chrono::system_clock::now())
+            + " terminalIdle=" + std::string(idle ? "true" : "false")
+            + " factsOk=" + std::string(facts.ok ? "true" : "false") + " factsCode=" + facts.code
+            + " responseCode=" + fp("responseCode") + " rrn=" + fp("rrn")
+            + " invoiceNumber=" + fp("invoiceNumber") + " amount=" + fp("amount")
+            + " date=" + fp("date") + " time=" + fp("time"));
     }
     // Подія несе ЛИШЕ об'єкт outcome (конверт є в result і в ИсходПоследнейОперацииJSON).
     EmitEvent("outcome", OutcomeSnapshotJson());
