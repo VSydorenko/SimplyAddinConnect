@@ -225,6 +225,11 @@ private:
     std::uint64_t MarkPending(const OperationIntent& intent, const std::string& reason);
     /// Об'єкт payload.outcome (спека §4.7). Бере outcomeMutex_; мережею не ходить.
     nlohmann::json OutcomeSnapshotJson();
+    /// Назва поточного стану зв'язку ("disconnected"|"connecting"|"ready") для поля linkState
+    /// у знімку (спека §4.7). Бере linkMutex_, тому кличеться ЛИШЕ ПОЗА outcomeMutex_ — так само,
+    /// як IsConnected() у OutcomeSnapshotJson: вкладення цих двох локів у драйвері немає ніде,
+    /// і заводити його заради одного поля не можна.
+    const char* LinkStateNameNow() const;
     /// Конверт коду 17 зі знімком усередині.
     ResultEnvelope BuildUnknownOutcome();
 

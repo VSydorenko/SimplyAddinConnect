@@ -752,8 +752,14 @@ std::uint64_t EcrPrivatJsonDriver::MarkPending(const OperationIntent& intent, co
     return gen;
 }
 
+const char* EcrPrivatJsonDriver::LinkStateNameNow() const {
+    std::lock_guard<std::mutex> lk(linkMutex_);
+    return LinkStateName(linkState_);   // вказівник на строковий літерал — час життя необмежений
+}
+
 nlohmann::json EcrPrivatJsonDriver::OutcomeSnapshotJson() {
-    const bool channel = IsConnected();   // ПОЗА локом: чіпає сесію, не lastOutcome_
+    const bool channel = IsConnected();          // ПОЗА локом: чіпає сесію, не lastOutcome_
+    const char* link   = LinkStateNameNow();     // ПОЗА локом: бере linkMutex_ (див. оголошення)
     std::lock_guard<std::mutex> lk(outcomeMutex_);
     return nlohmann::json{
         {"state",      OutcomeStateName(lastOutcome_.state)},
@@ -771,7 +777,13 @@ nlohmann::json EcrPrivatJsonDriver::OutcomeSnapshotJson() {
                       ? lastOutcome_.facts.payload : nlohmann::json(nullptr)},
         {"factsOk",   lastOutcome_.facts.ok},
         {"factsCode", lastOutcome_.facts.code},
-        {"channelConnected", channel}};
+        {"channelConnected", channel},
+        // Стан зв'язку рядком (спека §4.7, §9 п.5). Розрізняє те, чого channelConnected не
+        // розрізняє: "connecting" - сесія жива, супервізор перевідкриває канал, касі ЧЕКАТИ;
+        // "disconnected" - сесії немає (хтось викликав Отключить - конфігурація після команди
+        // або каса вручну), і без Подключить з'ясування не відновиться взагалі. Значення дає
+        // та сама LinkStateName, що й подія "connection", тож два джерела не розійдуться.
+        {"linkState", link}};
 }
 
 ResultEnvelope EcrPrivatJsonDriver::BuildUnknownOutcome() {

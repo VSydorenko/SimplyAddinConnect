@@ -873,6 +873,14 @@ static void TestRequestIdIsOneShot() {
           "RequestId: той самий id у ИсходПоследнейОперацииJSON");
     CHECK(OutcomeOf(drv)["intent"].value("amount", std::string{}) == "100.51",
           "RequestId: сума у знімку - рядком, як пішла на дріт");
+    // linkState при живій сесії - НЕ "disconnected": саме цим 1С відрізняє «чекати» від
+    // «кликати Подключить». Після обриву це "connecting" або вже "ready" (супервізор міг
+    // устигнути), але не "disconnected" - сесію ніхто не закривав.
+    {
+        const std::string ls = OutcomeOf(drv).value("linkState", std::string{});
+        CHECK(ls == "connecting" || ls == "ready",
+              "RequestId: linkState при живій сесії - connecting або ready, не disconnected");
+    }
     CHECK(!OutcomeOf(drv)["intent"].value("startedAt", std::string{}).empty(),
           "RequestId: startedAt заповнено (ISO 8601 UTC)");
 
@@ -1386,6 +1394,10 @@ static void TestInquireNone() {
           "InquireNone: outcome.state=none");
     CHECK(OutcomeObj(env).value("channelConnected", true) == false,
           "InquireNone: channelConnected=false без сесії");
+    // linkState має бути в КОЖНОМУ знімку, включно зі state=none: 1С полить той самий знімок
+    // і для індикатора зв'язку, тож поле не може з'являтися лише при Pending (спека §4.7).
+    CHECK(OutcomeObj(env).value("linkState", std::string{}) == "disconnected",
+          "InquireNone: linkState=disconnected без сесії (поле є навіть при state=none)");
 }
 
 // №20: ручний Отключить під час Connecting -> подія disconnected(closed), не dropped.
