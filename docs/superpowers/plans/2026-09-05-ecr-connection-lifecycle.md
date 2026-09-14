@@ -1565,15 +1565,20 @@ static void TestDisconnectInterruptsBackoff() {
     // pings >= 2: перший Ping таймаутнув (200 мс), джоб проспав backoff 1 с, відправив другий.
     CHECK(WaitFor([&]{ return st.pings.load() >= pingsBefore + 2; }, 20000),
           "DisconnectBackoff: джоб зробив другий Ping (перший цикл backoff пройдено)");
-    // Даємо другому Ping таймаутнути - після цього джоб гарантовано в SleepInterruptible(2000).
+    // Даємо другому Ping таймаутнути. Реальний механізм (спека §4.9.2 «фактичний ритм»): Timeout Ping
+    // замовляє реконект супервізора, той рве з'єднання, цикл EnsureReady виходить по !IsConnected(),
+    // а після Close→Open хук up=true стартує СВІЖИЙ EnsureReady з backoff=1000. Джоб зараз - у
+    // SleepInterruptible(1000) цього свіжого циклу, не в SleepInterruptible(2000).
     std::this_thread::sleep_for(std::chrono::milliseconds(kPingMs + 50));
 
     const auto t0 = std::chrono::steady_clock::now();
     drv.Disconnect();
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::steady_clock::now() - t0).count();
-    // Зі SleepInterruptible - до 100 мс на крок сну; з голим sleep_for - решта 2 с інтервалу.
-    CHECK(elapsed < 1000, "DisconnectBackoff: Отключить повернувся < 1 с, не чекав backoff");
+    // Поріг доведено двома вимірами (спека §6.5 п.5): зі SleepInterruptible - 38 мс,
+    // з голим sleep_for - ~940 мс (залишок першого секундного сну). 300 - восьмикратний запас
+    // з обох боків; перший поріг < 1000 був зелений в обох станах і не перевіряв нічого.
+    CHECK(elapsed < 300, "DisconnectBackoff: Отключить повернувся < 300 мс, не чекав backoff");
     emu.Stop();
 }
 ```
@@ -1925,13 +1930,22 @@ bin\Release\ecr_privatjson_selftest_x64.exe
 Три перевірки, кожну — окремо, з поверненням коду після неї:
 1. Прибрати `EnsureRecoveryRunning()` з хука `up=true` → `PingReconnect` не дочекається `Ready`.
 2. Прибрати перевірку `epoch != linkEpoch_` у `SetLinkState` → `LinkEpoch` рано чи пізно ловить
-   два `ready` підряд (повторити прогін 5 разів, гонка не щоразу).
-3. Повернути `MarkSynchronized()` під умову `if (idle)` → `TerminalBusy` падає на CHECK
-   «після ліміту сесія не лишилась у desync».
-4. Замінити `SleepInterruptible(backoff)` на `std::this_thread::sleep_for` → №25 падає:
-   `elapsed` стає ≈2 с (залишок backoff-інтервалу) проти порога 1 с. Саме заради цієї перевірки
-   тест чекає ДРУГОГО Ping і його таймауту — інакше джоб стояв би в очікуванні відповіді, і
-   `Stop()` завершував би його миттєво навіть без `SleepInterruptible` (тест зеленів би завжди).
+   два `ready` підряд. **Результат виконання (2026-09-14): не відтворено за 40 прогонів** — вікно
+   гонки мікросекундне, штатним шляхом не створюється. Паркується як задокументоване обмеження
+   (спека §6.2 №23); детермінований шлях — шов `SetBeforeReadyHookForTest` і тест №23-біс у Task 5
+   (рекомендовано, не обов'язково).
+3. ~~Повернути `MarkSynchronized()` під умову `if (idle)` → `TerminalBusy` падає~~ — **застарів разом із
+   рішенням «desync і Ping» (спека §4.9.2):** `EnsureReady` знімає desync перед кожним Ping і для
+   ECRPrivatJSON завжди відпрацьовує раніше за `CaptureOutcome` (обидва джерела desync — Timeout `:221`
+   і RejectBoth `:356` — замовляють реконект). Виклик у `CaptureOutcome` надлишковий на всіх досяжних
+   шляхах, негативно не перевіряється; лишити як намір (спека §4.3 крок 3). Тест №7 лишається.
+4. Замінити `SleepInterruptible(backoff)` на `std::this_thread::sleep_for` → №25 падає: `elapsed` ≈ 940 мс
+   (залишок **першого секундного** сну свіжого `EnsureReady` після примусового реконекту — до
+   `SleepInterruptible(2000)` джоб не доходить ніколи, спека §4.9.2 «фактичний ритм») проти порога
+   **300 мс**; зі `SleepInterruptible` — 38 мс. Перший поріг `< 1000` був зелений в обох станах
+   (спека §6.5 п.5): обидва виміри під новим порогом і є ця перевірка. Тест чекає ДРУГОГО Ping і його
+   таймауту — інакше джоб стояв би в очікуванні відповіді, і `Stop()` завершував би його миттєво навіть
+   без `SleepInterruptible`.
 
 - [ ] **Step 14: Повний гейт x64 і x86, коміт**
 
@@ -1960,6 +1974,12 @@ git commit -m "feat(ecr): фоновий джоб — Ping до готовнос
 
 **Interfaces:**
 - Consumes: усе з Task 4.
+- Produces (рекомендовано, не обов'язково): `void SetBeforeReadyHookForTest(std::function<void()>);` — хук,
+  який `EnsureReady` кличе **між** `Response`/`Busy` на Ping і `SetLinkState(Ready, "", epoch)`; порожній за
+  замовчуванням. Для детермінованого тесту №23-біс (спека §6.2): у хуку `emu.DropConnection()` + чекати
+  `!drv.IsConnected()` → `SetLinkState` отримує стару епоху → `IsReady()==false`; негативна — прибрати
+  перевірку епохи → червоний детерміновано. Причина: гонка епохи вікном у мікросекунди штатно не
+  відтворюється (Task 4 крок 13 п.2 — 0 падінь за 40 прогонів).
 - Produces: `void StopSessionForTest();` — зупиняє **сесію** (не драйвер), щоб змоделювати
   `Stopped`-тригер без `session_.reset()` під активним запитом. Прямий `Disconnect()` з іншого потоку
   під час синхронної операції архітектурою не передбачений (спека §2.4) і в тесті дав би
