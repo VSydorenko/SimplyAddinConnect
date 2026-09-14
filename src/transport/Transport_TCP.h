@@ -57,6 +57,9 @@ public:
      */
     void SetSendFunctionForTest(SendFn fn);
 
+    /// Тестовий шов: сокет активного з'єднання (для getsockopt у харнесі).
+    SOCKET GetSocketForTest() const { return m_socket.load(); }
+
 private:
     // Разрешённый адрес (унифицирует numeric-путь и DNS-с-дедлайном).
     struct ResolvedAddr {
@@ -113,4 +116,8 @@ private:
     // Дедлайны (мс): неблокирующий connect и DNS-резолв.
     static constexpr int CONNECT_TIMEOUT_MS = 10000;
     static constexpr int DNS_TIMEOUT_MS = 5000;
+    // Keepalive: перша проба через 10 с простою, далі кожну секунду. Кількість проб у
+    // Windows фіксована (10), тож мертва лінія виявляється за ~20 с.
+    static constexpr ULONG KEEPALIVE_IDLE_MS = 10000;
+    static constexpr ULONG KEEPALIVE_INTERVAL_MS = 1000;
 };

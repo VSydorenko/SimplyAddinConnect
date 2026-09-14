@@ -2,6 +2,7 @@
 
 #include "Transport_TCP.h"
 #include "../helpers/ServiceTools.h"
+#include <mstcpip.h>   // tcp_keepalive / SIO_KEEPALIVE_VALS
 #include <cstring>
 
 TransportTCP::TransportTCP(const std::string& host, int port)
@@ -238,6 +239,26 @@ bool TransportTCP::ConnectAsClient()
     }
 
     m_socket = sock;
+
+    // TCP keepalive - ЗАВЖДИ, без опції (спека §4.9.5). Протокол вимагає тримати з'єднання
+    // відкритим (еталонна схема, крок 6 «keepalive»), а тихий обрив інакше не виявити:
+    // ні FIN, ні RST не буде, reader висітиме в recv. Нуль протокольного трафіку - термінал
+    // не турбуємо, працює й під час операції.
+    {
+        BOOL on = TRUE;
+        if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE,
+                       reinterpret_cast<const char*>(&on), sizeof(on)) == SOCKET_ERROR) {
+            NEUTRAL_REPORT_WARN("TransportTCP",
+                "Не вдалося увімкнути SO_KEEPALIVE, код " + std::to_string(WSAGetLastError()));
+        }
+        tcp_keepalive ka{ 1, KEEPALIVE_IDLE_MS, KEEPALIVE_INTERVAL_MS };
+        DWORD returned = 0;
+        if (WSAIoctl(sock, SIO_KEEPALIVE_VALS, &ka, sizeof(ka), nullptr, 0,
+                     &returned, nullptr, nullptr) == SOCKET_ERROR) {
+            NEUTRAL_REPORT_WARN("TransportTCP",
+                "SIO_KEEPALIVE_VALS не застосовано, код " + std::to_string(WSAGetLastError()));
+        }
+    }
 
     // #T7: идемпотентность reader-lifecycle. Reader предыдущего соединения при
     // remote-close НЕ сбрасывает m_readThreadRunning; дожинаем завершившийся поток

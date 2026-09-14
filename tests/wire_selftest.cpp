@@ -1804,6 +1804,26 @@ static void TestTcpStateUpGate() {
     CHECK(downs.load() == 0, "TcpStateUpGate: state(false) не зʼявився і після деструкції");
 }
 
+// Keepalive увімкнено завжди: без нього тихий обрив у простої не виявляється ніколи
+// (recv висить, FIN/RST не буде). Перевіряємо сам факт увімкнення - виявлення мертвої
+// лінії за ~20 с перевіряється лише на залізі (спека §7).
+static void TestTcpKeepAliveEnabled() {
+    RawTcpEchoServer server;
+    CHECK(server.Start(/*echoEnabled=*/true), "TcpKeepAlive: echo server started");
+
+    TransportTCP transport("127.0.0.1", server.Port());
+    CHECK(transport.Open(), "TcpKeepAlive: Open");
+
+    int val = 0;
+    int len = sizeof(val);
+    const int rc = getsockopt(transport.GetSocketForTest(), SOL_SOCKET, SO_KEEPALIVE,
+                              reinterpret_cast<char*>(&val), &len);
+    CHECK(rc == 0 && val != 0, "TcpKeepAlive: SO_KEEPALIVE увімкнено після Open");
+
+    transport.Close();
+    server.Stop();
+}
+
 int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     TestClassifierDoubles();
     TestLoopbackTransport();
@@ -1839,6 +1859,7 @@ int main(){ std::printf("=== wire_selftest ===\n"); TestNullTerminatedFramer();
     RunGuarded("TestTcpReopenReaderReset", TestTcpReopenReaderReset);
     RunGuarded("TestTcpCleanCloseNoPhantomError", TestTcpCleanCloseNoPhantomError);
     RunGuarded("TestTcpStateUpGate", TestTcpStateUpGate);
+    RunGuarded("TestTcpKeepAliveEnabled", TestTcpKeepAliveEnabled);
     RunGuarded("TestComSendAllOrError", TestComSendAllOrError);
     RunGuarded("TestComCloseCleansHandle", TestComCloseCleansHandle);
     RunGuarded("TestComStateUpGate", TestComStateUpGate);
