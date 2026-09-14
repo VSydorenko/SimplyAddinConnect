@@ -986,8 +986,12 @@ void EcrPrivatJsonDriver::SetLinkState(LinkState target, const char* reason, std
         // Ping приніс Ready з епохи, яка вже мертва (сокет упав одразу після відповіді) - ігноруємо:
         // інакше Ready лишився б на мертвому сокеті, і наступний up=true його не полагодив би.
         if (target == LinkState::Ready && epoch != linkEpoch_) return;
-        if (linkState_ == target) return;
-        if (linkState_ == LinkState::Ready) ++linkEpoch_;   // вихід із Ready = нова епоха
+        // linkEpoch_ - ПОКОЛІННЯ З'ЄДНАННЯ (спека §4.9.1, дефект першої редакції, рев'ю Task 4):
+        // росте на КОЖНОМУ записі не-Ready, ДО перевірки «той самий стан». Перша редакція
+        // інкрементувала лише на виході з Ready - і в гонці «Ping відповіли, сокет упав» стан уже
+        // Connecting (джоб у EnsureReady), хук виходив без інкременту, Ready проходив guard.
+        if (target != LinkState::Ready) ++linkEpoch_;
+        if (linkState_ == target) return;                    // без події: стан не змінився
         linkState_ = target;
     }
     EmitEvent("connection", { {"state", LinkStateName(target)}, {"reason", reason ? reason : ""} });
@@ -1036,6 +1040,10 @@ void EcrPrivatJsonDriver::SetLinkState(LinkState target, const char* reason, std
         NEUTRAL_REPORT_ERROR("ECRPrivatJSON", "Постійний режим: не вдалося відкрити зв'язок");
         // Не "closed": це аварія підключення, а не прохання каси відключитись (спека §4.9.3).
         SetLinkState(LinkState::Disconnected, "connect_failed");
+        // Stop() ПЕРЕД reset() (рев'ю Task 4): при opened==false Start() лишає dispatcher і
+        // супервізор живими, хук уже стоїть - без Stop() хук міг би виконати EnsureRecoveryRunning()
+        // над знищеною сесією (use-after-free у вікні до першої спроби реконекту).
+        session_->Stop();
         session_.reset();
         return false;
     }
