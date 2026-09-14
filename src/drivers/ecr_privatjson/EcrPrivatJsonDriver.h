@@ -75,6 +75,10 @@ public:
     /// Внутрішній IsConnected() лишається «сокет відкритий».
     bool IsReady() const;
 
+    /// Покоління з'єднання (спека §4.9.1). Публічний ЛИШЕ заради детермінованого тесту №23-біс
+    /// (SetBeforeReadyHookForTest): тест чекає ЗМІНИ епохи замість непрямого проксі IsConnected().
+    std::uint64_t LinkEpoch() const;
+
     std::string Vendor() const;
     std::string Model() const;
 
@@ -229,11 +233,21 @@ private:
     /// і потік 1С. reason - для події; epoch береться до участі ЛИШЕ для Ready: Ping зі
     /// вже мертвої епохи не має піднімати прапорець на новому сокеті.
     void SetLinkState(LinkState target, const char* reason, std::uint64_t epoch = 0);
-    std::uint64_t LinkEpoch() const;
 
     mutable std::mutex linkMutex_;
     LinkState          linkState_ = LinkState::Disconnected;   ///< під linkMutex_
     std::uint64_t      linkEpoch_ = 0;                         ///< ++ на кожен вихід із Ready
+    /// Серіалізує ЕМІСІЮ подій "connection" (спека §4.9.3): порядок подій = порядок переходів,
+    /// остання отримана подія відповідає поточному стану. Береться ЗОВНІ linkMutex_, на весь
+    /// SetLinkState - інакше джоб (пише Ready, витісняється) і хук (пише Connecting, емітить
+    /// одразу) можуть емітити "ready" ПІСЛЯ "connecting", хоча стан УЖЕ Connecting - 1С бачила б
+    /// ready останнім при фактичному Connecting. Порядок узяття - ЗАВЖДИ linkEmitMutex_ →
+    /// linkMutex_ і linkEmitMutex_ → eventMutex_ (усередині EmitEvent), НІКОЛИ навпаки: жоден
+    /// обробник події не кличе SetLinkState, тож дедлоку це не додає. Свідомий, задокументований
+    /// ВИНЯТОК із правила «під linkMutex_ жодного EmitEvent» - сам EmitEvent лишається ПОЗА
+    /// linkMutex_ (коротким лишається лише внутрішній лок), просто тепер ще й ПІД linkEmitMutex_.
+    /// Наступний читач: не «полагодь» це назад, прибравши linkEmitMutex_ - саме він і є фіксом.
+    std::mutex linkEmitMutex_;
     /// Wire-трасування: якщо true — MakeSession чіпляє SetWireTraceHandler (діє з наступного Connect).
     std::atomic<bool> traceEnabled_{ false };
 

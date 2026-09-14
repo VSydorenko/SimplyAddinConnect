@@ -211,6 +211,11 @@ bool EcrPrivatJsonDriver::Connect(const std::string& connString) {
         // супервізор живими, хук уже стоїть - без Stop() хук міг би виконати EnsureRecoveryRunning()
         // над знищеною сесією (use-after-free у вікні до першої спроби реконекту).
         session_->Stop();
+        // recoveryJob_.Join() ТУТ ЖЕ (рев'ю Task 4, фікс-раунд 2) - для симетрії з Disconnect():
+        // Stop() нічого не знає про recoveryJob_ і не приєднує його. Практично вікно перекрите
+        // таймінгом супервізора (хук не встигає стартувати джоб до Stop), але це побічний ефект
+        // конфігурації, а не гарантія - Join() тут прибирає залежність від таймінгу.
+        recoveryJob_.Join();
         session_.reset();
         return false;
     }
@@ -278,6 +283,17 @@ std::uint64_t EcrPrivatJsonDriver::LinkEpoch() const {
 }
 
 void EcrPrivatJsonDriver::SetLinkState(LinkState target, const char* reason, std::uint64_t epoch) {
+    // Спека §4.9.3: порядок подій "connection" = порядок переходів, остання отримана подія
+    // відповідає поточному стану. Без цього лока джоб (ставить Ready, витісняється) і хук
+    // (ставить Connecting, емітить одразу) можуть емітити "ready" ПІСЛЯ "connecting", хоча
+    // фактичний стан УЖЕ Connecting - 1С побачила б ready останнім при живому Connecting.
+    // Свідомий виняток із «жодного EmitEvent під locked-станом»: linkEmitMutex_ береться
+    // ЗОВНІ linkMutex_ на ВЕСЬ виклик, EmitEvent лишається ПОЗА linkMutex_ (як і раніше), але
+    // тепер ще й ПІД linkEmitMutex_. Порядок узяття - ЗАВЖДИ linkEmitMutex_ -> linkMutex_ і
+    // linkEmitMutex_ -> eventMutex_ (усередині EmitEvent), НІКОЛИ навпаки: жоден обробник
+    // події не кличе SetLinkState, дедлоку це не додає. НЕ прибирай цей лок - саме він і є
+    // фіксом інверсії журналу подій (рев'ю Task 4, фікс-раунд 2).
+    std::lock_guard<std::mutex> emitLk(linkEmitMutex_);
     {
         std::lock_guard<std::mutex> lk(linkMutex_);
         // Ping приніс Ready з епохи, яка вже мертва (сокет упав одразу після відповіді) - ігноруємо:

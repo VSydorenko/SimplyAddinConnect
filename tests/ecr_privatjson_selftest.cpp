@@ -481,14 +481,21 @@ static void TestLinkEpochRejectsStaleReady() {
     CHECK(st.pings.load() >= pingsAfterConnect + 2,
           "LinkEpoch: фінальний ready настав після ДРУГОГО PingDevice, не першого (мертвий сокет)");
 
+    // Замінює старий CHECK «немає двох ready підряд» (рев'ю Task 4, фікс-раунд 2): той нічого
+    // не доводив і за новим предикатом (сам архітектор упав на ньому в гейті - task-4-report.md,
+    // фікс-раунд 1). Новий інваріант - те, що ГАРАНТУЄ серіалізація linkEmitMutex_ (спека §4.9.3,
+    // фікс-раунд 2): порядок подій connection = порядок переходів, тож стан ОСТАННЬОЇ отриманої
+    // події відповідає ПОТОЧНОМУ стану - інверсія журналу (ready останнім при фактичному
+    // Connecting) неможлива. Негативна верифікація (без linkEmitMutex_) - імовірнісна, як і
+    // раніше: task-4-report.md фіксує спостережену частоту.
+    {
+        std::lock_guard<std::mutex> lk(evMutex);
+        CHECK(!states.empty() && ((states.back() == "ready") == drv.IsReady()),
+              "LinkEpoch: стан останньої події connection відповідає IsReady() (без інверсії журналу)");
+    }
+
     drv.Disconnect();
-    std::lock_guard<std::mutex> lk(evMutex);
-    for (std::size_t i = 1; i < states.size(); ++i)
-        if (states[i] == "ready" && states[i - 1] == "ready") {
-            CHECK(false, "LinkEpoch: двох ready підряд не буває (Ready з мертвої епохи відкинуто)");
-            return;
-        }
-    CHECK(true, "LinkEpoch: жодного ready поверх мертвої епохи");
+    emu.Stop();
 }
 
 // №23-біс: епоха зв'язку, ДЕТЕРМІНОВАНО (рев'ю Task 4, I1; рекомендація архітектора - шов
@@ -517,20 +524,30 @@ static void TestLinkEpochStaleReadyDeterministic() {
     // Connecting - SetLinkState(Ready, epoch) іще не викликано), тест сам рве з'єднання ЗНОВУ.
     // Це друга, дефектна транзиція I1: Connecting -> Connecting (стан не змінюється, подія не
     // емітується - тому спостерігати її напряму через events нічим, лише через побічний ефект
-    // на epoch). Чекаємо !IsConnected() (DeviceSession зафіксував обрив синхронно, на
-    // reader-потоці) - за цей час dispatcher встигає прогнати чергу й викликати наш хук
-    // стану (окремий, завжди готовий потік; затримка практично мікросекунди), а отже й
-    // SetLinkState(Connecting) - ДО того, як ми вийдемо з хука і EnsureReady запише Ready.
+    // на epoch).
+    //
+    // ⚠️ Чекаємо ЗМІНИ drv.LinkEpoch() - ТОГО САМОГО значення, яке guard у SetLinkState
+    // звіряє - а НЕ !drv.IsConnected() (рев'ю Task 4, фікс-раунд 2: щілина в детермінізмі).
+    // IsConnected() відбиває СИНХРОННИЙ стан DeviceSession (reader-потік), тоді як виклик
+    // нашого хука стану (а отже й ++linkEpoch_ у SetLinkState(Connecting)) лише СТАВИТЬСЯ
+    // в чергу й виконується АСИНХРОННО на dispatcher-потоці. Запас у 3-4 порядки практично
+    // робив стару синхронізацію надійною, але формальної гарантії не давав - синхронізація
+    // МАЄ бути на тому самому значенні, яке перевіряє код під тестом.
+    const std::uint64_t epochBeforeSecondDrop = drv.LinkEpoch();
     std::atomic<bool> hookFired{ false };
     drv.SetBeforeReadyHookForTest([&]{
         hookFired.store(true);
         emu.DropConnection();
-        for (int i = 0; i < 250 && drv.IsConnected(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        for (int i = 0; i < 250 && drv.LinkEpoch() == epochBeforeSecondDrop; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
     });
 
     CHECK(WaitFor([&]{ return hookFired.load(); }, 20000), "LinkEpochBis: хук спрацював (Ping отримав відповідь)");
-    CHECK(WaitFor([&]{ return !drv.IsConnected(); }, 5000),
-          "LinkEpochBis: другий обрив зареєстровано (сокет справді впав)");
+    // Хук (виконаний синхронно на потоці джоба) уже дочекався зміни епохи ВСЕРЕДИНІ себе -
+    // до цього моменту (виходу з EnsureReady, що йде одразу після виклику хука) вона гарантовано
+    // інша, без жодного вікна гонки.
+    CHECK(drv.LinkEpoch() != epochBeforeSecondDrop,
+          "LinkEpochBis: епоха з'єднання просунулась (друга транзиція зареєстрована)");
     // Ключова перевірка I1: одразу після виходу з ЦЬОГО циклу EnsureReady, Ready НЕ повинен
     // бути записаний зі старою (знятою ДО хука) епохою - guard має її відкинути. Це і є
     // дефект I1, зловлений детерміновано: без фіксу епоха не зрушила б, і Ready записався б
