@@ -21,7 +21,7 @@
 - **`DeviceSession` не змінюється** (спека §3, принцип архітектора): ні `desync` при обриві, ні нові хуки, ні зміни `MarkSynchronized()`.
 - **Коди 0..16 не рухаються.** Нові — `UNKNOWN_OUTCOME`=17, `RECONNECTING`=18, і тільки символьні (числова гілка `CodeToInt` віддала б цифру за код термінала).
 - **Компонента не вгадує про гроші:** жодного зіставлення чека з наміром, жодного автоповтору/сторно, жодного запису фактів чужого чека в OUT-параметри БПО.
-- **Під `outcomeMutex_`/`linkMutex_` — жодного мережевого виклику й жодного `EmitEvent`** (той самий стиль, що `eventMutex_`).
+- **Під `outcomeMutex_`/`linkMutex_` — жодного мережевого виклику й жодного `EmitEvent`** (той самий стиль, що `eventMutex_`). Єдиний навмисний виняток — зовнішній `linkEmitMutex_` у `SetLinkState`: він **має** накривати емісію `connection` (порядок подій = порядок переходів, спека §4.9.3); порядок узяття `linkEmitMutex_ → linkMutex_ → (eventMutex_ усередині EmitEvent)`, зворотного ніде не робити.
 - **`min`/`max` не використовувати** (windows.h визначає їх макросами — тихо ламає збірку): писати тернарний вибір.
 - **Гейт кожного завдання — зелений на x64 і x86.** Швидкий цикл:
   ```
@@ -948,9 +948,10 @@ enum class LinkState { Disconnected, Connecting, Ready };
     void SetLinkState(LinkState target, const char* reason, std::uint64_t epoch = 0);
     std::uint64_t LinkEpoch() const;
 
-    mutable std::mutex linkMutex_;
+    mutable std::mutex linkEmitMutex_;   ///< ЗОВНІШНІЙ: перехід + емісія connection як одна дія (спека §4.9.3)
+    mutable std::mutex linkMutex_;       ///< порядок узяття: linkEmitMutex_ → linkMutex_
     LinkState          linkState_ = LinkState::Disconnected;   ///< під linkMutex_
-    std::uint64_t      linkEpoch_ = 0;                         ///< ++ на кожен вихід із Ready
+    std::uint64_t      linkEpoch_ = 0;                         ///< покоління з'єднання: ++ на кожен запис не-Ready
 ```
 
 - [ ] **Step 5: Реалізувати `SetLinkState` з епохою**
@@ -981,6 +982,10 @@ std::uint64_t EcrPrivatJsonDriver::LinkEpoch() const {
 }
 
 void EcrPrivatJsonDriver::SetLinkState(LinkState target, const char* reason, std::uint64_t epoch) {
+    // Перехід + емісія - одна неподільна дія (спека §4.9.3): без цього емісії з двох потоків
+    // (джоб: Ready, хук: Connecting) міняються місцями, і 1С бачить ready останнім при
+    // фактичному Connecting. Порядок узяття: linkEmitMutex_ -> linkMutex_ -> eventMutex_.
+    std::lock_guard<std::mutex> emitLk(linkEmitMutex_);
     {
         std::lock_guard<std::mutex> lk(linkMutex_);
         // Ping приніс Ready з епохи, яка вже мертва (сокет упав одразу після відповіді) - ігноруємо:
@@ -2873,7 +2878,10 @@ git commit -m "feat(transport): TCP keepalive завжди — тихий обр
    виклику, форма `payload.outcome`, події `outcome`/`connection`, що компонента **не** робить
    (не зіставляє, не повторює, не сторнує, не тримає стан між сеансами).
 4. **§6.1 «Потокова модель»** — додати `recoveryJob_` і правило «під `outcomeMutex_`/`linkMutex_` —
-   ні мережі, ні подій»; згадати, що `JobEngine::Start` тепер серіалізовано.
+   ні мережі, ні подій»; виняток `linkEmitMutex_` (зовнішній, накриває емісію `connection` навмисно) і
+   порядок узяття `linkEmitMutex_ → linkMutex_ → eventMutex_`; гарантія «порядок подій `connection` =
+   порядок переходів, остання подія = поточний стан» (спека §4.9.3); `linkEpoch_` — покоління з'єднання;
+   згадати, що `JobEngine::Start` тепер серіалізовано.
 5. **§9 «Тестовий контур»** — перелічити нові сценарії №1-25 і чотири тестові шви драйвера
    (`SetTransportFactoryForTest`, `SetOutcomeTimingForTest`, `MarkPendingForTest`, `StopSessionForTest`)
    плюс два режими обриву в емуляторі (`DropConnection`, `DropAfterNextResponse`).
