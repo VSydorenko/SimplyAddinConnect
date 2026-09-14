@@ -17,6 +17,10 @@ namespace {
 constexpr int kHandshakeTimeoutMs = 5000;   // Ping/Identify — з запасом (Verifone 3-5с)
 constexpr int kPostPingPauseMs    = 1000;   // пауза 1с після Ping (спека §3.4)
 
+// Дефолт pingTimeoutMs_ у заголовку продубльовано числом (константа живе в анонімному
+// namespace цього .cpp і в .h не видима) - тримаємо їх у синхроні перевіркою компілятора.
+static_assert(kHandshakeTimeoutMs == 5000, "pingTimeoutMs_ у .h ініціалізовано 5000 — оновити разом");
+
 // Обов'язковий склад params оплати/повернення (спека §5.1.1/§5.2.1): реальні
 // термінали (Newland N950, інцидент 2026-08-29) без discount/merchantId відбивають
 // запит кодом 1000 "Введіть discount" — еталонна каса ПриватБанк ці поля шле завжди.
@@ -100,6 +104,7 @@ bool EcrPrivatJsonDriver::ParseConnString(const std::string& s, EcrConnParams& o
 }
 
 std::unique_ptr<ITransport> EcrPrivatJsonDriver::MakeTransport(const EcrConnParams& p) const {
+    if (transportFactory_) return transportFactory_(p);
     if (p.kind == EcrConnParams::Kind::Tcp)
         return std::make_unique<TransportTCP>(p.host, p.tcpPort);
     // COM: драйвер ЯВНО передає baud (дефолт TransportCOM = 9600), 8N1.
@@ -185,7 +190,7 @@ bool EcrPrivatJsonDriver::Connect(const std::string& connString) {
     session_->SetConnectionStateHandler([this](bool up) {
         // Хук іде на dispatcher-потоці сесії: сигналізуємо й повертаємось, у мережу не ходимо
         // (блокуючий виклик звідси заморозив би dispatcher - спека §2.1).
-        if (up) return;                                    // Task 4: EnsureRecoveryRunning()
+        if (up) { EnsureRecoveryRunning(); return; }   // TCP є -> Ping до готовності (крок 0)
         SetLinkState(LinkState::Connecting, "dropped");
     });
     // Ready ставимо ДО Start(): хендшейк-Ping пройшов секунду тому (крок 1), а хук up=true
@@ -205,6 +210,9 @@ bool EcrPrivatJsonDriver::Connect(const std::string& connString) {
         session_.reset();
         return false;
     }
+    // Ручний реконект із 1С (Отключить/Подключить) при збереженому Pending: без Pending - no-op,
+    // зайвого Ping не буде, бо linkState_ уже Ready.
+    EnsureRecoveryRunning();
     return true;
 }
 
@@ -234,9 +242,12 @@ bool EcrPrivatJsonDriver::TryGetOperationResult(ResultEnvelope& out) const { ret
 void EcrPrivatJsonDriver::CancelOperation() { RequestInterrupt(); job_.RequestCancel(); }
 
 void EcrPrivatJsonDriver::Disconnect() {
-    job_.Join();   // дочекатись worker, щоб не рвати сесію під активним запитом
+    closing_.store(true);      // хук і CaptureOutcome бачать і виходять
+    job_.Join();               // фінансову операцію НЕ рвемо - як і раніше
+    if (session_) session_->Stop();   // усі pending -> Stopped негайно; dispatcher join-нуто,
+                                      // тож нових хуків (і нових стартів джоба) більше не буде
+    recoveryJob_.Join();       // швидкий: його запити вже повернули Stopped
     if (session_) {
-        session_->Stop();
         session_.reset();
         NEUTRAL_REPORT_INFO("ECRPrivatJSON", "Disconnect: сесію закрито");
     } else {
@@ -245,6 +256,7 @@ void EcrPrivatJsonDriver::Disconnect() {
         NEUTRAL_REPORT_INFO("ECRPrivatJSON", "Disconnect: сесії немає (вже відключено) — no-op");
     }
     SetLinkState(LinkState::Disconnected, "closed");   // ручний розрив - не аварія
+    closing_.store(false);
 }
 
 bool EcrPrivatJsonDriver::IsConnected() const { return session_ && session_->IsConnected(); }
@@ -428,22 +440,16 @@ ResultEnvelope EcrPrivatJsonDriver::ExecuteInternal(const std::string& method,
         // Close->Open (DeviceSession.cpp:436-447), навіть якщо TCP був живий. Отже «зв'язок є»
         // тут - гонка; чесний стан - Connecting, а знімок зробить джоб після реконекту (крок 0).
         if (r.status == RequestStatus::Timeout || desync)
-            SetLinkState(LinkState::Connecting, "timeout");
+            SetLinkState(LinkState::Connecting, "timeout");        // Task 3, крок 6-біс
         const std::uint64_t gen = MarkPending(intent, reason);
-
-        // ТИМЧАСОВО (до Task 4): при живому з'єднанні з'ясовуємо синхронно. Task 4
-        // замінює цей блок на EnsureRecoveryRunning() + WaitOutcomeBounded(gen).
-        if (IsConnected() && !inRecovery_.load()) {
-            inRecovery_.store(true);
-            const ResultEnvelope facts = RecoverAfterDesync();
-            inRecovery_.store(false);
-            std::lock_guard<std::mutex> lk(outcomeMutex_);
-            if (lastOutcome_.generation == gen) {
-                lastOutcome_.state        = OutcomeState::Resolved;
-                lastOutcome_.terminalIdle = (lastStatus_.load() == 0);
-                lastOutcome_.facts        = facts;
-            }
-        }
+        EnsureRecoveryRunning();
+        // §4.2 п.2, ПОВНИЙ критерій: «зв'язок є» = сокет живий І сесія не в desync. Друга
+        // умова - не формальність: після Timeout primary супервізор негайно рве й перевідкриває
+        // сесію (DeviceSession.cpp:436-447), тож IsConnected() у цю мить - гонка. При desync
+        // іде шлях (б): 17 негайно, знімок - після реконекту через хук, крок 0 (Ping), крок 1.
+        // «Зараз» де-факто лишається для SendFailed без закриття транспорту: там з'єднання
+        // справді живе, desync не ставиться, реконекту не буде, і хук ніколи б не спрацював.
+        if (IsConnected() && !desync) WaitOutcomeBounded(gen);
         env = BuildUnknownOutcome();
     } else {
         env = MapResult(r);
@@ -454,22 +460,164 @@ ResultEnvelope EcrPrivatJsonDriver::ExecuteInternal(const std::string& method,
     return env;
 }
 
-ResultEnvelope EcrPrivatJsonDriver::RecoverAfterDesync() {
-    NEUTRAL_REPORT_WARN("ECRPrivatJSON", "Відновлення після десинхронізації: полінг статусу термінала");
-    // Полимо getLastStatMsgCode ПОКИ код != "0" (bounded): "0" = термінал у спокої (спека §6.5).
-    // НЕ рвемо на будь-якій Response — лише коли статус реально спокійний.
-    for (int i = 0; i < kRecoverPollTries && session_; ++i) {
-        int code = -1;
-        if (PollStatusOnce(code) == RequestStatus::Response && code >= 0) {
-            lastStatus_.store(code);                 // без події: це фон, не хід операції
-            if (code == 0) break;                    // термінал у спокої (спека §6.5)
+void EcrPrivatJsonDriver::SleepInterruptible(int ms) {
+    constexpr int kStepMs = 100;
+    for (int left = ms; left > 0 && !closing_.load(); left -= kStepMs)
+        std::this_thread::sleep_for(std::chrono::milliseconds(left < kStepMs ? left : kStepMs));
+}
+
+void EcrPrivatJsonDriver::EnsureRecoveryRunning() {
+    if (closing_.load() || !IsConnected()) return;   // без сокета ні Ping, ні з'ясування
+    const bool needReady = !IsReady();
+    std::uint64_t gen = 0;
+    bool needOutcome = false;
+    {
+        std::lock_guard<std::mutex> lk(outcomeMutex_);
+        needOutcome = lastOutcome_.state == OutcomeState::Pending;
+        gen = lastOutcome_.generation;
+    }
+    if (!needReady && !needOutcome) return;
+    // false = джоб уже йде; це нормальний, найчастіший результат.
+    recoveryJob_.Start([this, gen] { return RecoveryJob(gen); });
+}
+
+ResultEnvelope EcrPrivatJsonDriver::RecoveryJob(std::uint64_t generation) {
+    // Крок 0: спершу термінал має підтвердити, що чує нас. Полінг статусу в тишу монополії
+    // дав би хибний TERMINAL_BUSY (спека §4.4).
+    if (!EnsureReady()) return ResultEnvelope::Fail("ABORTED", "Зв'язок не підтверджено");
+    bool pending = false;
+    {
+        std::lock_guard<std::mutex> lk(outcomeMutex_);
+        pending = lastOutcome_.state == OutcomeState::Pending && lastOutcome_.generation == generation;
+    }
+    if (!pending) return ResultEnvelope::Ok();       // готовність відновлено, питання про долю немає
+    return CaptureOutcome(generation);
+}
+
+bool EcrPrivatJsonDriver::EnsureReady() {
+    int backoff = kReconnectDelayMs;
+    while (!closing_.load() && IsConnected() && !IsReady()) {
+        const std::uint64_t epoch = LinkEpoch();     // епоха, в якій шлемо цей Ping
+        auto ping = EcrJsonCodec::BuildRequest("PingDevice", 0, nullptr);
+        GateSend();
+        // ПЕРЕД КОЖНИМ Ping знімаємо desync (спека §4.9.2 «desync і Ping»): після таймауту
+        // primary DoRequest відбиває будь-який primary до дроту (DeviceSession.cpp:175) - Ping
+        // теж, а Timeout самого Ping ставить desync знову. Гроші тут не захищає desync, а гейт
+        // §4.6: MarkPending уже стоїть, фінансові виклики отримують 17, нефінансові - 18.
+        session_->MarkSynchronized();
+        // Той самий Ping, що в Connect: провідний 0x00 «закриває» півкадр, що міг лишитись
+        // у буфері термінала після обриву посеред передачі (спека §2.3).
+        RequestResult r = session_->RequestPrimary(ping, pingTimeoutMs_.load(),
+                                                   FrameOptions{ /*leadingDelimiter=*/true });
+        if (r.status == RequestStatus::Desynchronized) {
+            // Недосяжно після MarkSynchronized вище; лишається лише RejectBoth між зняттям і
+            // відправкою. Не аварія - повторити без backoff.
+            NEUTRAL_REPORT_WARN("ECRPrivatJSON", "EnsureReady: Desynchronized після MarkSynchronized - повтор");
+            continue;
         }
+        if (r.status == RequestStatus::Response || r.status == RequestStatus::Busy) {
+            // Busy = живий, зайнятий нашою операцією - теж «чує нас». Ready із мертвої епохи
+            // SetLinkState відкине сам.
+            SetLinkState(LinkState::Ready, "", epoch);
+            return IsReady();
+        }
+        if (r.status == RequestStatus::Disconnected || r.status == RequestStatus::Stopped)
+            return false;                            // сокет упав знову - перезапустить хук
+        // Timeout тут - не аварія, а очікуваний стан «термінал ще тримає стару сесію»
+        // (монополія, спека §2.3), тож повторюємо без обмеження кількості.
+        SleepInterruptible(backoff);
+        const int next = backoff * 2;
+        backoff = (next > kReconnectMaxDelayMs) ? kReconnectMaxDelayMs : next;
+    }
+    return IsReady();
+}
+
+ResultEnvelope EcrPrivatJsonDriver::CaptureOutcome(std::uint64_t generation) {
+    NEUTRAL_REPORT_WARN("ECRPrivatJSON", "З'ясування долі операції: полінг статусу термінала");
+    bool idle = false;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(outcomeIdleWaitMs_.load());
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (closing_.load()) return ResultEnvelope::Fail("ABORTED", "Відключення");
+        {
+            std::lock_guard<std::mutex> lk(outcomeMutex_);
+            if (lastOutcome_.generation != generation)
+                return ResultEnvelope::Fail("ABORTED", "Знімок належить іншому поколінню");
+        }
+        int code = -1;
+        const RequestStatus st = PollStatusOnce(code);
+        if (st == RequestStatus::Disconnected || st == RequestStatus::Stopped)
+            // Продовжувати на непідтвердженому з'єднанні не можна: наступний up=true
+            // приведе сюди знову - через крок 0 (Ping).
+            return ResultEnvelope::Fail("ABORTED", "Зв'язок обірвався під час з'ясування");
+        if (st == RequestStatus::Response && code >= 0) {
+            lastStatus_.store(code);
+            if (code == 0) { idle = true; break; }   // термінал у спокої (спека §6.5)
+        }
+        SleepInterruptible(kPollIntervalMs);
+    }
+
+    // Канал відкриваємо в ОБОХ випадках: після спокою - штатно; після вичерпання ліміту -
+    // бо лишити desync назавжди нікому було б зняти (гейт після Resolved не діє), а нова
+    // операція чесно отримає deviceBusy/Timeout від самого термінала. Різниця видима
+    // у знімку: terminalIdle і factsCode.
+    if (session_) session_->MarkSynchronized();
+
+    ResultEnvelope facts = idle
+        ? RequestReceiptFacts(std::string{})
+        : ResultEnvelope::Fail("TERMINAL_BUSY", "Термінал не звільнився за відведений час");
+    if (idle && (facts.code == "DISCONNECTED" || facts.code == "STOPPED"))
+        return ResultEnvelope::Fail("ABORTED", "Зв'язок обірвався під час отримання чека");
+
+    OperationIntent snapIntent; std::string snapReason;     // копії для лоґу - читаються поза локом
+    {
+        std::lock_guard<std::mutex> lk(outcomeMutex_);
+        if (lastOutcome_.generation != generation)
+            return ResultEnvelope::Fail("ABORTED", "Знімок належить іншому поколінню");
+        lastOutcome_.state        = OutcomeState::Resolved;
+        lastOutcome_.terminalIdle = idle;
+        lastOutcome_.facts        = facts;
+        snapIntent = lastOutcome_.intent;
+        snapReason = lastOutcome_.reason;
+    }
+    // Єдиний слід знімка, якщо каса його не забрала, а наступний Pending затер (спека §4.3 крок 6,
+    // §9 п.7). БЕЗ pan і без тексту чека. Конкатенація, без printf-стилю (AGENTS.md). Обидва часи -
+    // startedAt і capturedAt - на прохання боку 1С: спільний якір із їхнім реєстром при розборі.
+    {
+        const auto fp = [&](const char* key) {
+            return facts.payload.is_object() ? facts.payload.value(key, std::string{}) : std::string{};
+        };
+        NEUTRAL_REPORT_WARN("ECRPrivatJSON",
+            "Доля операції з'ясована: generation=" + std::to_string(generation)
+            + " reason=" + snapReason + " requestId=" + snapIntent.requestId
+            + " intent=" + snapIntent.method + "/" + snapIntent.amount
+            + " startedAt=" + IsoUtc(snapIntent.startedAt)
+            + " capturedAt=" + IsoUtc(std::chrono::system_clock::now())
+            + " terminalIdle=" + std::string(idle ? "true" : "false")
+            + " factsOk=" + std::string(facts.ok ? "true" : "false") + " factsCode=" + facts.code
+            + " responseCode=" + fp("responseCode") + " rrn=" + fp("rrn")
+            + " invoiceNumber=" + fp("invoiceNumber") + " amount=" + fp("amount")
+            + " date=" + fp("date") + " time=" + fp("time"));
+    }
+    // Подія несе ЛИШЕ об'єкт outcome (конверт є в result і в ИсходПоследнейОперацииJSON).
+    EmitEvent("outcome", OutcomeSnapshotJson());
+    // Значення НЕ читається: факти беруться з lastOutcome_ під outcomeMutex_.
+    return ResultEnvelope::Ok();
+}
+
+void EcrPrivatJsonDriver::WaitOutcomeBounded(std::uint64_t generation) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(outcomeSyncWaitMs_.load());
+    while (std::chrono::steady_clock::now() < deadline) {
+        {
+            std::lock_guard<std::mutex> lk(outcomeMutex_);
+            if (lastOutcome_.generation != generation) return;
+            if (lastOutcome_.state == OutcomeState::Resolved) return;
+        }
+        const JobState js = recoveryJob_.State();
+        if (js != JobState::Running && js != JobState::Interrupting) return;   // працювати нікому
         std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
     }
-    if (session_) session_->MarkSynchronized();
-    // best-effort: деталі останнього чека. НЕ через ExecuteInternal - той емітить події
-    // й підмінив би результат операції чужим чеком (дефект 1.2 спеки).
-    return RequestReceiptFacts(std::string{});
 }
 
 ResultEnvelope EcrPrivatJsonDriver::RequestReceiptFacts(const std::string& invoiceNumber) {
@@ -498,6 +646,23 @@ bool EcrPrivatJsonDriver::IsFinancial(const std::string& method) {
 void EcrPrivatJsonDriver::SetRequestId(std::string id) {
     std::lock_guard<std::mutex> lk(outcomeMutex_);
     pendingRequestId_ = std::move(id);
+}
+
+void EcrPrivatJsonDriver::SetTransportFactoryForTest(TransportFactory f) { transportFactory_ = std::move(f); }
+
+void EcrPrivatJsonDriver::SetOutcomeTimingForTest(int idleWaitMs, int syncWaitMs, int pingTimeoutMs) {
+    outcomeIdleWaitMs_.store(idleWaitMs);
+    outcomeSyncWaitMs_.store(syncWaitMs);
+    if (pingTimeoutMs > 0) pingTimeoutMs_.store(pingTimeoutMs);
+}
+
+void EcrPrivatJsonDriver::MarkPendingForTest(const std::string& method, const std::string& amount,
+                                             const std::string& reason) {
+    OperationIntent intent;
+    intent.method    = method;
+    intent.amount    = amount;
+    intent.startedAt = std::chrono::system_clock::now();
+    MarkPending(intent, reason);
 }
 
 std::uint64_t EcrPrivatJsonDriver::MarkPending(const OperationIntent& intent, const std::string& reason) {
@@ -541,7 +706,7 @@ ResultEnvelope EcrPrivatJsonDriver::BuildUnknownOutcome() {
 }
 
 ResultEnvelope EcrPrivatJsonDriver::InquireLastOutcome() {
-    // Task 4 додасть тут EnsureRecoveryRunning() - самозцілення (спека §4.4).
+    EnsureRecoveryRunning();   // вікно «Pending без виконавця» закривається тут
     bool none;
     { std::lock_guard<std::mutex> lk(outcomeMutex_); none = lastOutcome_.state == OutcomeState::None; }
     if (!none) return BuildUnknownOutcome();

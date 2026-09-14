@@ -212,6 +212,408 @@ static void TestJobEngine() {
     CHECK(eng2.State() == JobState::Error, "JobEngine: виняток у op → Error");
 }
 
+// №12: два викликачі Start (ExecuteInternal і dispatcher-хук) на завершеному джобі.
+// Без startMutex_ обидва пройдуть перевірку стану, обидва зроблять join того самого
+// потоку й присвоєння joinable-потоку -> std::terminate (спека §2.2).
+static void TestJobEngineStartRace() {
+    for (int iter = 0; iter < 100; ++iter) {
+        JobEngine eng;
+        eng.Start([]{ return ResultEnvelope::Ok(); });
+        eng.Join();                      // джоб завершений; Join() уже приєднав worker_
+        eng.ResetToIdle();
+        // Гонка, яку ловить цей сценарій: обидва потоки проходять перевірку стану під m_,
+        // обидва доходять до worker_ = std::thread(...) — присвоєння в уже-joinable потік
+        // (другий переможець) дає std::terminate. Подвійний join покриває сценарій нижче.
+
+        std::atomic<int> wins{ 0 };
+        std::atomic<bool> go{ false };
+        // release тримає worker переможця в Running, доки ОБИДВА racer-и не віддали вердикт:
+        // Start() лишає легітимний повторний запуск із Done (не лише з Idle/Error), тож
+        // миттєвий op ([]{ return Ok(); }) міг би завершитись і перевести стан назад у Done
+        // ще ДО виклику Start() другим потоком - другий Start() тоді теж чесно повернув би
+        // true (це не гонка double-join, а звичайний послідовний рестарт) і wins==2 без
+        // жодного terminate. Блокуючи op до release, тримаємо стан Running на весь час
+        // виконання racer-ів - програвший гарантовано бачить Running і отримує false.
+        std::atomic<bool> release{ false };
+        auto racer = [&]{
+            while (!go.load()) std::this_thread::yield();
+            if (eng.Start([&release]{
+                    while (!release.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    return ResultEnvelope::Ok();
+                })) wins.fetch_add(1);
+        };
+        std::thread t1(racer), t2(racer);
+        go.store(true);
+        t1.join(); t2.join();
+        release.store(true);   // обидва вердикти вже є - дозволити worker-у завершитись
+        eng.Join();
+        if (wins.load() != 1) {
+            CHECK(false, "JobEngineStartRace: рівно один Start повернув true");
+            return;
+        }
+    }
+    CHECK(true, "JobEngineStartRace: 100 ітерацій, рівно один переможець, без terminate");
+
+    // Другий сценарій - БЕЗ попереднього Join: worker_ завершеного джоба лишається joinable,
+    // тож без startMutex_ обидва потоки роблять join(worker_) того самого потоку (теж terminate).
+    for (int iter = 0; iter < 100; ++iter) {
+        JobEngine eng;
+        eng.Start([]{ return ResultEnvelope::Ok(); });
+        while (eng.State() == JobState::Running) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        eng.ResetToIdle();               // Done -> Idle, worker_ НЕ приєднано
+
+        std::atomic<int> wins{ 0 };
+        std::atomic<bool> go{ false };
+        // Той самий прийом, що в першому сценарії вище: блокуємо op переможця до вердикту
+        // ОБОХ racer-ів, інакше миттєвий op дав би легітимний послідовний рестарт (Done -> Running)
+        // і wins==2 без жодної реальної гонки-помилки.
+        std::atomic<bool> release{ false };
+        auto racer = [&]{
+            while (!go.load()) std::this_thread::yield();
+            if (eng.Start([&release]{
+                    while (!release.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    return ResultEnvelope::Ok();
+                })) wins.fetch_add(1);
+        };
+        std::thread t1(racer), t2(racer);
+        go.store(true);
+        t1.join(); t2.join();
+        release.store(true);
+        eng.Join();
+        if (wins.load() != 1) {
+            CHECK(false, "JobEngineStartRace: без Join - рівно один Start повернув true");
+            return;
+        }
+    }
+    CHECK(true, "JobEngineStartRace: 100 ітерацій без попереднього Join, без подвійного join");
+}
+
+// Спільний стан емулятора для сценаріїв життєвого циклу: лічильники й керований статус.
+struct EmuBase {
+    std::atomic<int> pings{ 0 };
+    std::atomic<int> purchases{ 0 };
+    std::atomic<int> receipts{ 0 };
+    std::atomic<int> statusCode{ 0 };   // що віддавати на getLastStatMsgCode
+    std::atomic<bool> silentPing{ false };
+};
+
+static void BaseHandlers(TerminalEmulator& emu, EmuBase& st) {
+    emu.OnRequest("PingDevice", [&st](const nlohmann::json&) -> std::string {
+        st.pings.fetch_add(1);
+        if (st.silentPing.load()) return "";      // монополія: термінал тримає стару сесію
+        return R"({"method":"PingDevice","params":{"responseCode":"0000"},"error":false})";
+    });
+    emu.OnRequest("ServiceMessage", [&st](const nlohmann::json& q) -> std::string {
+        const auto mt = q.contains("params") ? q["params"].value("msgType", std::string{}) : std::string{};
+        if (mt == "identify")
+            return R"({"method":"ServiceMessage","params":{"msgType":"identify","vendor":"PAX","model":"s800"},"error":false})";
+        if (mt == "getLastStatMsgCode")
+            return std::string(R"({"method":"ServiceMessage","params":{"msgType":"getLastStatMsgCode","LastStatMsgCode":")")
+                 + std::to_string(st.statusCode.load()) + R"("},"error":false})";
+        return "";
+    });
+    emu.OnRequest("GetReceiptInfo", [&st](const nlohmann::json&) {
+        st.receipts.fetch_add(1);
+        return R"({"method":"GetReceiptInfo","params":{"responseCode":"0000","invoiceNumber":"77","rrn":"555000111","amount":"100.51","txnType":"1"},"error":false})";
+    });
+}
+
+// Дочекатися умови (мс) - щоб тести не спали фіксовано.
+template <class F>
+static bool WaitFor(F cond, int timeoutMs = 15000) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (cond()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return cond();
+}
+
+// Знімок долі як JSON-об'єкт outcome.
+static nlohmann::json OutcomeOf(EcrPrivatJsonDriver& drv) {
+    return drv.InquireLastOutcome().payload["outcome"];
+}
+
+// №15: після реконекту Ready дає лише протокольний Ping, а не відкритий сокет.
+static void TestPingAfterReconnect() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    CHECK(emu.Start(), "PingReconnect: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    std::mutex evMutex; std::vector<std::string> states;
+    drv.SetEventHandler([&](const std::string& ev, const std::string& data) {
+        if (ev != "connection") return;
+        auto j = nlohmann::json::parse(data, nullptr, false);
+        if (j.is_discarded()) return;
+        std::lock_guard<std::mutex> lk(evMutex);
+        states.push_back(j.value("state", std::string{}));
+    });
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "PingReconnect: Connect");
+    const int pingsAfterConnect = st.pings.load();
+
+    emu.DropConnection();
+    CHECK(WaitFor([&]{ return !drv.IsReady(); }), "PingReconnect: після обриву Подключен=Ложь");
+    CHECK(WaitFor([&]{ return drv.IsReady(); }), "PingReconnect: після Ping зв'язок знову Ready");
+    CHECK(st.pings.load() == pingsAfterConnect + 1,
+          "PingReconnect: рівно один PingDevice на новому з'єднанні");
+
+    drv.Disconnect();
+    std::lock_guard<std::mutex> lk(evMutex);
+    // ready(Connect) -> connecting(dropped) -> ready(Ping) -> disconnected(closed)
+    CHECK(states.size() >= 4 && states[0] == "ready" && states[1] == "connecting" &&
+          states[2] == "ready" && states.back() == "disconnected",
+          "PingReconnect: послідовність подій connection правильна");
+    emu.Stop();
+}
+
+// №16: silence монополії - Подключен=Ложь весь час, операції відбиваються 18, Ping повторюється.
+static void TestSilenceAfterReconnect() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    emu.OnRequest("Purchase", [&st](const nlohmann::json&) {
+        st.purchases.fetch_add(1);
+        return R"({"method":"Purchase","params":{"responseCode":"0000","invoiceNumber":"1"},"error":false})";
+    });
+    CHECK(emu.Start(), "Silence: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "Silence: Connect");
+
+    st.silentPing.store(true);       // термінал ще вважає стару сесію живою
+    const int pingsBefore = st.pings.load();
+    const int purchasesBefore = st.purchases.load();
+    emu.DropConnection();
+    CHECK(WaitFor([&]{ return !drv.IsReady(); }), "Silence: Ready знято");
+    // ⚠️ Дефект брифу (виправлено за вказівкою координатора 2026-09-14): між обривом і
+    // Purchase() тут стояло лише очікування !IsReady() (~20 мс). Але DeviceSession-супервізор
+    // (ReconnectLoop, DeviceSession.cpp) робить БЕЗУМОВНИЙ backoff-сон
+    // (cfg.reconnectDelayMs=1000 мс, DeviceSession.h:37) ПЕРЕД самою першою спробою Close->Open —
+    // це не ретрай після невдачі, а затримка перед першою спробою. У момент виклику Purchase()
+    // сокет фізично ще закритий (IsConnected()=false), тож ExecuteInternal віддав би
+    // NOT_CONNECTED замість RECONNECTING - тест перевіряв би не той стан. Той самий механізм,
+    // що вже врахований у TestThreeStatesThreeCodes (сценарій в) - тут застосовано той самий
+    // рецепт: дочекатися реального перепідключення сокета, тоді перевіряти RECONNECTING.
+    // Доказ стану - ПАРА предикатів (спека §6.5): один лише !IsReady() правдивий і в
+    // Connecting, і в Disconnected - для Connecting потрібні ОБИДВА: IsConnected()==true
+    // (сокет перепідключився) і !IsReady() (термінал мовчить, монополія).
+    for (int i = 0; i < 1000 && !drv.IsConnected(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(drv.IsConnected() && !drv.IsReady(),
+          "Silence: сокет перепідключився, Ready лишається false (Connecting)");
+
+    ResultEnvelope p = drv.Purchase("10.00");
+    CHECK(!p.ok && p.code == "RECONNECTING", "Silence: операція під silence -> RECONNECTING");
+    CHECK(st.purchases.load() == purchasesBefore, "Silence: Purchase на дріт не пішов");
+
+    CHECK(WaitFor([&]{ return st.pings.load() >= pingsBefore + 2; }, 20000),
+          "Silence: Ping повторюється з backoff (>=2 спроби)");
+    st.silentPing.store(false);      // термінал відпустив стару сесію
+    CHECK(WaitFor([&]{ return drv.IsReady(); }, 20000), "Silence: після першої відповіді -> Ready");
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// №17: deviceBusy на Ping = «живий, зайнятий нашою операцією» -> теж Ready.
+static void TestPingBusyIsReady() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    // Перший Ping після реконекту отримує deviceBusy (термінал веде операцію).
+    emu.OnRequest("PingDevice", [&st](const nlohmann::json&) -> std::string {
+        const int n = st.pings.fetch_add(1);
+        if (n >= 1) return R"({"method":"ServiceMessage","params":{"msgType":"deviceBusy"},"error":false})";
+        return R"({"method":"PingDevice","params":{"responseCode":"0000"},"error":false})";
+    });
+    CHECK(emu.Start(), "PingBusy: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "PingBusy: Connect");
+    emu.DropConnection();
+    CHECK(WaitFor([&]{ return !drv.IsReady(); }), "PingBusy: Ready знято після обриву");
+    CHECK(WaitFor([&]{ return drv.IsReady(); }), "PingBusy: deviceBusy на Ping -> Ready (живий, зайнятий)");
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// №23: Ready з мертвої епохи не записується - інакше прапорець завис би на мертвому сокеті.
+static void TestLinkEpochRejectsStaleReady() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    CHECK(emu.Start(), "LinkEpoch: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    std::mutex evMutex; std::vector<std::string> states;
+    drv.SetEventHandler([&](const std::string& ev, const std::string& data) {
+        if (ev != "connection") return;
+        auto j = nlohmann::json::parse(data, nullptr, false);
+        if (j.is_discarded()) return;
+        std::lock_guard<std::mutex> lk(evMutex);
+        states.push_back(j.value("state", std::string{}));
+    });
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "LinkEpoch: Connect");
+
+    emu.DropAfterNextResponse();   // відповість на Ping реконекту й одразу зникне
+    emu.DropConnection();
+    CHECK(WaitFor([&]{ return !drv.IsReady(); }), "LinkEpoch: Ready знято після першого обриву");
+    // Другий обрив стався одразу після відповіді на Ping: Ready з тієї епохи має бути відкинутий,
+    // а зв'язок відновитись лише наступним Ping - на живому сокеті.
+    CHECK(WaitFor([&]{ return drv.IsReady(); }, 20000), "LinkEpoch: зрештою Ready на живому сокеті");
+
+    drv.Disconnect();
+    std::lock_guard<std::mutex> lk(evMutex);
+    for (std::size_t i = 1; i < states.size(); ++i)
+        if (states[i] == "ready" && states[i - 1] == "ready") {
+            CHECK(false, "LinkEpoch: двох ready підряд не буває (Ready з мертвої епохи відкинуто)");
+            return;
+        }
+    CHECK(true, "LinkEpoch: жодного ready поверх мертвої епохи");
+}
+
+// №6: SendFailed при ЖИВОМУ з'єднанні - з'ясування одразу, факти в тому ж виклику.
+// Шов ламає рівно відправку Purchase (кодом, що НЕ закриває сокет), тож реконекту не буде
+// й хук стану ніколи б не спрацював - саме цей шлях і перевіряємо.
+static void TestSendFailedResolvesInline() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    emu.OnRequest("Purchase", [&st](const nlohmann::json&) {
+        st.purchases.fetch_add(1);
+        return R"({"method":"Purchase","params":{"responseCode":"0000","invoiceNumber":"1"},"error":false})";
+    });
+    CHECK(emu.Start(), "SendFailed: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    std::atomic<bool> breakPurchase{ false };
+    drv.SetTransportFactoryForTest([&breakPurchase](const EcrConnParams& p) -> std::unique_ptr<ITransport> {
+        auto t = std::make_unique<TransportTCP>(p.host, p.tcpPort);
+        t->SetSendFunctionForTest([&breakPurchase](SOCKET s, const char* buf, int len) -> int {
+            const std::string data(buf, static_cast<std::size_t>(len));
+            if (breakPurchase.load() && data.find("\"Purchase\"") != std::string::npos) {
+                // WSAENOBUFS, а НЕ CONNRESET/ABORTED: Send має провалитись БЕЗ закриття сокета.
+                WSASetLastError(WSAENOBUFS);
+                return -1;
+            }
+            return ::send(s, buf, len, 0);
+        });
+        return t;
+    });
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "SendFailed: Connect");
+
+    breakPurchase.store(true);
+    ResultEnvelope env = drv.Purchase("100.51");
+    breakPurchase.store(false);
+
+    CHECK(!env.ok && env.code == "UNKNOWN_OUTCOME", "SendFailed: операція -> код 17");
+    const auto oc = env.payload["outcome"];
+    CHECK(oc.value("reason", std::string{}) == "SEND_FAILED", "SendFailed: reason=SEND_FAILED");
+    CHECK(oc.value("state", std::string{}) == "resolved", "SendFailed: знімок з'явився в тому ж виклику");
+    CHECK(oc.value("channelConnected", false) == true, "SendFailed: channelConnected=true (сокет живий)");
+    CHECK(oc["facts"].is_object() && oc["facts"].value("rrn", std::string{}) == "555000111",
+          "SendFailed: факти чека у знімку");
+    CHECK(st.purchases.load() == 0, "SendFailed: Purchase на термінал не дійшов");
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// №7: термінал не звільнився до ліміту - чесний TERMINAL_BUSY, канал усе одно відкрито.
+static void TestTerminalBusyUntilLimit() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    st.statusCode.store(10);                     // «виконується» - і так завжди
+    emu.OnRequest("Purchase", [](const nlohmann::json&) -> std::string { return ""; });   // мовчить -> Timeout
+    emu.OnRequest("Audit", [](const nlohmann::json&) {
+        return R"({"method":"Audit","params":{"responseCode":"0000","receipt":"X"},"error":false})";
+    });
+    CHECK(emu.Start(), "TerminalBusy: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    drv.SetOutcomeTimingForTest(/*idleWaitMs=*/2000, /*syncWaitMs=*/8000);
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "TerminalBusy: Connect");
+
+    ResultEnvelope env = drv.Execute("Purchase",
+        nlohmann::json{{"amount","100.51"},{"discount",""},{"merchantId","0"},{"facepay","false"}}, 1500);
+    CHECK(!env.ok && env.code == "UNKNOWN_OUTCOME", "TerminalBusy: операція -> код 17");
+    CHECK(env.payload["outcome"].value("reason", std::string{}) == "TIMEOUT", "TerminalBusy: reason=TIMEOUT");
+
+    // Знімок читаємо ОКРЕМО, а не з env: Timeout ставить desync, тож за повним критерієм §4.2
+    // синхронного очікування немає - 17 повертається негайно, а з'ясування йде після реконекту
+    // (крок 0 Ping -> крок 1 полінг). Ліміт спокою скорочено швом до 2 с.
+    CHECK(WaitFor([&]{ return OutcomeOf(drv).value("state", std::string{}) == "resolved"; }, 30000),
+          "TerminalBusy: знімок зроблено після реконекту");
+    const auto oc = OutcomeOf(drv);
+    CHECK(oc.value("terminalIdle", true) == false, "TerminalBusy: terminalIdle=false");
+    CHECK(oc.value("factsCode", std::string{}) == "TERMINAL_BUSY", "TerminalBusy: factsCode=TERMINAL_BUSY");
+    CHECK(oc["facts"].is_object() && oc["facts"].empty(), "TerminalBusy: фактів чека немає");
+    CHECK(st.receipts.load() == 0, "TerminalBusy: GetReceiptInfo не питали (термінал зайнятий)");
+
+    // Канал відкрито попри те, що спокою не дочекались: інакше desync не зняв би ніхто.
+    ResultEnvelope a = drv.Audit("0");
+    CHECK(a.code != "DESYNC", "TerminalBusy: після ліміту сесія не лишилась у desync");
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// №13: самозцілення - намір є, джоба немає, зв'язок живий; InquireLastOutcome запускає роботу.
+static void TestSelfHealingFromInquire() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    CHECK(emu.Start(), "SelfHeal: емулятор стартував");
+
+    EcrPrivatJsonDriver drv;
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "SelfHeal: Connect");
+
+    // Вікно спеки §4.4: MarkPending без старту джоба (шов) - Pending, з якого нікому вийти.
+    drv.MarkPendingForTest("Purchase", "100.51", "TIMEOUT");
+    CHECK(OutcomeOf(drv).value("state", std::string{}) != "none", "SelfHeal: намір зафіксовано");
+
+    ResultEnvelope snap = drv.InquireLastOutcome();   // має САМ стартувати відновлення
+    CHECK(!snap.ok && snap.code == "UNKNOWN_OUTCOME", "SelfHeal: InquireLastOutcome -> конверт 17");
+    CHECK(WaitFor([&]{ return OutcomeOf(drv).value("state", std::string{}) == "resolved"; }),
+          "SelfHeal: джоб стартував сам і довів справу до resolved");
+    CHECK(st.receipts.load() >= 1, "SelfHeal: чек справді запитано");
+    drv.Disconnect();
+    emu.Stop();
+}
+
+// №25: Отключить під backoff-сном джоба. Без SleepInterruptible Disconnect висів би на
+// recoveryJob_.Join() до кінця інтервалу (до 15 с) - саме в центральному сценарії монополії.
+//
+// ⚠️ Тест мусить зловити джоб САМЕ У СНІ. Якщо кликати Отключить одразу після першого Ping,
+// джоб стоїть у DeviceSession::DoRequest (cv_.wait_for на відповідь), і Stop() завершує його
+// миттєво незалежно від SleepInterruptible - тест зеленів би й без фіксу. Тому Ping-таймаут
+// скорочено швом, і Отключить кличеться, коли ДРУГИЙ Ping уже таймаутнув.
+static void TestDisconnectInterruptsBackoff() {
+    TerminalEmulator emu; EmuBase st; BaseHandlers(emu, st);
+    CHECK(emu.Start(), "DisconnectBackoff: емулятор стартував");
+
+    constexpr int kPingMs = 200;
+    EcrPrivatJsonDriver drv;
+    drv.SetOutcomeTimingForTest(/*idleWaitMs=*/2000, /*syncWaitMs=*/2000, /*pingTimeoutMs=*/kPingMs);
+    CHECK(drv.Connect(std::string("tcp://127.0.0.1:") + std::to_string(emu.Port())), "DisconnectBackoff: Connect");
+
+    st.silentPing.store(true);                       // термінал мовчить -> кожен Ping таймаутить
+    const int pingsBefore = st.pings.load();
+    emu.DropConnection();
+    // pings >= 2: перший Ping таймаутнув (200 мс), джоб проспав backoff, відправив другий.
+    // ⚠️ Це НЕ друга ітерація ОДНОГО EnsureReady з backoff, подвоєним до 2000 мс, як
+    // припускав план. Кожен Timeout Ping усередині EnsureReady сам по собі вмикає примусовий
+    // реконект DeviceSession-супервізора (DoRequest виставляє reconnectRequested_=true на
+    // БУДЬ-ЯКОМУ primary-таймауті, включно з нашим власним Ping - DeviceSession.cpp:220-222).
+    // Цей реконект рве з'єднання ПОСЕРЕД сну першого виклику: умова циклу IsConnected()
+    // провалюється, виклик виходить (EXIT loop-cond false), а наступний up=true від хука
+    // стартує СВІЖИЙ EnsureReady із backoff, знову скинутим на kReconnectDelayMs=1000 мс.
+    // Тому й другий Ping - це перша ітерація ДРУГОГО виклику, а не друга ітерація першого.
+    CHECK(WaitFor([&]{ return st.pings.load() >= pingsBefore + 2; }, 20000),
+          "DisconnectBackoff: джоб зробив другий Ping (перший цикл backoff пройдено)");
+    // Даємо другому Ping таймаутнути - після цього джоб (свіжий виклик EnsureReady, backoff=1000)
+    // щойно увійшов у сон і перебуватиме в ньому ще ~1000 мс, коли ми покличемо Отключить нижче.
+    std::this_thread::sleep_for(std::chrono::milliseconds(kPingMs + 50));
+
+    const auto t0 = std::chrono::steady_clock::now();
+    drv.Disconnect();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - t0).count();
+    // Поріг 300 мс (не 1000, як у плані): Отключить кличеться приблизно на 60-й мс свіжого
+    // 1000-мілісекундного сну (див. коментар вище), тож БЕЗ SleepInterruptible лишається
+    // чекати ще ~940 мс - це МЕНШЕ за 1000, і старий поріг тому не ловив дефект узагалі
+    // (тест зеленів в обох станах). Виміряно емпірично (2026-09-14): з SleepInterruptible
+    // elapsed~=38 мс, без нього (голий sleep_for) elapsed~=940 мс - восьмикратний запас
+    // з обох боків порогу 300 мс.
+    CHECK(elapsed < 300, "DisconnectBackoff: Отключить повернувся < 300 мс, не чекав backoff");
+    emu.Stop();
+}
+
 static void TestDriverPurchaseHappy() {
     TerminalEmulator emu;
     emu.OnRequest("PingDevice", [](const nlohmann::json&){ return R"({"method":"PingDevice","step":0,"params":{"responseCode":"0000"},"error":false,"errorDescription":""})"; });
@@ -879,6 +1281,7 @@ int main() {
     TestConnStringParse();
     TestConnectReferenceScheme();
     TestJobEngine();
+    TestJobEngineStartRace();
     TestDriverPurchaseHappy();
     TestDriverStrictTerminalParams();
     TestDriverReports();
@@ -893,6 +1296,14 @@ int main() {
     TestLinkStateOnDisconnect();
     TestThreeStatesThreeCodes();
     TestReconnectByHandKeepsReady();
+    TestPingAfterReconnect();
+    TestSilenceAfterReconnect();
+    TestPingBusyIsReady();
+    TestLinkEpochRejectsStaleReady();
+    TestSendFailedResolvesInline();
+    TestTerminalBusyUntilLimit();
+    TestSelfHealingFromInquire();
+    TestDisconnectInterruptsBackoff();
     TestFacadeSmoke();
     TestVoidFallbackOnlyOnUnsupported();
     std::printf(g_failed ? "\nFAILED: %d\n" : "\nOK\n", g_failed);

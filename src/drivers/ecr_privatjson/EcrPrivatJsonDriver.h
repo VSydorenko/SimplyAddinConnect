@@ -124,6 +124,17 @@ public:
     /// одноразово на вході наступної фінансової операції.
     void SetRequestId(std::string id);
 
+    /// Тестові шви (у продакшені не викликаються).
+    using TransportFactory = std::function<std::unique_ptr<ITransport>(const EcrConnParams&)>;
+    /// Підмінити фабрику транспорту (стаб Send<0 без закриття сокета). Ставити ДО Connect.
+    void SetTransportFactoryForTest(TransportFactory f);
+    /// Скоротити очікування з'ясування: 120с ліміту спокою в тесті нестерпні.
+    /// pingTimeoutMs < 0 - не чіпати (дефолт kHandshakeTimeoutMs); коротке значення потрібне
+    /// тесту №25, щоб джоб гарантовано ДІЙШОВ до backoff-сну, а не стояв у чеканні відповіді.
+    void SetOutcomeTimingForTest(int idleWaitMs, int syncWaitMs, int pingTimeoutMs = -1);
+    /// Зафіксувати намір БЕЗ старту джоба - модель вікна «Pending без виконавця» (спека §4.4).
+    void MarkPendingForTest(const std::string& method, const std::string& amount, const std::string& reason);
+
 private:
     std::unique_ptr<ITransport> MakeTransport(const EcrConnParams& p) const;
     /// Зібрати нову DeviceSession з колбеками (ставляться ДО Start()).
@@ -152,17 +163,41 @@ private:
     /// асинхронного завдання кличуть саме його. Публічний Execute робить reset ПЕРЕД цим.
     ResultEnvelope ExecuteInternal(const std::string& method, const nlohmann::json& params, int timeoutMs);
 
-    /// Best-effort відновлення після desync (Timeout+IsDesynchronized): полінг статусу до
-    /// спокою → MarkSynchronized() → GetReceiptInfo. Викликати ПІСЛЯ зупинки poller-а.
-    ResultEnvelope RecoverAfterDesync();
-    static constexpr int kRecoverPollTries = 5;
-
     /// Вузький запит чека для з'ясування долі операції: БЕЗ EmitEvent, без дотику до
     /// lastStatus_/interruptSent_/job_. Публічний GetReceiptInfo (ПолучитьЧек) лишається як є.
     ResultEnvelope RequestReceiptFacts(const std::string& invoiceNumber);
 
-    /// Захист від рекурсивного відновлення (RecoverAfterDesync → ExecuteInternal → …).
-    std::atomic<bool> inRecovery_{ false };
+    /// Єдина точка старту фонового відновлення (спека §4.4). Ідемпотентна: якщо джоб іде -
+    /// нічого не робить. Кличуть: ExecuteInternal після MarkPending, dispatcher-хук (up=true),
+    /// гейт §4.6, InquireLastOutcome, Connect() після старту сесії.
+    void EnsureRecoveryRunning();
+    /// Тіло фонового джоба: крок 0 - готовність (Ping), крок 1 - з'ясування долі.
+    ResultEnvelope RecoveryJob(std::uint64_t generation);
+    /// Крок 0: цикл Ping із backoff, доки термінал не відповість (Response або deviceBusy).
+    bool EnsureReady();
+    /// Крок 1: полінг статусу до спокою -> MarkSynchronized -> RequestReceiptFacts -> знімок.
+    ResultEnvelope CaptureOutcome(std::uint64_t generation);
+    /// Bounded очікування знімка в синхронному виклику (спека §4.4а).
+    void WaitOutcomeBounded(std::uint64_t generation);
+    /// Сон, перериваний Disconnect-ом: кроками по 100 мс із перевіркою closing_. Голий
+    /// sleep_for(backoff) до 15 с ззовні не перервати, і Отключить під silence монополії
+    /// висів би на recoveryJob_.Join() до кінця інтервалу, а §4.5 обіцяє швидкий Join.
+    void SleepInterruptible(int ms);
+
+    JobEngine          recoveryJob_;      ///< ДРУГИЙ движок: job_ несе контракт СостояниеОперации
+    std::atomic<bool>  closing_{ false }; ///< Disconnect у процесі: джоб і хук виходять
+    TransportFactory   transportFactory_; ///< тестовий шов; nullptr -> справжні транспорти
+    std::atomic<int>   outcomeIdleWaitMs_{ kOperationTimeoutMs };  ///< скільки чекати спокою
+    std::atomic<int>   outcomeSyncWaitMs_{ kOutcomeSyncWaitMs };   ///< скільки чекати в синхронному виклику
+    /// Таймаут Ping у EnsureReady. Дефолт = kHandshakeTimeoutMs (.cpp); поле, а не константа,
+    /// лише заради тесту №25 - інакше джоб до backoff-сну не доходить (стоїть у чеканні Ping).
+    std::atomic<int>   pingTimeoutMs_{ 5000 };
+
+    static constexpr int kOutcomeSyncWaitMs   = 8000;   ///< менше за терпіння касира в РМК
+    /// Ритм Ping-повторів навмисно дублює дефолти SessionConfig (DeviceSession.h:35-38):
+    /// сесія конфіг назовні не віддає, а стукати ми маємо в такт із супервізором.
+    static constexpr int kReconnectDelayMs    = 1000;
+    static constexpr int kReconnectMaxDelayMs = 15000;
 
     static bool IsFinancial(const std::string& method);   ///< WHITELIST {Purchase, Refund}: гейт §4.6 + requestId + тригер Pending; новий фінансовий метод — сюди, інакше тихо випаде (див. .cpp)
 

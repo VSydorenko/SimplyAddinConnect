@@ -4,6 +4,7 @@
 JobEngine::~JobEngine() { Join(); }
 
 bool JobEngine::Start(std::function<ResultEnvelope()> op) {
+    std::lock_guard<std::mutex> startLk(startMutex_);
     {
         std::lock_guard<std::mutex> lk(m_);
         if (state_ == JobState::Running || state_ == JobState::Interrupting) return false;
