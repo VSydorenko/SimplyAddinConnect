@@ -66,13 +66,13 @@ git submodule update --init --recursive
 ```powershell
 powershell -ExecutionPolicy Bypass -File build_project.ps1 [-WithUAPKI] [-WithTests]
 ```
-- без прапорців — основний проєкт (2 головні DLL + `manifest.xml`, `INFO.XML`, `component-info.txt`
-  і нотиси в ZIP — разом 6 файлів);
+- без прапорців — основний проєкт (2 головні DLL + `manifest.xml`, `component-info.txt`
+  і нотиси в ZIP — разом 5 файлів);
 - `-WithUAPKI` — за один прохід збирає ядро UAPKI (`uapki`+`uapkic`+`uapkif`, статично в
   головну DLL) і окремо самодостатній провайдер `cm-pkcs12_x86.dll` / `_x64.dll`; кожна головна
   DLL додатково вбудовує РЕСУРСОМ (RCDATA) провайдер своєї архітектури й розгортає його сама
   при `INIT` (потрійний пошук каталогу — див. `docs/architecture/uapki.md`); у підсумковий ZIP
-  потрапляють обидва варіанти — разом 8 файлів (див. `docs/architecture/uapki.md`, `build-and-packaging.md` §3);
+  потрапляють обидва варіанти — разом 7 файлів (див. `docs/architecture/uapki.md`, `build-and-packaging.md` §3);
 - `-WithTests` — збирає тестові консольні exe з `tests/`. **`core_selftest`, `wire_selftest`,
   `ecr_privatjson_selftest`, `ecr_terminal_emulator`, `ecr_native_host`, `label_printer_selftest`,
   `label_printer_emulator` і `label_native_host` збираються завжди при `-WithTests`** (ядрові/ECR/

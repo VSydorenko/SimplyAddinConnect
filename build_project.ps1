@@ -327,48 +327,6 @@ if ($dllFiles) {
         Write-Host "Build result is not affected." -ForegroundColor Yellow
     }
 
-    # INFO.XML: формальний МІНІМУМ для БСП. Правда про вміст бандла — component-info.txt
-    # (склад класів із GetClassNames ЗІБРАНОЇ DLL, а не зі списку REGISTER_COMPONENT у джерелах:
-    # під -WithUAPKI вони розходяться легально). Розширення читає звідси лише `Версия`.
-    #
-    # Атрибути — рівно ті, що потрібні парсеру, і жоден не описує бандл:
-    #   progid  — ТЕХНІЧНА ВИМОГА. ЗаполнитьРеквизитыПоInfoXML робить над ним
-    #             Сред(Идентификатор, СтрНайти(Идентификатор, ".") + 1) БЕЗ перевірки, а новий
-    #             запис довідника бере ідентифікатор саме звідси (Form/Module.bsl:366) — без
-    #             progid вийшов би Новый("AddIn.") і падіння. НЕ читати це як «бандл = цей драйвер»:
-    #             ECRPrivatBPO3004 і LabelPrinter живуть у тій самій DLL і підключаються з макета.
-    #   name    — назва БАНДЛА (не драйвера): напис у довіднику має не брехати.
-    #   type    — НЕ пишемо: його не читає ніхто (єдиний ЗначениеАтрибута("type") у розборі —
-    #             це native/com з manifest.xml, інше поле), а типів обладнання в бандлі три,
-    #             тож будь-яке одне значення тут було б хибним.
-    # Коментар усередині файлу НЕ пишемо — див. врізку про форму нижче.
-    # Джерело: вивантаження ru УНФ 3.0.7.122 і довідка платформи 8.3.27.1644 (сесія розширення,
-    # 2026-09-15), у цьому репо неперевірюване — див. docs/architecture/bpo-contract.md §2.6.
-    # ⚠️ ФОРМА ФАЙЛУ — ЗА ЕТАЛОНАМИ 1С, і це не педантизм. Чотири бандли самої 1С у базі
-    # (Драйвер1СПринтерЧеков, Драйвер1СЭлектронныеВесы, КомпонентаПечатиШтрихкодов,
-    # Драйвер1СУстройстваВводаNative) мають INFO.XML розміром 222-234 байти: корінь <drivers>
-    # без простору імен, LF, без BOM, парний тег, БЕЗ ЖОДНОГО КОМЕНТАРЯ. Наша перша редакція
-    # (3.1.3.215) важила 1626 байт із XML-коментарем і CRLF — єдиний такий файл у тій базі, і
-    # саме на ній компонента перестала підключатись. Обидві відмінності формально валідні за
-    # XML, але якщо платформа розбирає бандл власним спрощеним парсером, будь-яка може її
-    # зупинити. Пояснення тримаємо ТУТ, у скрипті, і в docs/architecture/bpo-contract.md §2.6 —
-    # у самому файлі їм не місце.
-    # Тому: WriteAllText із явним "`n" (WriteAllLines дав би CRLF через Environment.NewLine).
-    try {
-        $lf = "`n"
-        $infoXmlText = '<?xml version="1.0" encoding="UTF-8"?>' + $lf +
-                       '<drivers>' + $lf +
-                       "`t" + '<component progid="AddIn.ECRPrivatBPO4000" name="SimplyAddinConnect" version="' + $version + '">' + $lf +
-                       "`t" + '</component>' + $lf +
-                       '</drivers>' + $lf
-        $infoXmlPath = Join-Path $stageFolder "INFO.XML"
-        [System.IO.File]::WriteAllText($infoXmlPath, $infoXmlText, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Host "INFO.XML created (version=$version, форма за еталонами 1С: LF, без коментарів)"
-    } catch {
-        Write-Host "WARNING: не вдалося створити INFO.XML - $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Host "Build result is not affected." -ForegroundColor Yellow
-    }
-
     $zipFilePath = "$releaseFolder\SimplyAddinConnectWin.zip"
     Compress-Archive -Path (Join-Path $stageFolder '*') -DestinationPath $zipFilePath -Force
     Remove-Item -Recurse -Force $stageFolder -ErrorAction SilentlyContinue
