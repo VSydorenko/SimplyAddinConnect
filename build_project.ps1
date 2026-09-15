@@ -327,6 +327,49 @@ if ($dllFiles) {
         Write-Host "Build result is not affected." -ForegroundColor Yellow
     }
 
+    # INFO.XML: версія компоненти у формі, яку читає БСП. Розширення бере звідси `Версия`
+    # через ВнешниеКомпонентыБПО.ИнформацияОКомпонентеИзФайла (замість розбору
+    # component-info.txt); з manifest.xml версію взяти неможливо - її там немає ЗА ФОРМАТОМ.
+    #
+    # ⚠️ РІВНО ОДИН <component>, і це не спрощення. Факти з коду ru УНФ 3.0.7.122 (звірка
+    # сесії розширення, у цьому репо неперевірювані - див. bpo-contract.md §2.6):
+    #   * на шляху ИзМакета (наш реальний) довідник ВнешниеКомпоненты не заповнюється, а
+    #     реквізити з бандла не читаються взагалі - кількість <component> не впливає ніяк;
+    #   * на шляху ИзСправочника перевірка Form/Module.bsl:350-359 вимагає збігу ідентифікатора
+    #     ЗАПИСУ з ідентифікатором ФАЙЛУ, тож один ZIP = один запис довідника ЗА ПОБУДОВОЮ.
+    #     Три <component> не дали б трьох записів - лише натякали б на підтримку, якої немає.
+    # Тому тут той драйвер, який реально підключають (ECRPrivatBPO4000). Знадобиться
+    # довідниковий шлях для 3004 чи LabelPrinter - це буде окремий ZIP на драйвер, не ще
+    # один елемент у цьому файлі.
+    # progid: ідентифікатором БСП вважає все ПІСЛЯ першої крапки.
+    try {
+        $infoXmlLines = @(
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<!-- Версія компоненти для 1С. Розширення читає звідси Версия',
+            '     (ВнешниеКомпонентыБПО.ИнформацияОКомпонентеИзФайла); у manifest.xml версії немає',
+            '     за форматом, а не через недогляд.',
+            '',
+            '     Рівно ОДИН <component> - навмисно. На шляху ИзМакета (яким підключаються обидва',
+            '     розширення) довідник ВнешниеКомпоненты не задіяний і реквізити звідси не читаються;',
+            '     на шляху ИзСправочника один ZIP дає рівно один запис за побудовою (перевірка вимагає',
+            '     збігу ідентифікатора запису й файлу). Деталі - docs/architecture/bpo-contract.md §2.6.',
+            '',
+            '     Класи ECRPrivatJSON (прямий API) і AddinUAPKIConnect тут НЕ перелічені: вони не',
+            '     драйвери БПО. ECRPrivatBPO3004 і LabelPrinter живуть у тій самій DLL і підключаються',
+            '     з макета за Идентификатор объекта запису драйвера - їм цей файл не потрібен. -->',
+            '<drivers>',
+            ('	<component progid="AddIn.ECRPrivatBPO4000" type="ЭквайринговыйТерминал" name="Драйвер еквайрингового термінала (SimplyAddinConnect), ревізія 4000" version="' + $version + '">'),
+            '	</component>',
+            '</drivers>'
+        )
+        $infoXmlPath = Join-Path $stageFolder "INFO.XML"
+        [System.IO.File]::WriteAllLines($infoXmlPath, $infoXmlLines, (New-Object System.Text.UTF8Encoding($false)))
+        Write-Host "INFO.XML created (version=$version)"
+    } catch {
+        Write-Host "WARNING: не вдалося створити INFO.XML - $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "Build result is not affected." -ForegroundColor Yellow
+    }
+
     $zipFilePath = "$releaseFolder\SimplyAddinConnectWin.zip"
     Compress-Archive -Path (Join-Path $stageFolder '*') -DestinationPath $zipFilePath -Force
     Remove-Item -Recurse -Force $stageFolder -ErrorAction SilentlyContinue

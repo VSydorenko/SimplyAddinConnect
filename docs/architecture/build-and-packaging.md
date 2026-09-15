@@ -128,15 +128,30 @@ uapki_connect_component        ┘  + uapki_bundle (статичне ядро UA
 
 ---
 
-## 3. Склад ZIP: 3 файли проти 5
+## 3. Склад ZIP: 6 файлів проти 8
 
-Архів `bin/Release/SimplyAddinConnectWin.zip` завжди містить `manifest.xml` плюс усі
-`.dll`, що опинилися в `bin/Release`. Склад залежить від `-WithUAPKI`:
+Архів `bin/Release/SimplyAddinConnectWin.zip` завжди містить три службові файли
+(`manifest.xml`, `INFO.XML`, `component-info.txt`), нотиси залежностей і всі `.dll`,
+що опинилися в `bin/Release`. Склад залежить від `-WithUAPKI`:
 
 | Режим | Файли в ZIP | Всього |
 |---|---|---|
-| **без `-WithUAPKI`** | `manifest.xml` + `SimplyAddinConnectWin32_<версія>.dll` + `SimplyAddinConnectWin64_<версія>.dll` | **3** |
-| **з `-WithUAPKI`** | те саме + `cm-pkcs12_x86.dll` + `cm-pkcs12_x64.dll` | **5** |
+| **без `-WithUAPKI`** | `manifest.xml` + `INFO.XML` + `component-info.txt` + `THIRD-PARTY-NOTICES.md` + `SimplyAddinConnectWin32_<версія>.dll` + `SimplyAddinConnectWin64_<версія>.dll` | **6** |
+| **з `-WithUAPKI`** | те саме + `cm-pkcs12_x86.dll` + `cm-pkcs12_x64.dll` | **8** |
+
+Три службові файли роблять різне й не заміщають один одного:
+
+| Файл | Хто читає | Що дає |
+|---|---|---|
+| `manifest.xml` | платформа 1С | `<component path>` — яку DLL брати під яку розрядність. **Версії не містить за форматом** |
+| `INFO.XML` | розширення 1С і БСП на шляху `ИзСправочника` | `Идентификатор`/`Наименование`/**`Версия`**. Розширення читає звідси саме `Версия` (`ВнешниеКомпонентыБПО.ИнформацияОКомпонентеИзФайла`). **На підключення з макета не впливає**: там довідник не задіяний, а версію платформа бере з ІМЕНІ макета (`bpo-contract.md` §2.6) |
+| `component-info.txt` | людина й скрипти | `version=`, `flags=` і **фактичний склад класів** зібраної DLL (з `GetClassNames`, не зі списку в джерелах) |
+
+⚠️ `INFO.XML` з'явився 2026-09-15 на прохання сесії розширення: доти споживач мусив
+розпаковувати ZIP, щоб прочитати версію з `component-info.txt`. У ньому **рівно один**
+`<component>` (`ECRPrivatBPO4000`) — не тому що решта драйверів гірші, а тому що довідниковий шлях
+підтримує один драйвер на ZIP **за побудовою**, а шлях із макета цей файл не читає взагалі.
+Додавати `<component>` на кожен новий клас **не треба**; підстава й межі — `bpo-contract.md` §2.6.
 
 Ім'я фінальної DLL складається в `CMake/output_settings.cmake`:
 `OUTPUT_NAME = ${PROJECT_NAME}${MySuffix1}${MySuffix2}`, де суфікс ОС — `Win`/`Lin`/`Mac`,
@@ -144,7 +159,7 @@ uapki_connect_component        ┘  + uapki_bundle (статичне ядро UA
 `SimplyAddinConnectWin_x86.dll` та `SimplyAddinConnectWin_x64.dll`. Вихід — у `bin/`
 (`LIBRARY_OUTPUT_PATH`).
 
-Обидва розклади (3/5) перевірені реальною збіркою.
+Обидва розклади (6/8) перевірені реальною збіркою (`3.1.3.213`).
 
 ### 3.1. Версія в імені DLL — ЛИШЕ всередині ZIP
 
