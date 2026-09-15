@@ -40,6 +40,7 @@ struct Receipt {
     std::string responseCode;
     std::string txnType;
     std::string trnStatus;
+    std::string pan;             ///< маскований номер картки, як у протоколі §5.30
 };
 
 // Спільний стан емулятора: прогрес статусу операції, переривання, режими з консолі
@@ -106,6 +107,13 @@ static Receipt MakeReceipt(EmuState& st, const std::string& amount, const std::s
     r.responseCode  = "0000";
     r.txnType       = txnType;
     r.trnStatus     = "1";
+    // Маскований PAN за протоколом (§5.1 відповідь Purchase, §5.30 чек): ім'я поля саме
+    // "pan", не "cardPAN" - останнього в специфікації немає взагалі. Маска як у прикладах
+    // протоколу: перші 6 і останні 4 цифри відкриті. Останні 4 різні на кожну операцію,
+    // щоб звірка каси розрізняла дві оплати.
+    char pbuf[24] = {0};
+    std::snprintf(pbuf, sizeof(pbuf), "473118XXXXXX%04d", static_cast<int>(seq % 10000));
+    r.pan           = pbuf;
     return r;
 }
 
@@ -118,8 +126,8 @@ static std::string CodeNow(const EmuState& st, const Receipt& r) {
 
 static void PrintReceipt(const char* prefix, const Receipt& r) {
     if (!r.has) { std::printf("%s чека ще не було\n", prefix); std::fflush(stdout); return; }
-    std::printf("%s amount=%s invoiceNumber=%s rrn=%s date=%s time=%s responseCode=%s\n",
-                prefix, r.amount.c_str(), r.invoiceNumber.c_str(), r.rrn.c_str(),
+    std::printf("%s amount=%s invoiceNumber=%s rrn=%s pan=%s date=%s time=%s responseCode=%s\n",
+                prefix, r.amount.c_str(), r.invoiceNumber.c_str(), r.rrn.c_str(), r.pan.c_str(),
                 r.date.c_str(), r.time.c_str(), r.responseCode.c_str());
     std::fflush(stdout);
 }
@@ -217,6 +225,7 @@ int main(int argc, char** argv) {
             {"invoiceNumber", cur.invoiceNumber},
             {"rrn",           cur.rrn},
             {"amount",        cur.amount},
+            {"pan",           cur.pan},
             {"date",          cur.date},
             {"time",          cur.time}});
     });
@@ -233,6 +242,7 @@ int main(int argc, char** argv) {
             {"invoiceNumber", rec.invoiceNumber},
             {"rrn",           rec.rrn},
             {"amount",        rec.amount},
+            {"pan",           rec.pan},
             {"date",          rec.date},
             {"time",          rec.time}});
     });
@@ -244,7 +254,7 @@ int main(int argc, char** argv) {
             // звірку каси - вона побачила б «чужий чек» там, де чека просто немає.
             return Frame("GetReceiptInfo", nlohmann::json{
                 {"responseCode", "0000"}, {"invoiceNumber", ""}, {"amount", ""}, {"rrn", ""},
-                {"date", ""}, {"time", ""}, {"txnType", ""}, {"trnStatus", ""}});
+                {"pan", ""}, {"date", ""}, {"time", ""}, {"txnType", ""}, {"trnStatus", ""}});
         }
         // Емулятор тримає ОДИН чек (реальний термінал - пакет). Запит на конкретний номер
         // обслуговуємо останнім чеком, але кажемо про це вголос, щоб не збивати з пантелику.
@@ -259,6 +269,7 @@ int main(int argc, char** argv) {
             {"invoiceNumber", r.invoiceNumber},
             {"amount",        r.amount},
             {"rrn",           r.rrn},
+            {"pan",           r.pan},
             {"date",          r.date},
             {"time",          r.time},
             {"txnType",       r.txnType},

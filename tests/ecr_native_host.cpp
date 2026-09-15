@@ -177,13 +177,13 @@ int main() {
     // по OUT-параметрах, і саме це перевіряє крок 7.
     emu.OnRequest("Purchase", [](const json&) {
         return std::string(R"({"method":"Purchase","params":{"responseCode":"0000","invoiceNumber":"77",)"
-                           R"("rrn":"555000111","approvalCode":"A12345","cardPAN":"444455**1234",)"
+                           R"("rrn":"555000111","approvalCode":"A12345","pan":"444455**1234",)"
                            R"("amount":"100.50","receiptText":"СЛІП\nрядок 2"},"error":false})");
     });
     // Потрібен для перевірки скасування-через-повернення (VoidAsRefund).
     emu.OnRequest("Refund", [](const json&) {
         return std::string(R"({"method":"Refund","params":{"responseCode":"0000","invoiceNumber":"78",)"
-                           R"("rrn":"555000222","approvalCode":"B67890","cardPAN":"444455**1234",)"
+                           R"("rrn":"555000222","approvalCode":"B67890","pan":"444455**1234",)"
                            R"("amount":"100.50","receiptText":"ПОВЕРНЕННЯ"},"error":false})");
     });
     CHECK(emu.Start(), "L3: емулятор стартував");
@@ -697,7 +697,7 @@ int main() {
                 // успішний responder Purchase, інакше PayByPaymentCard там теж обірветься.
                 emu.OnRequest("Purchase", [](const json&) {
                     return std::string(R"({"method":"Purchase","params":{"responseCode":"0000","invoiceNumber":"77",)"
-                                       R"("rrn":"555000111","approvalCode":"A12345","cardPAN":"444455**1234",)"
+                                       R"("rrn":"555000111","approvalCode":"A12345","pan":"444455**1234",)"
                                        R"("amount":"100.50","receiptText":"СЛІП\nрядок 2"},"error":false})");
                 });
             }

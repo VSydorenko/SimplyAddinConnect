@@ -276,7 +276,7 @@
 прошивки. Типові поля успішних операцій:
 
 - **Оплата/Возврат:** `responseCode`, `invoiceNumber` (номер чека для `ПолучитьЧек`), `rrn`,
-  `amount`, а на реальному терміналі також `approvalCode`, `cardPAN`, `receiptText` та ін.
+  `amount`, а на реальному терміналі також `approvalCode`, `pan` (маскований номер картки — саме `pan`, не `cardPAN`), `receiptText` та ін.
 - **ПолучитьЧек:** `responseCode`, `invoiceNumber`, `amount`, `rrn`, `date`, `time`, `txnType`,
   `trnStatus`, а на реальному терміналі також `approvalCode`, `pan`, `receipt` та ін.
   (протокол §5.30). Саме ці поля йдуть у `facts` знімка долі (§3.5).
