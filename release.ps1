@@ -11,10 +11,14 @@
     середовищі немає.
 
     ВЕРСІЯ. MAJOR.MINOR.REVISION живуть у VERSION.txt і міняються РУКАМИ; BUILD
-    інкрементує build_project.ps1 при кожній збірці й пише у version.h. Тег
-    робиться за трьома числами (v3.1.3), повна чотиричленна версія (3.1.3.188)
-    йде в ім'я артефакту й у нотатки. Тому ДВІЧІ випустити ту саму версію не
-    вийде — скрипт зупиниться на перевірці тегу й скаже підняти REVISION.
+    інкрементує build_project.ps1 при кожній збірці й пише у version.h. ТЕГ —
+    ПОВНА ЧОТИРИЧЛЕННА ВЕРСІЯ КОМПОНЕНТИ (v3.1.3.218), та сама, що в імені
+    артефакту, в component-info.txt і в DLL. Тобто тег однозначно вказує на
+    конкретну збірку, а не на сімейство збірок: за номером із логу 1С або з
+    властивостей файлу знаходиться рівно один тег і рівно один реліз.
+    Наслідок: BUILD росте при кожній збірці, тож піднімати REVISION заради
+    повторного релізу НЕ треба — його піднімають лише тоді, коли цього вимагає
+    зміст змін. Тег стає відомий ЛИШЕ ПІСЛЯ ЗБІРКИ, тому й перевіряється там.
 
     VERSION.H. Збірка його переписує, тобто після кроку збірки робоче дерево
     стає брудним. Скрипт комітить цей файл ПЕРЕД тегуванням: інакше тег указував
@@ -128,17 +132,11 @@ $rev = ([regex]::Match($verTxt, 'VERSION_REVISION\s*=\s*(\d+)')).Groups[1].Value
 if (-not $maj -or -not $min -or -not $rev) { Fail 'не вдалося розібрати VERSION.txt' }
 
 $semver = "$maj.$min.$rev"
-$tag    = "v$semver"
-Write-Ok "версія $semver, тег $tag"
+Write-Ok "версія з VERSION.txt: $semver (номер збірки додасть збірка)"
 
-if ((git tag --list $tag)) {
-    Fail "тег $tag уже існує. Підніміть VERSION_REVISION у VERSION.txt і повторіть"
-}
-git ls-remote --exit-code --tags origin "refs/tags/$tag" *> $null
-if ($LASTEXITCODE -eq 0) {
-    Fail "тег $tag уже є на origin. Підніміть VERSION_REVISION у VERSION.txt і повторіть"
-}
-Write-Ok "тег $tag вільний"
+# Тег тут НЕ формуємо: він несе повну чотиричленну версію, а BUILD інкрементує
+# сама збірка (див. шапку). Перевірка зайнятості — одразу після неї, до гейта,
+# щоб не витрачати півгодини тестів на номер, який уже випущено.
 
 # ---------------------------------------------------------------------------
 # 3. Збірка
@@ -152,7 +150,21 @@ if ($LASTEXITCODE -ne 0) { Fail "збірка завершилась з кодо
 $verH  = Get-Content "$root\version.h" -Raw
 $build = ([regex]::Match($verH, '#define VERSION_BUILD\s+(\d+)')).Groups[1].Value
 $fullVersion = "$semver.$build"
-Write-Ok "зібрано $fullVersion"
+if (-not $build) { Fail 'не вдалося прочитати VERSION_BUILD із version.h' }
+$tag = "v$fullVersion"
+Write-Ok "зібрано $fullVersion, тег $tag"
+
+# Колізія тут означає, що номер збірки не зріс (version.h не перегенерувався або
+# збірку не запускали), тобто цю саму збірку вже випущено. Мовчки перезаписати
+# тег не можна: реліз указував би на інший артефакт, ніж той, що вже роздано.
+if ((git tag --list $tag)) {
+    Fail "тег $tag уже існує локально — цей номер збірки вже випущено. Перевірте, чи version.h інкрементувався"
+}
+git ls-remote --exit-code --tags origin "refs/tags/$tag" *> $null
+if ($LASTEXITCODE -eq 0) {
+    Fail "тег $tag уже є на origin — цей номер збірки вже випущено. Перевірте, чи version.h інкрементувався"
+}
+Write-Ok "тег $tag вільний"
 
 $zipPath = "$root\bin\Release\SimplyAddinConnectWin.zip"
 if (-not (Test-Path $zipPath)) { Fail "не знайдено артефакт $zipPath" }
