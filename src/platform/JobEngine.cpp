@@ -4,6 +4,7 @@
 JobEngine::~JobEngine() { Join(); }
 
 bool JobEngine::Start(std::function<ResultEnvelope()> op) {
+    std::lock_guard<std::mutex> startLk(startMutex_);
     {
         std::lock_guard<std::mutex> lk(m_);
         if (state_ == JobState::Running || state_ == JobState::Interrupting) return false;
@@ -48,4 +49,14 @@ void JobEngine::ResetToIdle() {
     cancel_.store(false);
 }
 
-void JobEngine::Join() { if (worker_.joinable()) worker_.join(); }
+void JobEngine::Join() {
+    // Лок ОБОВ'ЯЗКОВИЙ, не зайвий (рев'ю гілки, фінальний раунд). Start() під тим самим
+    // startMutex_ теж join-ить worker_ (прибирання попереднього завершеного потоку), тож
+    // Start і Join, що зійшлися на різних потоках, дали б подвійний join одного std::thread -
+    // а це std::terminate, тобто крах процесу платіжного драйвера. Сьогодні така зустріч
+    // недосяжна лише конфігурацією викликів (Disconnect зупиняє сесію перед Join, 1С кличе
+    // з одного потоку) - це не інваріант коду, і тримати ціну помилки на ньому не можна.
+    // Дедлоку немає: Start() тримає лок лише на створення потоку, самого Join() не кличе.
+    std::lock_guard<std::mutex> lk(startMutex_);
+    if (worker_.joinable()) worker_.join();
+}

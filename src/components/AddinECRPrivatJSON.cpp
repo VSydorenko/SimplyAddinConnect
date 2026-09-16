@@ -36,8 +36,10 @@ void AddinECRPrivatJSON::RegisterMethods() {
             catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка Disconnect: ") + e.what()); }
         })));
 
+    // Подключен = «термінал підтвердив готовність», а не «сокет відкритий» (спека §4.9.4):
+    // «сокет є, а термінал не чує» касі нічим не корисний.
     AddFunction(u"IsConnected", u"Подключен",
-        Ret([this]() -> bool { return driver_.IsConnected(); }));
+        Ret([this]() -> bool { return driver_.IsReady(); }));
 
     // --- Синхронні операції -------------------------------------------------
     // runSync ставить this->result рядком JSON (ResultEnvelope) і повертає env.ok.
@@ -165,6 +167,24 @@ void AddinECRPrivatJSON::RegisterMethods() {
             return on;
         }),
         std::vector<ParamSpec>{ ParamSpec{ u"enable", u"Включить", false, DefaultHelper(true) } });
+
+    AddFunction(u"InquireLastOutcome", u"ИсходПоследнейОперацииJSON",
+        Ret([this]() -> std::string {
+            try {
+                return driver_.InquireLastOutcome().ToJson()
+                           .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+            } catch (const std::exception& e) {
+                REPORT_ERROR(std::string("Помилка ИсходПоследнейОперацииJSON: ") + e.what());
+                return std::string("{}");
+            }
+        }));
+
+    AddProcedure(u"SetRequestId", u"УстановитьИдентификаторЗапроса",
+        MethFunction(std::function<void(VH)>([this](VH id) {
+            try { driver_.SetRequestId(static_cast<std::string>(id)); }
+            catch (const std::exception& e) { REPORT_ERROR(std::string("Помилка УстановитьИдентификаторЗапроса: ") + e.what()); }
+        })),
+        std::vector<ParamSpec>{ ParamSpec{ u"id", u"ИдентификаторЗапроса", /*required*/true, {} } });
 
     REPORT_INFO("Реєстрація методів ECRPrivatJSON завершена");
 }

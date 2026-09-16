@@ -174,3 +174,13 @@ bool EcrPrivatJsonAcquiring::TryGetOperationResult(ResultEnvelope& out) const {
 }
 int  EcrPrivatJsonAcquiring::LastStatus() const { return drv_.LastStatus(); }
 void EcrPrivatJsonAcquiring::CancelOperation()  { drv_.CancelOperation(); }
+
+ResultEnvelope EcrPrivatJsonAcquiring::InquireLastOutcome() {
+    try { return drv_.InquireLastOutcome(); }
+    catch (const std::exception& e) {
+        NEUTRAL_REPORT_ERROR(kTag, std::string("Помилка InquireLastOutcome: ") + e.what());
+        return ResultEnvelope::Fail("EXCEPTION", e.what());
+    }
+}
+
+void EcrPrivatJsonAcquiring::SetRequestId(const std::string& id) { drv_.SetRequestId(id); }

@@ -341,4 +341,33 @@ void AcquiringFacadeBase::RegisterAsyncExtensions() {
                 REPORT_ERROR(std::string("Помилка ПрерватьОперацию: ") + e.what());
             }
         })));
+
+    // Доля перерваної операції. Читається БЕЗ мережі й у будь-якому стані зв'язку - саме
+    // тому доступна одразу після Ложь від платіжного методу, коли потік 1С уже живий.
+    // ІНВАРІАНТ (спека §4.7): НЕ чіпає lastError - ні ClearError(), ні SetError(). 1С читає
+    // ПолучитьОшибку() і цей знімок у довільному порядку (§9 п.1/п.4); ClearError «за симетрією
+    // з сусідами» тихо дав би 0 замість 17. Перевіряється в ecr_native_host.
+    AddFunction(u"InquireLastOutcome", u"ИсходПоследнейОперацииJSON",
+        Ret([this]() -> std::string {
+            try {
+                return Driver().InquireLastOutcome().ToJson()
+                           .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+            } catch (const std::exception& e) {
+                REPORT_ERROR(std::string("Помилка ИсходПоследнейОперацииJSON: ") + e.what());
+                return ResultEnvelope::Fail("EXCEPTION", e.what()).ToJson()
+                           .dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+            }
+        }));
+
+    // Кличеться ПЕРЕД штатною платіжною командою, у тій самій точці, де 1С пише намір
+    // у реєстр. Рядок прозорий: не парситься, не валідується, не обрізається.
+    // lastError теж НЕ чіпає: код помилки належить попередній команді, поки наступна не перепише.
+    AddProcedure(u"SetRequestId", u"УстановитьИдентификаторЗапроса",
+        MethFunction(std::function<void(VH)>([this](VH id) {
+            try { Driver().SetRequestId(VariantToString(id)); }
+            catch (const std::exception& e) {
+                REPORT_ERROR(std::string("Помилка УстановитьИдентификаторЗапроса: ") + e.what());
+            }
+        })),
+        std::vector<ParamSpec>{ ParamSpec{ u"Id", u"ИдентификаторЗапроса", /*required*/true, {} } });
 }

@@ -30,4 +30,10 @@ private:
     JobState state_ = JobState::Idle;
     ResultEnvelope result_{};
     std::atomic<bool> cancel_{false};
+
+    /// «Машина одного завдання» з двома викликачами - легітимний сценарій (драйвер ECR
+    /// стартує відновлення і з потоку 1С, і з dispatcher-хука сесії). Перевірка стану
+    /// під m_, а join(worker_) і присвоєння - поза ним, тож без цього м'ютекса два
+    /// одночасні Start дають подвійний join і присвоєння joinable-потоку.
+    std::mutex startMutex_;
 };

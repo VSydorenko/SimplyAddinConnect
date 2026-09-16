@@ -31,7 +31,14 @@ void AcquiringBpo4000::RegisterPaymentMethods() {
     // у дев'ятці він починається з позиції 4, у десятках — з позиції 5.
     auto fillTail = [](const ResultEnvelope& env,
                        VH cardNo, VH receiptNo, VH rrn, VH authCode, VH slip) {
-        const std::string pan = PayloadStr(env, "cardPAN");
+        // Протокол ПриватБанк називає це поле "pan" (§5.1 успішна відповідь Purchase,
+        // §5.30 GetReceiptInfo). "cardPAN" у специфікації НЕ зустрічається ЖОДНОГО разу:
+        // це ім'я виникло всередині нашого коду й підтверджувалось лише нашим же тестом,
+        // який сам його й підставляв. До 2026-09-15 читалось саме воно, тож номер картки
+        // не потрапляв у НомерКарты НІКОЛИ - ні на емуляторі, ні на живому терміналі.
+        // Фолбеку на "cardPAN" свідомо НЕМАЄ: сценарію, у якому воно прийде, не існує
+        // навіть гіпотетично, а лишений фолбек читався б як друге легітимне ім'я.
+        const std::string pan = PayloadStr(env, "pan");
         if (!pan.empty()) cardNo = pan;
         const std::string invoice = PayloadStr(env, "invoiceNumber");
         if (!invoice.empty()) receiptNo = invoice;

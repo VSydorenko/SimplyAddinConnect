@@ -120,4 +120,11 @@ public:
     /// Онлайн-статус термінала, -1..11; -1 = ще не було.
     virtual int  LastStatus() const { return -1; }
     virtual void CancelOperation() {}
+
+    /// Доля останньої фінансової операції у вигляді конверта (спека ECR §4.7). Мережею не
+    /// ходить. Дефолт - чесна відмова: драйвер, який цього не вміє, лишається чесним.
+    virtual ResultEnvelope InquireLastOutcome() { return AcquiringUnsupported("Доля останньої операції"); }
+    /// Correlation id каси (ИдентификаторЗапроса БПО), що має пройти у знімок прозорим
+    /// рядком. Дефолт - no-op: протокол, який його не носить, нічого не втрачає.
+    virtual void SetRequestId(const std::string& id) { (void)id; }
 };
