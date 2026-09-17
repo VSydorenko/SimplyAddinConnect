@@ -25,6 +25,36 @@ param(
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $ScriptDir
 
+# --- Гард: файли з bin/Release не мають бути зайняті ---
+# Лінкер не перезапише запущений .exe/.dll і впаде з LNK1104 — помилкою, яка НЕ називає
+# причини: у ній лише «cannot open file», і шукати винуватця доводиться вручну. Типовий
+# випадок: лишився відкритим ecr_terminal_emulator (тест із 1С) або *_native_host.
+# Перевірка стоїть ПЕРЕД читанням version.h навмисно: інакше номер збірки інкрементувався б
+# на прогін, який усе одно впаде, і version.h лишався б брудним із «витраченим» номером.
+$BinReleaseDir = Join-Path $ScriptDir 'bin\Release'
+if (Test-Path $BinReleaseDir) {
+    $busy = @(
+        Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            # .Path чужого процесу може бути недоступний без прав — такі просто пропускаємо:
+            # нас цікавлять власні тестові процеси, а вони видимі.
+            $p = $null
+            try { $p = $_.Path } catch { $p = $null }
+            $p -and $p.StartsWith($BinReleaseDir, [StringComparison]::OrdinalIgnoreCase)
+        }
+    )
+    if ($busy.Count -gt 0) {
+        Write-Host ""
+        Write-Host "ПОМИЛКА: у bin/Release є запущені файли — лінкер їх не перезапише (LNK1104)." -ForegroundColor Red
+        foreach ($proc in $busy) {
+            Write-Host ("    PID {0,-6} {1}" -f $proc.Id, $proc.Path) -ForegroundColor Yellow
+        }
+        Write-Host ""
+        Write-Host "Закрийте їх і повторіть. Разово: Stop-Process -Id <PID> -Force" -ForegroundColor Yellow
+        Write-Host "Номер збірки НЕ витрачено — version.h не змінювався." -ForegroundColor Yellow
+        exit 1
+    }
+}
+
 # Читаємо номер версії з файлу VERSION.txt
 $versionFileContent = Get-Content "$PSScriptRoot\VERSION.txt" -Raw -ErrorAction Stop
 $versionLines = $versionFileContent -replace '\r\n?', "`n" -split "`n"

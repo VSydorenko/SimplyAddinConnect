@@ -89,6 +89,30 @@ function Section([string]$Title) {
 $modeLabel = if ($NoUapki) { 'без UAPKI (core+wire)' } else { 'повний (UAPKI L0-L3 + wire L0.6)' }
 Write-Host "run_tests: архітектура=$Arch, режим=$modeLabel, корінь=$Root" -ForegroundColor White
 
+# --- Свіжість артефактів: гейт НЕ перезбирає ---
+# run_tests ганяє те, що вже лежить у bin/Release. Якщо джерела новіші за головну DLL,
+# зелений результат стосується СТАРОГО коду — і це найдорожчий різновид хибно-зеленого:
+# він не падає й нічим себе не виявляє. Тому попередження, а не FAIL: прогін на свідомо
+# раніше зібраному артефакті — легітимний сценарій (напр. гейт релізу на тому самому ZIP,
+# що йде назовні), і забороняти його не можна. Рішення лишається за тим, хто запускає.
+if (Test-Path $MainDll) {
+    $dllTime = (Get-Item $MainDll).LastWriteTimeUtc
+    $srcDirs = @('src', 'tests', 'CMake', 'include') |
+        ForEach-Object { Join-Path $Root $_ } | Where-Object { Test-Path $_ }
+    $newest = Get-ChildItem -Path $srcDirs -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -in '.cpp', '.h', '.hpp', '.cmake', '.txt' } |
+        Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    if ($newest -and $newest.LastWriteTimeUtc -gt $dllTime) {
+        $lagMin = [int]([math]::Round(($newest.LastWriteTimeUtc - $dllTime).TotalMinutes))
+        Write-Host ''
+        Write-Host "УВАГА: джерела новіші за зібрану DLL на $lagMin хв — гейт перевіряє СТАРИЙ код." -ForegroundColor Yellow
+        Write-Host ("    найновіше: {0}" -f $newest.FullName.Substring($Root.Length + 1)) -ForegroundColor Yellow
+        Write-Host ("    DLL:       {0}" -f $MainDll.Substring($Root.Length + 1)) -ForegroundColor Yellow
+        Write-Host "    run_tests НЕ перезбирає. Якщо це не навмисно — спершу build_project.ps1." -ForegroundColor Yellow
+        Write-Host ''
+    }
+}
+
 # =====================================================================
 # ЕТАП 0 (L0): статичні інваріанти постачання через dumpbin
 # =====================================================================
