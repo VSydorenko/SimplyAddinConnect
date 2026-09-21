@@ -1340,6 +1340,36 @@ static bool case10_selectByCertId(const std::wstring& binDir, const std::wstring
           && !j["result"]["signatures"][0].value("bytes", std::string()).empty(),
           "підпис не порожній");
 
+    // --- НЕГАТИВНА ЧАСТИНА — обов'язкова ---
+    // testing-rules.md, правило 1: без неї кейс лишався б зеленим навіть тоді, коли
+    // механізм ігнорує сертифікат. Тут доводиться протилежне: обраний ключ справді
+    // визначає, чим підписують, і підпис ключем ШИФРУВАННЯ не проходить.
+    { json p; p["certId"] = certIdEnc;
+      r = c.call("SELECT_KEY", p.dump()); }
+    printf("  SELECT_KEY(certId ШИФРУВАЛЬНОГО): %s\n", elideCert(r).c_str());
+    CHECK(errCode(r, j) == 0, "SELECT_KEY(certId шифрувального) errorCode == 0 (ключ існує)");
+    // Доказ стану ПЕРЕД перевіркою (правило 2): без нього падіння SIGN нижче могло б
+    // означати що завгодно, у т.ч. «ключ не вибрався взагалі».
+    CHECK(upperAscii(j["result"].value("id", std::string())) == upperAscii(KEY_ID_ENCRYPT),
+          "обрано саме ШИФРУВАЛЬНИЙ ключ");
+    CHECK(j["result"].value("certId", std::string()) == certIdEnc,
+          "до нього прив'язано ШИФРУВАЛЬНИЙ сертифікат");
+
+    // УМОВА ВХОДУ в перевірку keyUsage НЕ безумовна: (формат != RAW) && (!sidUseKeyId
+    // || includeCert) — sign.cpp:304-314. buildSign() дає CAdES-BES + includeCert:true,
+    // тобто саме ту гілку, де страховка працює; для CMS з ідентифікацією за keyId і без
+    // вкладеного сертифіката перевірки не буде взагалі, і підпис пройшов би тихо.
+    // Тест фіксує ГІЛКУ, а не «властивість SIGN».
+    r = c.call("SIGN", buildSign());
+    printf("  SIGN шифрувальним ключем: %s\n", r.c_str());
+    const long ecBadUsage = errCode(r, j);
+    // 4109 == 0x100D == RET_UAPKI_INVALID_KEY_USAGE (uapki-errors.h:58; Додаток А
+    // extern/uapki/doc/UAPKI-PM-2.0.16.md). Рядок error — uapki-errors.c:170.
+    CHECK(ecBadUsage == 4109,
+          "SIGN шифрувальним ключем ВПАВ з 4109 (RET_UAPKI_INVALID_KEY_USAGE)");
+    CHECK(j.value("error", std::string()) == "INVALID_KEY_USAGE",
+          "error == INVALID_KEY_USAGE");
+
     c.call("CLOSE", "");
     c.call("DEINIT", "");
     c.unload();
