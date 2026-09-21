@@ -61,7 +61,7 @@
 | SKI шифрувального = `6B1B77C0D1A1B60473A98DD6D4FE5302742AEDE101DAA21F2C83A67CCDEDB782` (= ключ у `tests/scenarios/06_encrypt_decrypt.json`) | те саме по `BED50831-6B1B77C0-*.cer` |
 | `keyUsage` підписного = `Digital Signature, Non Repudiation`; шифрувального = `Key Agreement`; **суб'єкт обох однаковий** | `openssl x509 -subject -ext keyUsage` |
 | `LIST_CERTS` із `showCertInfos:true` віддає `keyUsage` **окремим полем кожного `certInfos[]`** — окремий `CERT_INFO` по кожному `certId` не потрібен | `list-certs.cpp:135-136` |
-| У `keyUsage` присутні **лише виставлені** біти; відсутнє поле = `false` | `extension-helper-json.cpp:410-418` |
+| У `keyUsage` присутні **лише виставлені** біти; відсутнє поле = `false` | `extension-helper-json.cpp:412-417` |
 | `isCa` у `certInfos[]` присутній **лише коли `cA` істинний** | `list-certs.cpp:55-58` |
 | `SELECT_KEY` за `certId` бере SKI **самого сертифіката** й ним обирає ключ | `session-select-key.cpp:81-89` |
 | Фаза 1 наповнює кеш **до** пошуку сертифіката: `keyGetCertificates`+`addCerts` на `:128-137`, пошук — на `:139-144`, ковтання `CERT_NOT_FOUND` — на `:152-154` | `session-select-key.cpp` |
@@ -254,7 +254,7 @@ static bool case10_selectByCertId(const std::wstring& binDir, const std::wstring
     // ТВЕРДЖЕННЯ 2. Класифікуємо за keyUsage, а НЕ за порядком у added[]: порядок —
     // деталь реалізації, а ознака призначення — контракт. keyUsage лежить у розширенні
     // 2.5.29.15; UAPKI кладе в decoded.value ЛИШЕ виставлені біти
-    // (extension-helper-json.cpp:410-418), тож відсутність digitalSignature == false.
+    // (extension-helper-json.cpp:412-417), тож відсутність digitalSignature == false.
     auto certUsage = [&](const std::string& certId, bool& digitalSignature, json& subject) -> bool {
         json p; p["certId"] = certId;
         const std::string resp = c.call("CERT_INFO", p.dump());
@@ -1300,7 +1300,7 @@ CertId = "";
 
 `keyUsage` у `LIST_CERTS` з `showCertInfos: true` іде **окремим полем кожного `certInfos[]`**
 (`list-certs.cpp:135-136`) — окремий `CERT_INFO` по кожному `certId` для цього не потрібен.
-**У `keyUsage` присутні ЛИШЕ виставлені біти** (`extension-helper-json.cpp:410-418`): відсутність
+**У `keyUsage` присутні ЛИШЕ виставлені біти** (`extension-helper-json.cpp:412-417`): відсутність
 `digitalSignature` означає «не підписний», а не «невідомо».
 
 #### Запасний шлях — перебір `keyId2` → `id`
@@ -1423,7 +1423,21 @@ SKIP, exit 3).
 python scripts/check-doc-anchors.py
 echo $?
 ```
-Очікується `0`. Нові посилання `list-certs.cpp:135-136`, `extension-helper-json.cpp:410-418`,
+**Звірено архітектором станом на `5f8ec5d`** — усі сім посилань, що йдуть у `docs/`, вказують на рядок, який справді говорить заявлене:
+
+| Посилання | Що там насправді |
+|---|---|
+| `list-certs.cpp:135-136` | `json_object_set_value(joResult, "keyUsage", …)` + `DecodeToJsonObject::keyUsage(…)` |
+| `extension-helper-json.cpp:412-417` | цикл по 9 бітах із `if (bit_flag) { …SetBoolean(…, true); }` |
+| `session-list-keys.cpp:52-61` | тіло `keyid2_from_publickey` — `base64 → encodeOctetString → hash(DSTU7564_256)` |
+| `session-list-keys.cpp:102` | `if (json_object_get_string_len(jo_srckeyinfo, "publicKey") > 0) {` |
+| `session-select-key.cpp:81` | `ret = cer_store->getCertByCertId(sba_certid.get(), &cer_item);` |
+| `session-select-key.cpp:115` | `if (oid_is_equal(s_keyalgo, OID_DSTU4145_PARAM_PB_LE) && s_pubkey) {` |
+| `sign.cpp:304-314` | умова входу в перевірку `keyUsage` + `SET_ERROR(RET_UAPKI_INVALID_KEY_USAGE)` |
+
+> Гард перевіряє **існування файла й межі рядків**, а не зміст: посилання на порожній рядок або на закриваючу дужку пройде зеленим. Саме так спершу й було — `extension-helper-json.cpp:410-418` починалося на порожньому рядку й закінчувалося на `}`; виправлено на `:412-417`. Зелений гард тут — не доказ, що посилання показує те, що обіцяє.
+
+Очікується `0`. Нові посилання `list-certs.cpp:135-136`, `extension-helper-json.cpp:412-417`,
 `sign.cpp:304-314`, `session-select-key.cpp:81/:131/:141/:152`, `tests/native_host.cpp` — усі
 ці імена файлів у репозиторії **унікальні**, тож гард перевірить їх по-справжньому (існування
 файла + межі рядків), а не пропустить як неоднозначні. Якщо щось червоне — звірити номер рядка
