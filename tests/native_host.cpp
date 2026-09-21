@@ -1448,8 +1448,13 @@ static bool case11_jksSelectByCertId(const std::wstring& binDir, const std::wstr
     // розбір контейнера показував один запис приватного ключа з ланцюгом із 4
     // сертифікатів, а скільки з цього стане елементами keys[] — питання до UAPKI,
     // не до ASN.1.
+    // ПІДЛОГА, а не точне число — свідомо. Двоключовість тут не властивість НАШОГО коду,
+    // а конвенція українських КНЕДП: у JKS фізично ОДИН запис приватного ключа, а другий
+    // витягується з нього (file-storage.cpp, decodeJks -> pkcs12_iit_read_kep_key).
+    // Асерт на == 2 червонів би на контейнері іншого КНЕДП і посилав би розробника
+    // шукати дефект у харнесі там, де дефекту немає. Фактичне число — у ВИМІРІ нижче.
     CHECK(j["result"].contains("keys") && j["result"]["keys"].is_array()
-          && j["result"]["keys"].size() == 2, "keys.size() == 2 (зміряно)");
+          && !j["result"]["keys"].empty(), "keys[] непорожній (фактичне число — у ВИМІРІ)");
     printf("  ВИМІР: keys.size() == %zu\n", j["result"]["keys"].size());
     const std::string keyId = j["result"]["keys"][0].value("id", std::string());
     CHECK(!keyId.empty(), "id першого ключа отримано");
@@ -1484,6 +1489,7 @@ static bool case11_jksSelectByCertId(const std::wstring& binDir, const std::wstr
     // (list-certs.cpp:135-136), тож CERT_INFO по кожному certId не потрібен.
     // Суб'єкт у консоль НЕ виносимо — це особистий КЕП; для рішення досить keyUsage/isCa.
     std::vector<std::string> candidates;
+    std::string skiCandidate;
     size_t caSeen = 0;   // скільки CA-сертифікатів фільтр реально відсіяв
     for (const auto& ci : j["result"]["certInfos"]) {
         const bool isCa = ci.value("isCa", false);
@@ -1494,7 +1500,10 @@ static bool case11_jksSelectByCertId(const std::wstring& binDir, const std::wstr
                ci.value("certId", std::string()).substr(0, 16).c_str(),
                isCa ? "true" : "false",
                ci.value("keyAlgo", std::string()).c_str(), ku.dump().c_str());
-        if (ds && !isCa) candidates.push_back(ci.value("certId", std::string()));
+        if (ds && !isCa) {
+            candidates.push_back(ci.value("certId", std::string()));
+            skiCandidate = ci.value("subjectKeyIdentifier", std::string());
+        }
     }
     printf("  ВИМІР: кандидатів на підпис (digitalSignature && !isCa) == %zu\n", candidates.size());
     printf("  ВИМІР: CA-сертифікатів у кеші == %zu\n", caSeen);
@@ -1518,6 +1527,24 @@ static bool case11_jksSelectByCertId(const std::wstring& binDir, const std::wstr
     CHECK(j["result"].contains("certId"), "фаза 2 повернула certId (ТВЕРДЖЕННЯ 4)");
     CHECK(j["result"].value("certId", std::string()) == candidates[0],
           "повернутий certId == запитаному");
+
+    // ТВЕРДЖЕННЯ 4 — ПРЯМИЙ вимір, а не висновок із того, що фаза 1 не дала certId.
+    // Пастка за визначенням: SKI сертифіката дорівнює КУПИННОМУ ідентифікатору ключа
+    // (keyId2), а не ГОСТ-івському (id) — тому пошук за `id` його й не знаходить.
+    // На test-diia (кейс 10) те саме порівняння дало б протилежне: SKI == id.
+    const std::string selId     = upperAscii(j["result"].value("id", std::string()));
+    const std::string selKeyId2 = upperAscii(j["result"].value("keyId2", std::string()));
+    const std::string ski       = upperAscii(skiCandidate);
+    printf("  ВИМІР: SKI сертифіката = %s\n         id ключа       = %s\n         keyId2 ключа   = %s\n",
+           ski.c_str(), selId.c_str(), selKeyId2.c_str());
+    // Охорона ПЕРЕД порівнянням на рівність: два порожні рядки рівні між собою, і без
+    // неї CHECK нижче зеленів би тавтологічно (Global Constraints, підправило 3).
+    CHECK(!ski.empty() && !selKeyId2.empty() && !selId.empty(),
+          "SKI сертифіката, id і keyId2 ключа отримано (усі три непорожні)");
+    CHECK(ski == selKeyId2,
+          "SKI сертифіката == keyId2 (купинний) — ось чому пошук за id не знаходить");
+    CHECK(ski != selId,
+          "SKI сертифіката НЕ дорівнює id (ГОСТ) — пастка за визначенням жива");
 
     // --- Купинний підпис БЕЗ обхідного keyId2 і БЕЗ 4161 ---
     json sp;
