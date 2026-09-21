@@ -625,6 +625,28 @@ else {
     elseif ($p.ExitCode -eq 3) { Add-Result 'L2/L3' 'native_host case 7' 'SKIP' "$LocalKeysJson відсутній або має порожній масив keys" }
     else                       { Add-Result 'L2/L3' 'native_host case 7' 'FAIL' "exit=$($p.ExitCode) $lastLine" }
     Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
+
+    # Кейс 11 — jks-kupyna: доказ, що SELECT_KEY за certId знімає пастку 4161 на купинному
+    # SKI (кейс 8 її обходить через keyId2 — обидва твердження цінні, кейс 8 не чіпаємо).
+    # SKIP-семантика як у кейсів 5/7: купинного ключа в репо немає й бути не може, тож
+    # поза цією машиною exit 3 — і це НЕ FAIL. Шлях у деталі SKIP навмисний: хто дивиться
+    # в таблицю, має отримати готову дію, а не йти в код за поясненням.
+    $argList = @('11', "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"")
+    $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_11_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+    $p = Start-Process -FilePath $NativeHostExe -ArgumentList $argList `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+    $txt = if (Test-Path $outF) { Get-Content -Raw $outF } else { '' }
+    $lastLine = ($txt -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 1)
+    # Виміри кейса (keys.size, certId після фази 1, кількість кандидатів) — єдине джерело
+    # відповіді на питання «скільки ключів UAPKI бачить у цьому JKS», тож піднімаємо їх
+    # у консоль гейта, а не лишаємо у видаленому тимчасовому файлі.
+    foreach ($m in ($txt -split "`n" | Where-Object { $_ -match 'ВИМІР:' })) {
+        Write-Host ("          " + $m.Trim()) -ForegroundColor DarkGray
+    }
+    if     ($p.ExitCode -eq 0) { Add-Result 'L2/L3' 'native_host case 11' 'PASS' $lastLine }
+    elseif ($p.ExitCode -eq 3) { Add-Result 'L2/L3' 'native_host case 11' 'SKIP' "$LocalKeysJson відсутній або без ключа 'jks-kupyna'" }
+    else                       { Add-Result 'L2/L3' 'native_host case 11' 'FAIL' "exit=$($p.ExitCode) $lastLine" }
+    Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
 }
 
 # --- Прибирання тимч. каталогів ---
