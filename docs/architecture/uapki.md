@@ -38,7 +38,7 @@ cm-pkcs12_x86.dll / cm-pkcs12_x64.dll     (окрема самодостатня
 
 **Формування запиту.** Хелпер збирає JSON-запит формату `{method, parameters}` через
 `nlohmann::json`: `requestJson["method"] = method`, `requestJson["parameters"] = paramsJson`
-(`UAPKIConnectHelper.cpp:617-618, 662`). Параметри можуть надходити або як JSON, або
+(`UAPKIConnectHelper.cpp:623, 675`). Параметри можуть надходити або як JSON, або
 у плоскому форматі `ключ=значение,...` (розбирається через `ParseParamsString`).
 
 **Виклик C-API.** Оголошення функцій ядра — під `WITH_UAPKI`
@@ -57,13 +57,13 @@ extern "C" {
 нуль-термінований JSON у UTF-8, пам'ять якого **має завжди звільнятися** функцією `json_free()`.
 
 **Звільнення пам'яті — до аналізу.** Хелпер копіює відповідь у `std::string responseJson`
-(`UAPKIConnectHelper.cpp:681`) і **одразу** звільняє буфер: `::json_free(response)`
-(`UAPKIConnectHelper.cpp:686`). Порядок навмисний — коментар у коді пояснює: звільнення
+(`UAPKIConnectHelper.cpp:707`) і **одразу** звільняє буфер: `::json_free(response)`
+(`UAPKIConnectHelper.cpp:712`). Порядок навмисний — коментар у коді пояснює: звільнення
 до будь-якого аналізу копії гарантує відсутність витоків на всіх гілках нижче
-(`UAPKIConnectHelper.cpp:683-684`).
+(`UAPKIConnectHelper.cpp:709-710`).
 
 **Детекція успіху.** Успішність визначається за полем `errorCode` відповіді
-(`IsOperationSuccess`, `UAPKIConnectHelper.cpp:545-607`): поле обов'язкове й має бути
+(`IsOperationSuccess`, `UAPKIConnectHelper.cpp:549-613`): поле обов'язкове й має бути
 цілим, успіх — коли `errorCode == 0`, інакше формується діагностика з `error`/`method`.
 Це узгоджено з форматом відповіді протоколу (обов'язкове ціле `errorCode`; `method`/`result`/`error`).
 
@@ -74,9 +74,9 @@ extern "C" {
 
 **Спеціальна обробка `INIT`.** Метод `INIT` (регістронезалежно) — єдиний, що має
 спеціальну обробку: перед відправкою хелпер автоматично інжектить конфігурацію
-провайдерів (`InjectProviderConfig`, `UAPKIConnectHelper.cpp:650-659`), а після виклику
+провайдерів (`InjectProviderConfig`, `UAPKIConnectHelper.cpp:666-672`), а після виклику
 звіряє фактичну кількість завантажених провайдерів (`WarnIfProvidersNotLoaded`,
-`UAPKIConnectHelper.cpp:707-709`). Решта методів (OPEN, SELECT_KEY, SIGN, VERIFY, CLOSE,
+`UAPKIConnectHelper.cpp:733-735`). Решта методів (OPEN, SELECT_KEY, SIGN, VERIFY, CLOSE,
 DEINIT та інші) проходять тим самим універсальним шляхом без спецобробки.
 
 ---
@@ -170,26 +170,26 @@ CMake генерує per-`$<CONFIG>` `.rc`-файл через `file(GENERATE)` 
 
 | Крок | Джерело каталогу | Поведінка | Код |
 |---|---|---|---|
-| 1 | Явний непорожній `cmProviders.dir` від викликача | Використовується як є, розгортання не виконується (лише дописується арх-суфікс до `lib`) | `UAPKIConnectHelper.cpp:436-452` |
-| 2 | Провайдер `cm-pkcs12_<arch>.dll` **поруч із власною DLL** | Каталог визначається через `GetOwnModuleDir`; покриває тести й не-1С розгортання | `UAPKIConnectHelper.cpp:359-396` (крок — `369-387`) |
-| 3 | Розгортання вбудованого ресурсу в `%LOCALAPPDATA%\SimplyAddinConnect\providers\<VERSION_FULL>\` | `EnsureProviderDeployed`: `FindResourceW` / `LoadResource` / `LockResource` → `CreateDirectoryW` → запис у тимчасове ім'я → атомарний `MoveFileExW` | `UAPKIConnectHelper.cpp:220-357` |
+| 1 | Явний непорожній `cmProviders.dir` від викликача | Використовується як є, розгортання не виконується (лише дописується арх-суфікс до `lib`) | `UAPKIConnectHelper.cpp:442-474` |
+| 2 | Провайдер `cm-pkcs12_<arch>.dll` **поруч із власною DLL** | Каталог визначається через `GetOwnModuleDir`; покриває тести й не-1С розгортання | `UAPKIConnectHelper.cpp:365-396` (крок — `369-390`) |
+| 3 | Розгортання вбудованого ресурсу в `%LOCALAPPDATA%\SimplyAddinConnect\providers\<VERSION_FULL>\` | `EnsureProviderDeployed`: `FindResourceW` / `LoadResource` / `LockResource` → `CreateDirectoryW` → запис у тимчасове ім'я → атомарний `MoveFileExW` | `UAPKIConnectHelper.cpp:225-357` |
 
 **Крок 2 — визначення власного каталогу.** `GetOwnModuleDir`
-(`UAPKIConnectHelper.cpp:173-217`) отримує дескриптор **саме своєї DLL** через
+(`UAPKIConnectHelper.cpp:178-217`) отримує дескриптор **саме своєї DLL** через
 `GetModuleHandleExW` з прапорцями `GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT` та адресою функції-якоря `ModuleAnchor`
-(`UAPKIConnectHelper.cpp:179-182`). Якір — порожня функція в анонімному просторі імен,
+(`UAPKIConnectHelper.cpp:185-188`). Якір — порожня функція в анонімному просторі імен,
 що слугує виключно як адреса всередині поточного модуля (`UAPKIConnectHelper.cpp:30-36`).
 Це критично: `GetModuleFileNameW` без аргументів (тобто через `GetModuleHandle(NULL)`)
 повернув би шлях до хост-процесу `1cv8.exe`, а не до нашої DLL.
 
 **Крок 3 — атомарне розгортання.** `EnsureProviderDeployed` створює директорії поетапно
-(`CreateDirectoryW`, `UAPKIConnectHelper.cpp:296-305`), пише бінарник у тимчасовий файл
+(`CreateDirectoryW`, `UAPKIConnectHelper.cpp:301-311`), пише бінарник у тимчасовий файл
 `<файл>.tmp_<PID>` і переміщує його атомарно через
-`MoveFileExW(MOVEFILE_REPLACE_EXISTING)` (`UAPKIConnectHelper.cpp:308-347`), з обробкою
+`MoveFileExW(MOVEFILE_REPLACE_EXISTING)` (`UAPKIConnectHelper.cpp:313-353`), з обробкою
 програної гонки між процесами 1С. Якщо файл цієї версії вже розгорнутий — повторно не
 пишеться. Той самий якір `ModuleAnchor` повторно використовується тут для отримання
-дескриптора модуля під пошук ресурсу (`UAPKIConnectHelper.cpp:265-273`).
+дескриптора модуля під пошук ресурсу (`UAPKIConnectHelper.cpp:271-279`).
 
 Докстрінги, що описують увесь порядок і компоненти, — `UAPKIConnectHelper.h:59-97`.
 
@@ -234,7 +234,7 @@ ANSI-кодової сторінки. На Linux/macOS той самий мак�
 
 Якщо `cmProviders` заданий, але без `dir` — `dir` підставляється, а до `lib` кожного
 елемента `allowedProviders` без суфікса дописується `_x86` / `_x64`
-(`UAPKIConnectHelper.cpp:436-468`). На боці ядра поля `cmProviders.dir` /
+(`UAPKIConnectHelper.cpp:436-474`). На боці ядра поля `cmProviders.dir` /
 `allowedProviders[].lib` / `allowedProviders[].config` розбираються в `setup_cm_providers`
 (`extern/uapki/library/uapki/src/api/library-init.cpp:63-86`).
 
@@ -287,7 +287,7 @@ return RET_OK;
 Тому `INIT` може повернути `errorCode:0`, хоча жоден провайдер не завантажився
 (`countCmProviders:0`). Щоб це не лишалося непоміченим, хелпер має компенсуючий механізм
 `WarnIfProvidersNotLoaded` (`UAPKIConnectHelper.h:110-121`; реалізація —
-`UAPKIConnectHelper.cpp:487-541`): **після** `INIT` він звіряє `result.countCmProviders`
+`UAPKIConnectHelper.cpp:490-547`): **після** `INIT` він звіряє `result.countCmProviders`
 з очікуваною кількістю (`cmProviders.allowedProviders`) і логує WARN при недоборі —
 **не змінюючи** ні відповідь, ні код успішності операції.
 
