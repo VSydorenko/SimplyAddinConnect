@@ -584,7 +584,7 @@ EOF
 
 **Files:**
 - Modify: `tests/native_host.cpp` (тіло кейса — після `case10_selectByCertId`, перед `// main / CLI`; `usage()`; `main()` — діапазон, `switch`, група `skipped`)
-- Modify: `run_tests.ps1` (новий блок після блоку кейса 7, зараз закінчується рядком 623)
+- Modify: `run_tests.ps1` (новий блок між кінцем блоку кейса 7 і закриваючою `}` секції L2/L3 — якір за вмістом, див. крок 8)
 - Test: `bin\Release\native_host_x64.exe 11`, повний гейт x64 і x86
 
 **Interfaces:**
@@ -879,7 +879,11 @@ ls tests/data/local-keys.json
 
 - [ ] **Крок 8: Підключити кейс 11 до `run_tests.ps1`**
 
-Точковим `Edit` вставити **після** блоку кейса 7 (зараз закінчується рядком `Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue` перед закриваючою `}` на рядку 624) новий блок:
+Точковим `Edit` вставити новий блок **після блоку кейса 7 і перед закриваючою `}` секції L2/L3**. Адресуйся за вмістом, не за номером: Task 2 уже посунув цей фрагмент, і він посунеться ще. Унікальний якір — рядок
+```powershell
+    else                       { Add-Result 'L2/L3' 'native_host case 7' 'FAIL' "exit=$($p.ExitCode) $lastLine" }
+```
+(`grep -c "native_host case 7' 'FAIL'" run_tests.ps1` має дати рівно `1`). Одразу за ним іде `Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue` — сам по собі він **не** якір, бо трапляється в кількох блоках, — а вже за ним закриваюча `}`. Новий блок іде **між тим `Remove-Item` і тією `}`**:
 
 ```powershell
 
@@ -930,7 +934,7 @@ cmake --build build_x86 --config Release --target native_host
 powershell -ExecutionPolicy Bypass -File run_tests.ps1 x64
 powershell -ExecutionPolicy Bypass -File run_tests.ps1 x86
 ```
-Очікується: `efbbbf`; у таблиці обох прогонів — `[PASS   ] L2/L3 native_host case 11` і рядки `ВИМІР:` під ним; решта збігається з базовою лінією (PASS +2 відносно кроку 1 Task 1). Скопіювати рядки `ВИМІР:` у підсумкове повідомлення — це відповідь сусідній сесії `smp-simplyconnect-82`.
+Очікується: `efbbbf`; у таблиці обох прогонів — `[PASS   ] L2/L3 native_host case 11` і рядки `ВИМІР:` під ним; і **жоден інший рядок не змінив статусу** проти еталона з Task 1 кроку 1 — звіряти порядково, не за сумою. Скопіювати рядки `ВИМІР:` у підсумкове повідомлення — це відповідь сусідній сесії `smp-simplyconnect-82`.
 
 - [ ] **Крок 11: Коміт**
 
