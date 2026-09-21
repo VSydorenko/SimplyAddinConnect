@@ -52,7 +52,7 @@ extern "C" {
 ```
 
 Далі хелпер викликає `char* response = ::process(requestStr.c_str())`
-(`UAPKIConnectHelper.cpp:676`). Згідно з протоколом (Таблиця 3 настанови
+(`UAPKIConnectHelper.cpp:702`). Згідно з протоколом (Таблиця 3 настанови
 [`UAPKI-PM-2.0.16.md`](../../extern/uapki/doc/UAPKI-PM-2.0.16.md)), `process()` повертає
 нуль-термінований JSON у UTF-8, пам'ять якого **має завжди звільнятися** функцією `json_free()`.
 
@@ -223,7 +223,7 @@ ANSI-кодової сторінки. На Linux/macOS той самий мак�
 `common/cryptoki/dl-macros.h` при злитті прибрано.
 
 **Конфіг `cmProviders`.** Коли викликач не задав `cmProviders`, хелпер підставляє типову
-конфігурацію (`UAPKIConnectHelper.cpp:412-427`):
+конфігурацію (`UAPKIConnectHelper.cpp:426-433`):
 
 ```jsonc
 "cmProviders": {
