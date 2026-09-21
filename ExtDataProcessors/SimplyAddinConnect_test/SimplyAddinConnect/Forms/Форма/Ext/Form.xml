@@ -1725,7 +1725,7 @@
 			<Title>
 				<v8:item>
 					<v8:lang>uk</v8:lang>
-					<v8:content>ADD_CERT (сертифікат із файлу)</v8:content>
+					<v8:content>2а. ADD_CERT — сертифікат із файлу (потрібен INIT)</v8:content>
 				</v8:item>
 			</Title>
 			<Action>КомандаADDCERTUAPKI</Action>
@@ -1735,7 +1735,7 @@
 			<Title>
 				<v8:item>
 					<v8:lang>uk</v8:lang>
-					<v8:content>LIST_CERTS (кеш сертифікатів)</v8:content>
+					<v8:content>2б. LIST_CERTS — що вже в кеші (потрібен INIT)</v8:content>
 				</v8:item>
 			</Title>
 			<Action>КомандаLISTCERTSUAPKI</Action>
@@ -1745,7 +1745,7 @@
 			<Title>
 				<v8:item>
 					<v8:lang>uk</v8:lang>
-					<v8:content>Шлях Б §4.3 цілком (вибір ключа за сертифікатом)</v8:content>
+					<v8:content>Шлях Б §4.3 цілком: OPEN→KEYS→SELECT_KEY→LIST_CERTS→SELECT_KEY (потрібен INIT)</v8:content>
 				</v8:item>
 			</Title>
 			<Action>КомандаШляхБUAPKI</Action>
