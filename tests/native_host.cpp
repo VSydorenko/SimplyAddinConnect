@@ -66,6 +66,20 @@ static const char* KEY_ID =
 static const char* DATA_TBS_B64 =
     "VGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIHRoZSBsYXp5IGRvZw==";
 
+// Другий ключ того самого контейнера — ШИФРУВАЛЬНИЙ (див. tests/scenarios/06_encrypt_decrypt.json).
+// Український КЕП-контейнер завжди двоключовий; test-diia.p12 тут не виняток, а типовий зразок.
+static const char* KEY_ID_ENCRYPT =
+    "6B1B77C0D1A1B60473A98DD6D4FE5302742AEDE101DAA21F2C83A67CCDEDB782";
+
+// Префікси імен сертифікатів у tests/data/certs/. CerStore іменує файли
+// "<AKI>-<SKI>-<thumbprint>.cer", тож префікс однозначно адресує сертифікат за
+// ідентифікатором його ключа, а хвіст (thumbprint) у тесті фіксувати не треба.
+// Звірено openssl: SKI підписного == KEY_ID, SKI шифрувального == KEY_ID_ENCRYPT;
+// keyUsage підписного — Digital Signature + Non Repudiation, шифрувального — Key Agreement;
+// СУБ'ЄКТ В ОБОХ ОДНАКОВИЙ, тож розрізнити їх можна ВИКЛЮЧНО за keyUsage.
+static const wchar_t* CERT_PREFIX_SIGN    = L"BED50831-5BC6C06E-";
+static const wchar_t* CERT_PREFIX_ENCRYPT = L"BED50831-6B1B77C0-";
+
 // ========================================================================
 // Конвертації рядків UTF-8 <-> UTF-16
 // ========================================================================
@@ -412,6 +426,47 @@ static bool writeFileBytes(const std::wstring& path, const std::vector<unsigned 
     const BOOL ok = WriteFile(h, data.data(), (DWORD)data.size(), &written, nullptr);
     CloseHandle(h);
     return ok != 0 && written == data.size();
+}
+
+// Знаходить файл сертифіката за ПРЕФІКСОМ імені (CERT_PREFIX_*). Перший збіг —
+// єдиний: у tests/data/certs/ на кожен SKI припадає рівно один файл.
+static bool findCertByPrefix(const std::wstring& dir, const std::wstring& prefix,
+                             std::wstring& found) {
+    WIN32_FIND_DATAW fd;
+    HANDLE hf = FindFirstFileW((dir + L"\\" + prefix + L"*.cer").c_str(), &fd);
+    if (hf == INVALID_HANDLE_VALUE) return false;
+    found = dir + L"\\" + fd.cFileName;
+    FindClose(hf);
+    return true;
+}
+
+// Читає DER-сертифікат і віддає base64 — рівно той формат, у якому сертифікат
+// приходить із бази 1С у ADD_CERT.
+static bool readCertB64(const std::wstring& path, std::string& b64) {
+    std::vector<unsigned char> raw;
+    if (!readFileBytes(path, raw) || raw.empty()) return false;
+    b64 = b64encode(raw);
+    return true;
+}
+
+// Порівняння hex-ідентифікаторів без урахування регістру: UAPKI віддає `id` у
+// різних відповідях через різні шляхи, і покладатись на однаковий регістр не можна.
+static std::string upperAscii(std::string s) {
+    for (char& ch : s) if (ch >= 'a' && ch <= 'z') ch = (char)(ch - 'a' + 'A');
+    return s;
+}
+
+// Друк відповіді SELECT_KEY без ВМІСТУ сертифіката: сам сертифікат — особистий
+// документ розробника, а вивід гейта потрапляє у звіти. Усе, заради чого спека §9
+// п.4 вимагає сирий друк (перелік полів і наявність certId), лишається видимим.
+static std::string elideCert(const std::string& resp) {
+    json j;
+    try { j = json::parse(resp); } catch (...) { return resp; }
+    if (j.contains("result") && j["result"].is_object() && j["result"].contains("certificate")) {
+        const std::string cert = j["result"].value("certificate", std::string());
+        j["result"]["certificate"] = "<" + std::to_string(cert.size()) + " символів base64>";
+    }
+    return j.dump();
 }
 
 // Макрос перевірки: провал -> друк і повернення false з кейса.
@@ -1142,11 +1197,161 @@ static bool case9_verifyOne(const std::wstring& binDir, const std::wstring& file
 }
 
 // ========================================================================
+// КЕЙС 10 — вибір ключа за СЕРТИФІКАТОМ, універсальний (test-diia.p12)
+// ========================================================================
+// Український КЕП-контейнер завжди містить ДВІ ключові пари — підпис і шифрування.
+// Кейс доводить три твердження, жодне з яких раніше не було покрите:
+//   1. KEYS не дає ознаки, за якою можна обрати підписний ключ;
+//   2. CERT_INFO розрізняє сертифікати за keyUsage — і розрізняє ЄДИНИЙ, бо решта
+//      полів (зокрема суб'єкт) збігається;
+//   3. SELECT_KEY(certId) обирає ключ САМЕ цього сертифіката й повертає certId.
+// Зовнішніх залежностей немає: і контейнер, і обидва сертифікати лежать у git.
+// Сертифікати подаються через ADD_CERT, а не через certCache.path — так робить 1С
+// (вони приходять base64 з бази, не з каталогу), і так заразом покривається ADD_CERT,
+// який досі не був покритий нічим.
+static bool case10_selectByCertId(const std::wstring& binDir, const std::wstring& dataDir) {
+    printf("== Case 10: вибір ключа за сертифікатом (SELECT_KEY за certId) ==\n");
+    const std::wstring dllName  = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
+    const std::wstring p12      = dataDir + L"\\test-diia.p12";
+    const std::wstring certsDir = dataDir + L"\\certs";
+    CHECK(pathExists(p12), "test-diia.p12 присутній");
+
+    std::wstring certSignPath, certEncPath;
+    CHECK(findCertByPrefix(certsDir, CERT_PREFIX_SIGN, certSignPath),
+          "файл ПІДПИСНОГО сертифіката знайдено");
+    CHECK(findCertByPrefix(certsDir, CERT_PREFIX_ENCRYPT, certEncPath),
+          "файл ШИФРУВАЛЬНОГО сертифіката знайдено");
+    std::string certSignB64, certEncB64;
+    CHECK(readCertB64(certSignPath, certSignB64), "підписний сертифікат прочитано в base64");
+    CHECK(readCertB64(certEncPath,  certEncB64),  "шифрувальний сертифікат прочитано в base64");
+
+    Component c;
+    if (!c.load(binDir + L"\\" + dllName)) return false;
+
+    json j;
+    std::string r;
+
+    // INIT БЕЗ certCache.path: постійного кеша немає, отже ADD_CERT кладе сертифікати
+    // лише в пам'ять сесії — на диск нічого не пишеться, tests/data лишається read-only.
+    r = c.call("INIT", buildInit(true));
+    printf("  INIT: %s\n", r.c_str());
+    CHECK(errCode(r, j) == 0, "INIT errorCode == 0");
+
+    // ADD_CERT: permanent НЕ задаємо -> default false (тимчасово).
+    { json p; p["certificates"] = json::array({ certSignB64, certEncB64 });
+      r = c.call("ADD_CERT", p.dump()); }
+    printf("  ADD_CERT: %s\n", r.c_str());
+    CHECK(errCode(r, j) == 0, "ADD_CERT errorCode == 0");
+    CHECK(j["result"].contains("added") && j["result"]["added"].is_array()
+          && j["result"]["added"].size() == 2, "result.added містить рівно 2 записи");
+
+    std::vector<std::string> certIds;
+    for (const auto& a : j["result"]["added"]) {
+        CHECK(a.value("errorCode", -1) == 0, "сертифікат додано (added[].errorCode == 0)");
+        const std::string id = a.value("certId", std::string());
+        CHECK(!id.empty(), "added[].certId не порожній");
+        certIds.push_back(id);
+    }
+
+    // ТВЕРДЖЕННЯ 2. Класифікуємо за keyUsage, а НЕ за порядком у added[]: порядок —
+    // деталь реалізації, а ознака призначення — контракт. keyUsage лежить у розширенні
+    // 2.5.29.15; UAPKI кладе в decoded.value ЛИШЕ виставлені біти
+    // (extension-helper-json.cpp:410-418), тож відсутність digitalSignature == false.
+    auto certUsage = [&](const std::string& certId, bool& digitalSignature, json& subject) -> bool {
+        json p; p["certId"] = certId;
+        const std::string resp = c.call("CERT_INFO", p.dump());
+        json ji;
+        if (errCode(resp, ji) != 0) { printf("  CERT_INFO: %s\n", resp.c_str()); return false; }
+        digitalSignature = false;
+        subject = ji["result"].value("subject", json::object());
+        if (ji["result"].contains("extensions") && ji["result"]["extensions"].is_array()) {
+            for (const auto& e : ji["result"]["extensions"]) {
+                if (e.value("extnId", std::string()) != "2.5.29.15") continue;
+                if (!e.contains("decoded") || !e["decoded"].contains("value")) continue;
+                digitalSignature = e["decoded"]["value"].value("digitalSignature", false);
+            }
+        }
+        return true;
+    };
+
+    std::string certIdSign, certIdEnc;
+    json subjSign, subjEnc;
+    for (const auto& id : certIds) {
+        bool ds = false; json subj;
+        CHECK(certUsage(id, ds, subj), "CERT_INFO по certId відпрацював");
+        printf("  CERT_INFO %s... digitalSignature=%s subject=%s\n",
+               id.substr(0, 16).c_str(), ds ? "true" : "false", subj.dump().c_str());
+        if (ds) { certIdSign = id; subjSign = subj; }
+        else    { certIdEnc  = id; subjEnc  = subj; }
+    }
+    // Два РІЗНІ сертифікати + бінарна класифікація: «є підписний» і «є непідписний»
+    // разом означають «рівно один кожного роду».
+    CHECK(certIdSign != certIdEnc, "certId сертифікатів різні");
+    CHECK(!certIdSign.empty(), "рівно один сертифікат має keyUsage.digitalSignature");
+    CHECK(!certIdEnc.empty(),  "рівно один сертифікат НЕ має keyUsage.digitalSignature");
+    // ...і keyUsage — ЄДИНА ознака: решта полів збігається. Якби механізм обирав за
+    // іменем власника, обирати було б нема за чим — саме це тут і зафіксовано.
+    CHECK(!subjSign.empty() && subjSign == subjEnc,
+          "суб'єкт обох сертифікатів ОДНАКОВИЙ (розрізнення можливе лише за keyUsage)");
+
+    r = c.call("OPEN", buildOpen(p12));
+    printf("  OPEN: %s\n", r.c_str());
+    CHECK(errCode(r, j) == 0, "OPEN errorCode == 0");
+
+    r = c.call("KEYS", "");
+    printf("  KEYS: %s\n", r.c_str());
+    CHECK(errCode(r, j) == 0, "KEYS errorCode == 0");
+    CHECK(j["result"].contains("keys") && j["result"]["keys"].is_array()
+          && j["result"]["keys"].size() == 2, "контейнер двоключовий (keys.size() == 2)");
+    // ТВЕРДЖЕННЯ 1. Це не діагностика, а CHECK: якщо в KEYS колись з'явиться ознака
+    // розрізнення (keyUsage у cm-pkcs12, різні signAlgo), кейс почервоніє — і ми
+    // дізнаємось, що міркування «сертифікат — єдине джерело правди» застаріло,
+    // а не продовжимо спиратися на нього мовчки.
+    const auto& k0 = j["result"]["keys"][0];
+    const auto& k1 = j["result"]["keys"][1];
+    CHECK(k0.value("id", std::string("a")) != k1.value("id", std::string("b")),
+          "id ключів різні (є з чого обирати)");
+    CHECK(k0.contains("mechanismId") && k0["mechanismId"] == k1["mechanismId"],
+          "mechanismId обох ключів ОДНАКОВИЙ");
+    CHECK(k0.contains("signAlgo") && k0["signAlgo"] == k1["signAlgo"],
+          "signAlgo[] обох ключів ОДНАКОВИЙ");
+
+    // ТВЕРДЖЕННЯ 3. CHECK не на саму НАЯВНІСТЬ certId, а на РІВНІСТЬ запитаному:
+    // у test-diia keys[0] — підписний, тож кейс лишився б зеленим і тоді, коли
+    // механізм ігнорує сертифікат і бере перший-ліпший ключ.
+    { json p; p["certId"] = certIdSign;
+      r = c.call("SELECT_KEY", p.dump()); }
+    printf("  SELECT_KEY(certId підписного): %s\n", elideCert(r).c_str());
+    CHECK(errCode(r, j) == 0, "SELECT_KEY(certId) errorCode == 0");
+    CHECK(j["result"].contains("certId"), "SELECT_KEY(certId) повернув certId");
+    CHECK(j["result"].value("certId", std::string()) == certIdSign,
+          "повернутий certId == запитаному (зв'язка ключ<->сертифікат саме та)");
+    CHECK(upperAscii(j["result"].value("id", std::string())) == upperAscii(KEY_ID),
+          "обрано ПІДПИСНИЙ ключ (id == SKI підписного сертифіката)");
+
+    // Наскрізна зв'язка ADD_CERT(permanent=false) -> SELECT_KEY(certId) -> SIGN(includeCert)
+    // до цього прогону не була зміряна ніде.
+    r = c.call("SIGN", buildSign());
+    printf("  SIGN: %s\n", r.substr(0, 300).c_str());
+    if (errCode(r, j) != 0) printf("  SIGN (повна відповідь): %s\n", r.c_str());
+    CHECK(errCode(r, j) == 0, "SIGN errorCode == 0 (наскрізна зв'язка працює)");
+    CHECK(j["result"].contains("signatures") && j["result"]["signatures"].is_array()
+          && !j["result"]["signatures"].empty()
+          && !j["result"]["signatures"][0].value("bytes", std::string()).empty(),
+          "підпис не порожній");
+
+    c.call("CLOSE", "");
+    c.call("DEINIT", "");
+    c.unload();
+    return true;
+}
+
+// ========================================================================
 // main / CLI
 // ========================================================================
 static void usage() {
     printf(
-        "native_host <case 1..9> [mainDll] [dataDir] [binDir] [prroDir] [outSig]\n"
+        "native_host <case 1..10> [mainDll] [dataDir] [binDir] [prroDir] [outSig]\n"
         "  case     : номер сценарію (окремий процес на кейс — INIT раз на процес)\n"
         "  mainDll  : шлях до головної DLL (деф.: <binDir>/SimplyAddinConnectWin"
 #ifdef _WIN64
@@ -1173,7 +1378,7 @@ int main() {
 
     if (argc < 2) { usage(); LocalFree(wargv); return 2; }
     int kase = _wtoi(wargv[1]);
-    if (kase < 1 || kase > 9) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
+    if (kase < 1 || kase > 10) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
 
     std::wstring binDir  = argAt(4)[0] ? std::wstring(argAt(4)) : u8to16(HOST_BIN_DIR);
     std::wstring dataDir = argAt(3)[0] ? std::wstring(argAt(3)) : u8to16(HOST_DATA_DIR);
@@ -1213,6 +1418,7 @@ int main() {
             case 7: pass = case7_realContainers(binDir, dataDir, skipped); break;
             case 8: pass = case8_kupynaSign(binDir, dataDir, outSig, skipped); break;
             case 9: pass = case9_verifyOne(binDir, outSig);                    break;
+            case 10: pass = case10_selectByCertId(binDir, dataDir);            break;
         }
     } catch (const std::exception& e) {
         printf("FATAL: незловлений виняток: %s\n", e.what());
