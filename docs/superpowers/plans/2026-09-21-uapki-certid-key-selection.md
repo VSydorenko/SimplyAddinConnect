@@ -304,9 +304,14 @@ static bool case10_selectByCertId(const std::wstring& binDir, const std::wstring
     const auto& k1 = j["result"]["keys"][1];
     CHECK(k0.value("id", std::string("a")) != k1.value("id", std::string("b")),
           "id ключів різні (є з чого обирати)");
-    CHECK(k0.contains("mechanismId") && k0["mechanismId"] == k1["mechanismId"],
+    // contains() ОБОВ'ЯЗКОВО з ОБОХ боків: k0/k1 — це `const json&`, а константний
+    // operator[] на відсутньому ключі — UB, не виняток (json.hpp:22182-22190; під
+    // NDEBUG його JSON_ASSERT зникає). Перевірка лише по k0 лишала б k1["…"] голим.
+    CHECK(k0.contains("mechanismId") && k1.contains("mechanismId")
+          && k0["mechanismId"] == k1["mechanismId"],
           "mechanismId обох ключів ОДНАКОВИЙ");
-    CHECK(k0.contains("signAlgo") && k0["signAlgo"] == k1["signAlgo"],
+    CHECK(k0.contains("signAlgo") && k1.contains("signAlgo")
+          && k0["signAlgo"] == k1["signAlgo"],
           "signAlgo[] обох ключів ОДНАКОВИЙ");
 
     // ТВЕРДЖЕННЯ 3. CHECK не на саму НАЯВНІСТЬ certId, а на РІВНІСТЬ запитаному:
@@ -474,6 +479,10 @@ EOF
     // тобто саме ту гілку, де страховка працює; для CMS з ідентифікацією за keyId і без
     // вкладеного сертифіката перевірки не буде взагалі, і підпис пройшов би тихо.
     // Тест фіксує ГІЛКУ, а не «властивість SIGN».
+    // Компонента законно зареєструє помилку для 1С через REPORT_ERROR, тож у вивід
+    // піде рядок [AddError] — ЦЕ ОЧІКУВАНО. Попереджаємо В САМОМУ ЛОЗІ, а не лише
+    // коментарем: хибно прочитає це той, хто дивиться ВИВІД ГЕЙТА, а не вихідний код.
+    printf("  ОЧІКУВАНО ДАЛІ: [AddError] і errorCode 4109 — це НЕГАТИВНА частина кейса\n");
     r = c.call("SIGN", buildSign());
     printf("  SIGN шифрувальним ключем: %s\n", r.c_str());
     const long ecBadUsage = errCode(r, j);
