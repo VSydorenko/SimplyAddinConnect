@@ -487,12 +487,30 @@ UAPKI розрізняє ці два випадки, ІІТ зводить об�
 шлях `KEYS → keys[0].id → SELECT_KEY → SIGN` впаде з непрозорим `4161`, і виглядатиме це як дефект
 **нашої** компоненти, що з'явився нізвідки через півроку після впровадження.
 
+**Гілка `certId` цього правила не потребує.** Правило «перевіряй наявність `certId`, а не
+`errorCode == 0`» стосується **виклику за `id`** — і лише його. Коли `SELECT_KEY` кличуть за
+`certId`, `cer_store->getCertByCertId` уже успішно відпрацював на
+`session-select-key.cpp:81` — інакше метод повернув би помилку ще там; повторний пошук на `:141`
+іде по тому самому сховищу з тим самим ідентифікатором, а між ними лише `addCerts` (`:131`), що
+**додає, не видаляє**. Отже `RET_UAPKI_CERT_NOT_FOUND` на `:152` у цій гілці недосяжний, а
+`certId`/`certificate` присутні завжди.
+
+Розрізняти це треба в обидва боки. Хто прочитає правило як безумовне — або робитиме зайву
+перевірку в гілці `certId`, або, що гірше, визнає її ритуалом і прибере **й у гілці `id`**, де
+вона критична.
+
 **Компоненту це не змінює:** `AddinUAPKIConnect` лишається тонким passthrough — свідоме рішення
-дизайн-спеки
-([`docs/superpowers/specs/2026-09-02-uapki-signature-closure-design.md`](../superpowers/specs/2026-09-02-uapki-signature-closure-design.md),
-§3 «Обсяг», підрозділ «Не входить, свідомо»). Правильний виклик формує 1С: брати `keys[].keyId2`,
-коли він є, і звіряти **наявність `certId`** у відповіді `SELECT_KEY`, а не самий `errorCode`.
+дизайн-спек
+([`docs/superpowers/specs/2026-09-02-uapki-signature-closure-design.md`](../superpowers/specs/2026-09-02-uapki-signature-closure-design.md)
+§3 і [`docs/superpowers/specs/2026-09-21-uapki-certid-key-selection-design.md`](../superpowers/specs/2026-09-21-uapki-certid-key-selection-design.md)
+§3). Правильний виклик формує 1С, і рекомендований шлях — **`SELECT_KEY` за `certId`**: він
+обирає потрібний ключ із двох (`KEYS` для цього ознаки не має) і знімає пастку за побудовою.
+Перебір `keyId2` → `id` лишається запасним — для контейнерів, до яких сертифіката немає взагалі.
 Прикладна сторона — [integration-1c/uapki.md](../integration-1c/uapki.md) §4.3.
+
+Покриття: кейси 10 і 11 `native_host` (`tests/native_host.cpp`) — універсальний на
+`test-diia.p12` і купинний на `jks-kupyna` з `tests/data/local-keys.json` (поза цією машиною —
+SKIP, exit 3).
 
 ### 9.2. `TOTAL-VALID` у режимі `STRUCT` не означає «сертифікат чинний»
 
