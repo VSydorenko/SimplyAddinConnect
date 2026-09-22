@@ -137,74 +137,125 @@ C2 (кейс 13).
 - Віддає: `case12_twoInstances(const std::wstring& mainDllSrc, const std::wstring& binDir)` →
   `bool`.
 
-- [ ] **Крок 1: Додати кейс 12 перед `usage()`**
+- [ ] **Крок 1: Додати кейс 12 і хелпер перепису модулів**
 
-Вставити в `tests/native_host.cpp` безпосередньо перед `static void usage()`:
+> **Виправлено 2026-09-22 за зауваженням виконавця.** Перша редакція клала провайдера поруч
+> із кожною копією. `ResolveProviderDir` першим дивиться в каталог самої DLL
+> (`src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp:377`), тож провайдер вантажився б із
+> ДВОХ шляхів -> два модулі провайдера з двома глобалами -> дефект не відтворюється, кейс
+> зеленіє, нічого не довівши. Тепер провайдер береться з ОДНОГО явного `cmProviders.dir`, а
+> перепис модулів процесу ДОВОДИТЬ передумову (testing-rules, правило 2).
+
+У блок include на початку `tests/native_host.cpp`, одразу після `#include <shellapi.h>`:
 
 ```cpp
+#include <psapi.h>      // EnumProcessModules — перепис модулів для кейса 12
+```
+
+і поруч із `#pragma comment(lib, "shell32.lib")`:
+
+```cpp
+#pragma comment(lib, "psapi.lib")    // EnumProcessModules
+```
+
+Вставити безпосередньо перед `static void usage()`:
+
+```cpp
+// Повні шляхи всіх завантажених у процес модулів із заданим БАЗОВИМ іменем
+// (без урахування регістру). Потрібен, щоб ДОВЕСТИ стан перед перевіркою:
+// скільки саме модулів головної DLL і провайдера живе в процесі й звідки.
+static std::vector<std::wstring> loadedModulePaths(const std::wstring& baseName) {
+    std::vector<std::wstring> out;
+    HMODULE mods[1024];
+    DWORD needed = 0;
+    if (!EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &needed)) return out;
+    const DWORD n = needed / sizeof(HMODULE);
+    for (DWORD i = 0; i < n && i < 1024; ++i) {
+        wchar_t path[MAX_PATH * 2];
+        const DWORD len = GetModuleFileNameW(mods[i], path, (DWORD)(sizeof(path) / sizeof(path[0])));
+        if (len == 0) continue;
+        const std::wstring full(path, len);
+        const size_t slash = full.find_last_of(L"\\/");
+        const std::wstring base = (slash == std::wstring::npos) ? full : full.substr(slash + 1);
+        if (_wcsicmp(base.c_str(), baseName.c_str()) == 0) out.push_back(full);
+    }
+    return out;
+}
+
 // ========================================================================
-// КЕЙС 12 — ДВА ЕКЗЕМПЛЯРИ головної DLL в одному процесі.
-// Модель сценарію 1С, де компонента опинилась у процесі двічі (ExtCompT +
-// тимчасова копія, або дві версії макета розширення). Два РІЗНІ шляхи до
-// файла — для Windows два різні модулі, кожен зі своїми статиками, отже два
-// незалежні екземпляри статично злінкованого UAPKI. Але глобал у
-// cm-pkcs12_xNN.dll — ОДИН на процес.
+// КЕЙС 12 — ДВА екземпляри головної DLL, ОДИН модуль провайдера.
+// Модель сценарію 1С: компонента в процесі двічі (ExtCompT + тимчасова копія
+// v8_*_c.), а провайдера обидва беруть з ОДНОГО каталогу розгортання
+// %LOCALAPPDATA%\SimplyAddinConnect\providers\<VERSION_FULL>\ — бо версія та
+// сама. Два РІЗНІ шляхи до головної DLL -> два модулі зі своїми статиками UAPKI;
+// ОДИН шлях до провайдера -> один модуль, один глобал cm_pkcs12.
 //
-// До C1: другий INIT дає countCmProviders == 0 — provider_init повернув
-// ALREADY_INITIALIZED, loadProvider не зареєстрував провайдера, а
-// setup_cm_providers з'їв код помилки.
+// Пастка, яку кейс мусить виключити: провайдер із ДВОХ різних шляхів дав би
+// ДВА модулі провайдера з двома глобалами — дефект не відтворився б, і кейс
+// зеленів би, нічого не довівши. Тому провайдер — з явного СПІЛЬНОГО
+// cmProviders.dir, а перепис модулів доводить передумову ДО перевірки.
+//
+// До C1: другий INIT дає countCmProviders == 0.
 // ========================================================================
 static bool case12_twoInstances(const std::wstring& mainDllSrc, const std::wstring& binDir) {
-    printf("== Case 12: два екземпляри головної DLL в одному процесі ==\n");
+    printf("== Case 12: два екземпляри головної DLL, один модуль провайдера ==\n");
 
-    std::wstring dllName  = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
-    std::wstring provName = std::wstring(L"cm-pkcs12") + ARCH_W + L".dll";
+    const std::wstring dllName  = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
+    const std::wstring provName = std::wstring(L"cm-pkcs12") + ARCH_W + L".dll";
 
-    // Обидві копії лежать у РІЗНИХ каталогах: однаковий шлях дав би один модуль
-    // із лічильником посилань 2, а не два набори статиків.
     std::wstring dirA = makeTempDir(L"case12a");
     std::wstring dirB = makeTempDir(L"case12b");
-    CHECK(!dirA.empty() && !dirB.empty(), "створено два тимчасові каталоги");
-    CHECK(dirA != dirB, "каталоги різні");
+    CHECK(!dirA.empty() && !dirB.empty() && dirA != dirB, "створено два різні тимчасові каталоги");
 
-    std::wstring dllA = dirA + L"\\" + dllName;
-    std::wstring dllB = dirB + L"\\" + dllName;
+    const std::wstring dllA = dirA + L"\\" + dllName;
+    const std::wstring dllB = dirB + L"\\" + dllName;
     CHECK(CopyFileW(mainDllSrc.c_str(), dllA.c_str(), FALSE) != 0, "скопійовано головну DLL -> A");
     CHECK(CopyFileW(mainDllSrc.c_str(), dllB.c_str(), FALSE) != 0, "скопійовано головну DLL -> B");
+    // Провайдера поруч із копіями НЕ кладемо: ResolveProviderDir узяв би каталог
+    // кожної копії, і модулів провайдера стало б два.
 
-    // Провайдер кладемо ПОРУЧ із кожною копією: так обидва екземпляри беруть
-    // ОДИН і той самий файл за однаковим іменем, і тест не залежить від стану
-    // %LOCALAPPDATA% і від ресурсного розгортання (це покривають кейси 1-2).
-    CHECK(CopyFileW((binDir + L"\\" + provName).c_str(), (dirA + L"\\" + provName).c_str(), FALSE) != 0,
-          "скопійовано провайдера поруч із A");
-    CHECK(CopyFileW((binDir + L"\\" + provName).c_str(), (dirB + L"\\" + provName).c_str(), FALSE) != 0,
-          "скопійовано провайдера поруч із B");
+    // Обидва екземпляри — з ОДНОГО каталогу провайдера (формат як у кейсі 3:
+    // завершальний роздільник обов'язковий, арх-суфікс дописує хелпер).
+    json p;
+    p["offline"] = true;
+    p["cmProviders"]["dir"] = fwd(binDir + L"\\");
+    p["cmProviders"]["allowedProviders"] = json::array({ json{{"lib", "cm-pkcs12"}} });
+    const std::string initParams = p.dump();
 
     // --- Екземпляр A -----------------------------------------------------
     Component a;
     if (!a.load(dllA)) return false;
-    std::string respA = a.call("INIT", "");
+    std::string respA = a.call("INIT", initParams);
     printf("  A INIT: %s\n", respA.c_str());
     json jA;
     CHECK(errCode(respA, jA) == 0, "A: INIT errorCode == 0");
-    CHECK(jA["result"].contains("countCmProviders"), "A: result.countCmProviders присутній");
     CHECK(jA["result"]["countCmProviders"].get<long>() == 1, "A: countCmProviders == 1");
 
     // --- Екземпляр B — ОКРЕМИЙ модуль, свіжі статики UAPKI ---------------
     Component b;
     if (!b.load(dllB)) return false;
-    std::string respB = b.call("INIT", "");
+    std::string respB = b.call("INIT", initParams);
     printf("  B INIT: %s\n", respB.c_str());
     json jB;
     CHECK(errCode(respB, jB) == 0, "B: INIT errorCode == 0 (свіжі статики UAPKI)");
-    CHECK(jB["result"].contains("countCmProviders"), "B: result.countCmProviders присутній");
+
+    // --- Доказ передумови: процес саме в тому стані, який кейс моделює ---
+    const std::vector<std::wstring> mains = loadedModulePaths(dllName);
+    const std::vector<std::wstring> provs = loadedModulePaths(provName);
+    for (const auto& m : mains) printf("  [module] %s\n", w2u8(m).c_str());
+    for (const auto& m : provs) printf("  [module] %s\n", w2u8(m).c_str());
+    CHECK(mains.size() == 2, "у процесі ДВА модулі головної DLL");
+    CHECK(mains.size() == 2 && _wcsicmp(mains[0].c_str(), mains[1].c_str()) != 0,
+          "модулі головної DLL — з РІЗНИХ шляхів");
+    CHECK(provs.size() == 1, "у процесі ОДИН модуль провайдера (інакше кейс нічого не доводить)");
+
+    // --- Власне перевірка -------------------------------------------------
     CHECK(jB["result"]["countCmProviders"].get<long>() == 1,
           "B: countCmProviders == 1 <- ЦЕ Й Є ДЕФЕКТ до C1");
 
-    // Лічильник, що піднявся, ще не означає робочого провайдера. Друга
-    // ознака: OPEN у ДРУГОМУ екземплярі не впирається в UNKNOWN_PROVIDER.
-    // Контейнера навмисно не відкриваємо — досить, щоб помилка була ІНША:
-    // 4102 UNKNOWN_PROVIDER означав би, що реєстрації не сталося.
+    // Лічильник, що піднявся, ще не означає робочого провайдера. Друга ознака:
+    // OPEN у ДРУГОМУ екземплярі не впирається в 4102 UNKNOWN_PROVIDER.
+    // Контейнера навмисно не відкриваємо — досить, щоб помилка була ІНША.
     json op;
     op["provider"] = "PKCS12";
     op["storage"]  = "Z:\\nonexistent-by-design.p12";
@@ -213,8 +264,7 @@ static bool case12_twoInstances(const std::wstring& mainDllSrc, const std::wstri
     std::string respOpen = b.call("OPEN", op.dump());
     printf("  B OPEN(неіснуючий): %s\n", respOpen.c_str());
     json jO;
-    long ecOpen = errCode(respOpen, jO);
-    CHECK(ecOpen != 4102, "B: OPEN не дає 4102 UNKNOWN_PROVIDER (провайдер зареєстрований)");
+    CHECK(errCode(respOpen, jO) != 4102, "B: OPEN не дає 4102 UNKNOWN_PROVIDER (провайдер зареєстрований)");
 
     a.unload();
     b.unload();
@@ -257,6 +307,10 @@ bin\Release\native_host_x64.exe 12 "" "" "R:\github\SimplyAddinConnect\bin\Relea
 ```
 
 Очікується: `FAIL: B: countCmProviders == 1 <- ЦЕ Й Є ДЕФЕКТ до C1`, exit-код 1.
+
+**Якщо впав будь-який CHECK передумови** (`ДВА модулі головної DLL`, `з РІЗНИХ шляхів`,
+`ОДИН модуль провайдера`) — **зупинитися й доповісти архітектору** з рядками `[module]`: кейс
+моделює не той стан, і червоне в ньому нічого не означає.
 
 **Якщо кейс проходить ЗЕЛЕНИМ — зупинитися й доповісти.** Це означало б, що модель двох
 екземплярів не відтворюється на цій машині, і вся доказова база потребує перегляду; мовчки
@@ -1591,6 +1645,19 @@ git commit --only -m "feat(uapki): C5 — повторний INIT ідемпот
   `providers.reserve(cnt_providers)` перед циклом у `setup_cm_providers`.
 - **TD-12** — додається **лише якщо** Task 4 крок 6 дав відмову від C2; текст — фактичний
   результат виміру.
+
+- [ ] **Крок 5-біс: Виправити врізку задачі-входу про оновлення версії**
+
+У `docs/tasks/2026-09-22_provider_reinit_defect.md`, §4.4, підрозділ «Умову ЗВУЖЕНО», врізка
+«А ось де умова відкривається навстіж — оновлення версії розширення» стверджує, що
+викочування нової збірки — найімовірніший момент дефекту. Це **хибно** для механізму двох
+екземплярів: каталог розгортання провайдера версійний
+(`src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp:251-255`, `providers\<VERSION_FULL>\`),
+тож дві **різні** версії беруть провайдера з різних шляхів -> два модулі провайдера -> два
+глобали -> дефекту немає. Небезпечні сценарії: дві копії **однієї** версії (рядок 3 таблиці
+в тому ж підрозділі) і вивантаження/перезавантаження тієї самої DLL (витік сирого
+вказівника). Дописати під врізкою абзац «**Виправлено 2026-09-22**» з цим поясненням і
+посиланням на код; саму врізку не видаляти — історія міркування лишається видимою.
 
 - [ ] **Крок 6: Оновити шапку задачі-входу**
 
