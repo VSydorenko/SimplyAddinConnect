@@ -105,6 +105,8 @@ extern "C" {
    ```json
    { "method": "SELECT_KEY", "parameters": { "id": "<KEY_ID hex>" } }
    ```
+   Це мінімальний приклад, не рекомендований шлях: чому вибір **за `certId`** надійніший за
+   вибір за `id` — `docs/integration-1c/uapki.md` §4.3.
 4. **SIGN** — підписати дані/хеш активним ключем.
    ```json
    { "method": "SIGN",

@@ -38,7 +38,7 @@ cm-pkcs12_x86.dll / cm-pkcs12_x64.dll     (окрема самодостатня
 
 **Формування запиту.** Хелпер збирає JSON-запит формату `{method, parameters}` через
 `nlohmann::json`: `requestJson["method"] = method`, `requestJson["parameters"] = paramsJson`
-(`UAPKIConnectHelper.cpp:617-618, 662`). Параметри можуть надходити або як JSON, або
+(`UAPKIConnectHelper.cpp:623, 675`). Параметри можуть надходити або як JSON, або
 у плоскому форматі `ключ=значение,...` (розбирається через `ParseParamsString`).
 
 **Виклик C-API.** Оголошення функцій ядра — під `WITH_UAPKI`
@@ -52,18 +52,18 @@ extern "C" {
 ```
 
 Далі хелпер викликає `char* response = ::process(requestStr.c_str())`
-(`UAPKIConnectHelper.cpp:676`). Згідно з протоколом (Таблиця 3 настанови
+(`UAPKIConnectHelper.cpp:702`). Згідно з протоколом (Таблиця 3 настанови
 [`UAPKI-PM-2.0.16.md`](../../extern/uapki/doc/UAPKI-PM-2.0.16.md)), `process()` повертає
 нуль-термінований JSON у UTF-8, пам'ять якого **має завжди звільнятися** функцією `json_free()`.
 
 **Звільнення пам'яті — до аналізу.** Хелпер копіює відповідь у `std::string responseJson`
-(`UAPKIConnectHelper.cpp:681`) і **одразу** звільняє буфер: `::json_free(response)`
-(`UAPKIConnectHelper.cpp:686`). Порядок навмисний — коментар у коді пояснює: звільнення
+(`UAPKIConnectHelper.cpp:707`) і **одразу** звільняє буфер: `::json_free(response)`
+(`UAPKIConnectHelper.cpp:712`). Порядок навмисний — коментар у коді пояснює: звільнення
 до будь-якого аналізу копії гарантує відсутність витоків на всіх гілках нижче
-(`UAPKIConnectHelper.cpp:683-684`).
+(`UAPKIConnectHelper.cpp:709-710`).
 
 **Детекція успіху.** Успішність визначається за полем `errorCode` відповіді
-(`IsOperationSuccess`, `UAPKIConnectHelper.cpp:545-607`): поле обов'язкове й має бути
+(`IsOperationSuccess`, `UAPKIConnectHelper.cpp:549-613`): поле обов'язкове й має бути
 цілим, успіх — коли `errorCode == 0`, інакше формується діагностика з `error`/`method`.
 Це узгоджено з форматом відповіді протоколу (обов'язкове ціле `errorCode`; `method`/`result`/`error`).
 
@@ -74,9 +74,9 @@ extern "C" {
 
 **Спеціальна обробка `INIT`.** Метод `INIT` (регістронезалежно) — єдиний, що має
 спеціальну обробку: перед відправкою хелпер автоматично інжектить конфігурацію
-провайдерів (`InjectProviderConfig`, `UAPKIConnectHelper.cpp:650-659`), а після виклику
+провайдерів (`InjectProviderConfig`, `UAPKIConnectHelper.cpp:666-672`), а після виклику
 звіряє фактичну кількість завантажених провайдерів (`WarnIfProvidersNotLoaded`,
-`UAPKIConnectHelper.cpp:707-709`). Решта методів (OPEN, SELECT_KEY, SIGN, VERIFY, CLOSE,
+`UAPKIConnectHelper.cpp:733-735`). Решта методів (OPEN, SELECT_KEY, SIGN, VERIFY, CLOSE,
 DEINIT та інші) проходять тим самим універсальним шляхом без спецобробки.
 
 ---
@@ -170,26 +170,26 @@ CMake генерує per-`$<CONFIG>` `.rc`-файл через `file(GENERATE)` 
 
 | Крок | Джерело каталогу | Поведінка | Код |
 |---|---|---|---|
-| 1 | Явний непорожній `cmProviders.dir` від викликача | Використовується як є, розгортання не виконується (лише дописується арх-суфікс до `lib`) | `UAPKIConnectHelper.cpp:436-452` |
-| 2 | Провайдер `cm-pkcs12_<arch>.dll` **поруч із власною DLL** | Каталог визначається через `GetOwnModuleDir`; покриває тести й не-1С розгортання | `UAPKIConnectHelper.cpp:359-396` (крок — `369-387`) |
-| 3 | Розгортання вбудованого ресурсу в `%LOCALAPPDATA%\SimplyAddinConnect\providers\<VERSION_FULL>\` | `EnsureProviderDeployed`: `FindResourceW` / `LoadResource` / `LockResource` → `CreateDirectoryW` → запис у тимчасове ім'я → атомарний `MoveFileExW` | `UAPKIConnectHelper.cpp:220-357` |
+| 1 | Явний непорожній `cmProviders.dir` від викликача | Використовується як є, розгортання не виконується (лише дописується арх-суфікс до `lib`) | `UAPKIConnectHelper.cpp:442-474` |
+| 2 | Провайдер `cm-pkcs12_<arch>.dll` **поруч із власною DLL** | Каталог визначається через `GetOwnModuleDir`; покриває тести й не-1С розгортання | `UAPKIConnectHelper.cpp:365-396` (крок — `369-390`) |
+| 3 | Розгортання вбудованого ресурсу в `%LOCALAPPDATA%\SimplyAddinConnect\providers\<VERSION_FULL>\` | `EnsureProviderDeployed`: `FindResourceW` / `LoadResource` / `LockResource` → `CreateDirectoryW` → запис у тимчасове ім'я → атомарний `MoveFileExW` | `UAPKIConnectHelper.cpp:225-357` |
 
 **Крок 2 — визначення власного каталогу.** `GetOwnModuleDir`
-(`UAPKIConnectHelper.cpp:173-217`) отримує дескриптор **саме своєї DLL** через
+(`UAPKIConnectHelper.cpp:178-217`) отримує дескриптор **саме своєї DLL** через
 `GetModuleHandleExW` з прапорцями `GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT` та адресою функції-якоря `ModuleAnchor`
-(`UAPKIConnectHelper.cpp:179-182`). Якір — порожня функція в анонімному просторі імен,
+(`UAPKIConnectHelper.cpp:185-188`). Якір — порожня функція в анонімному просторі імен,
 що слугує виключно як адреса всередині поточного модуля (`UAPKIConnectHelper.cpp:30-36`).
 Це критично: `GetModuleFileNameW` без аргументів (тобто через `GetModuleHandle(NULL)`)
 повернув би шлях до хост-процесу `1cv8.exe`, а не до нашої DLL.
 
 **Крок 3 — атомарне розгортання.** `EnsureProviderDeployed` створює директорії поетапно
-(`CreateDirectoryW`, `UAPKIConnectHelper.cpp:296-305`), пише бінарник у тимчасовий файл
+(`CreateDirectoryW`, `UAPKIConnectHelper.cpp:301-311`), пише бінарник у тимчасовий файл
 `<файл>.tmp_<PID>` і переміщує його атомарно через
-`MoveFileExW(MOVEFILE_REPLACE_EXISTING)` (`UAPKIConnectHelper.cpp:308-347`), з обробкою
+`MoveFileExW(MOVEFILE_REPLACE_EXISTING)` (`UAPKIConnectHelper.cpp:313-353`), з обробкою
 програної гонки між процесами 1С. Якщо файл цієї версії вже розгорнутий — повторно не
 пишеться. Той самий якір `ModuleAnchor` повторно використовується тут для отримання
-дескриптора модуля під пошук ресурсу (`UAPKIConnectHelper.cpp:265-273`).
+дескриптора модуля під пошук ресурсу (`UAPKIConnectHelper.cpp:271-279`).
 
 Докстрінги, що описують увесь порядок і компоненти, — `UAPKIConnectHelper.h:59-97`.
 
@@ -223,7 +223,7 @@ ANSI-кодової сторінки. На Linux/macOS той самий мак�
 `common/cryptoki/dl-macros.h` при злитті прибрано.
 
 **Конфіг `cmProviders`.** Коли викликач не задав `cmProviders`, хелпер підставляє типову
-конфігурацію (`UAPKIConnectHelper.cpp:412-427`):
+конфігурацію (`UAPKIConnectHelper.cpp:426-433`):
 
 ```jsonc
 "cmProviders": {
@@ -234,7 +234,7 @@ ANSI-кодової сторінки. На Linux/macOS той самий мак�
 
 Якщо `cmProviders` заданий, але без `dir` — `dir` підставляється, а до `lib` кожного
 елемента `allowedProviders` без суфікса дописується `_x86` / `_x64`
-(`UAPKIConnectHelper.cpp:436-468`). На боці ядра поля `cmProviders.dir` /
+(`UAPKIConnectHelper.cpp:436-474`). На боці ядра поля `cmProviders.dir` /
 `allowedProviders[].lib` / `allowedProviders[].config` розбираються в `setup_cm_providers`
 (`extern/uapki/library/uapki/src/api/library-init.cpp:63-86`).
 
@@ -287,7 +287,7 @@ return RET_OK;
 Тому `INIT` може повернути `errorCode:0`, хоча жоден провайдер не завантажився
 (`countCmProviders:0`). Щоб це не лишалося непоміченим, хелпер має компенсуючий механізм
 `WarnIfProvidersNotLoaded` (`UAPKIConnectHelper.h:110-121`; реалізація —
-`UAPKIConnectHelper.cpp:487-541`): **після** `INIT` він звіряє `result.countCmProviders`
+`UAPKIConnectHelper.cpp:490-547`): **після** `INIT` він звіряє `result.countCmProviders`
 з очікуваною кількістю (`cmProviders.allowedProviders`) і логує WARN при недоборі —
 **не змінюючи** ні відповідь, ні код успішності операції.
 
@@ -487,12 +487,30 @@ UAPKI розрізняє ці два випадки, ІІТ зводить об�
 шлях `KEYS → keys[0].id → SELECT_KEY → SIGN` впаде з непрозорим `4161`, і виглядатиме це як дефект
 **нашої** компоненти, що з'явився нізвідки через півроку після впровадження.
 
+**Гілка `certId` цього правила не потребує.** Правило «перевіряй наявність `certId`, а не
+`errorCode == 0`» стосується **виклику за `id`** — і лише його. Коли `SELECT_KEY` кличуть за
+`certId`, `cer_store->getCertByCertId` уже успішно відпрацював на
+`session-select-key.cpp:81` — інакше метод повернув би помилку ще там; повторний пошук на `:141`
+іде по тому самому сховищу з тим самим ідентифікатором, а між ними лише `addCerts` (`:131`), що
+**додає, не видаляє**. Отже `RET_UAPKI_CERT_NOT_FOUND` на `:152` у цій гілці недосяжний, а
+`certId`/`certificate` присутні завжди.
+
+Розрізняти це треба в обидва боки. Хто прочитає правило як безумовне — або робитиме зайву
+перевірку в гілці `certId`, або, що гірше, визнає її ритуалом і прибере **й у гілці `id`**, де
+вона критична.
+
 **Компоненту це не змінює:** `AddinUAPKIConnect` лишається тонким passthrough — свідоме рішення
-дизайн-спеки
-([`docs/superpowers/specs/2026-09-02-uapki-signature-closure-design.md`](../superpowers/specs/2026-09-02-uapki-signature-closure-design.md),
-§3 «Обсяг», підрозділ «Не входить, свідомо»). Правильний виклик формує 1С: брати `keys[].keyId2`,
-коли він є, і звіряти **наявність `certId`** у відповіді `SELECT_KEY`, а не самий `errorCode`.
+дизайн-спек
+([`docs/superpowers/specs/2026-09-02-uapki-signature-closure-design.md`](../superpowers/specs/2026-09-02-uapki-signature-closure-design.md)
+§3 і [`docs/superpowers/specs/2026-09-21-uapki-certid-key-selection-design.md`](../superpowers/specs/2026-09-21-uapki-certid-key-selection-design.md)
+§3). Правильний виклик формує 1С, і рекомендований шлях — **`SELECT_KEY` за `certId`**: він
+обирає потрібний ключ із двох (`KEYS` для цього ознаки не має) і знімає пастку за побудовою.
+Перебір `keyId2` → `id` лишається запасним — для контейнерів, до яких сертифіката немає взагалі.
 Прикладна сторона — [integration-1c/uapki.md](../integration-1c/uapki.md) §4.3.
+
+Покриття: кейси 10 і 11 `native_host` (`tests/native_host.cpp`) — універсальний на
+`test-diia.p12` і купинний на `jks-kupyna` з `tests/data/local-keys.json` (поза цією машиною —
+SKIP, exit 3).
 
 ### 9.2. `TOTAL-VALID` у режимі `STRUCT` не означає «сертифікат чинний»
 

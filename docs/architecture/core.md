@@ -327,7 +327,7 @@ DefaultHelper;` (`AddInNative.h:410`) — потрібен саме тому, щ
 над ними, означені в `.cpp` (`AddInNative.cpp:766-779`), а НЕ inline у тілі
 класу. Причина: виклик `Get<T>()`/`Set<T>()` з функції, визначеної ВСЕРЕДИНІ
 тіла класу, компілюється в complete-class context одразу після закриття
-`VariantHelper` (клас `AddInNative` закривається на `AddInNative.h:470`) —
+`VariantHelper` (клас `AddInNative` закривається на `AddInNative.h:466-470`) —
 тобто ще ДО того, як компілятор побачить explicit-спеціалізації `Get<T>()`/
 `Set<T>()`, оголошені за межами класу, у просторі імен
 (`AddInNative.h:479-491`) — вони й фізично не можуть стояти раніше:
@@ -911,12 +911,12 @@ if (lMethodNum < 0 || static_cast<size_t>(lMethodNum) >= meths_.size()) return f
 
 ### 6.8. Фікс дедлоку `ShutdownLogging`
 
-`ShutdownLogging` (`ServiceTools_Log.cpp:176`) бере `loggersMutex` і під ним
+`ShutdownLogging` (`ServiceTools_Log.cpp:207-208`) бере `loggersMutex` і під ним
 раніше викликав `Info(...)`, а `Info → GetLogger` брав ТОЙ САМИЙ нерекурсивний
 м'ютекс — дедлок (латентний: спрацьовував лише коли для компоненти вже існував
 логер: увімкнули логування в 1С → закрили 1С → деструктор →
 `DisableComponentLogging` → зависання процесу). Виправлено логуванням напряму
-через об'єкт логера (`it->second->info(...)`, `:184`), без повторного захоплення
+через об'єкт логера (`it->second->info(...)`, `:215`), без повторного захоплення
 м'ютекса.
 
 ### 6.9. Харнес `core_selftest` (L0.5)
