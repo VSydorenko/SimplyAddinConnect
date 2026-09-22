@@ -125,6 +125,20 @@ private:
     static bool ProvidersLoadedOrFail(const nlohmann::json& injectedParams, std::string& responseJson);
 
     /**
+     * @brief Робить INIT ідемпотентним для 1С.
+     *
+     * UAPKI на повторний INIT у тому самому екземплярі віддає 4106
+     * ALREADY_INITIALIZED із порожнім результатом, хоча бібліотека жива й
+     * придатна. Постумова «бібліотеку ініціалізовано» досягнута, тож для 1С це
+     * успіх. Стан провайдерів НЕ вгадується й НЕ кешується — він МІРЯЄТЬСЯ
+     * методом PROVIDERS, який віддає живий CmProviders::count().
+     *
+     * @param responseJson [in,out] відповідь INIT; при спрацюванні замінюється
+     * @return true — відповідь замінено на успішну; false — залишити як є
+     */
+    static bool HandleAlreadyInitialized(std::string& responseJson);
+
+    /**
      * @brief Рекурсивно маскирует значения полей "password" на любом уровне JSON
      *
      * Используется для безопасного логирования конфигурации (маскирует копию, не оригинал).
