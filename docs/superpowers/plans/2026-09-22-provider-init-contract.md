@@ -2006,9 +2006,122 @@ git push
 
 ---
 
+## Task 9-тер: Вердикт у лозі — ПІСЛЯ пост-обробки `INIT`
+
+> Додано 2026-09-23 на контрольній точці 5-біс. Фінальне рев'ю гілки позначило як «косметику»,
+> що WARN «завершилась с ошибкой» пишеться до перевороту `4106 → успіх`. Це не косметика, і
+> сторін у неї дві. Вердикт логується на `src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp:799-805`,
+> а пост-обробка `INIT` (C5, C4) іде після нього, на `:810-816`:
+>
+> - повторний `INIT` (C5): у лозі «завершилась с ошибкой», а 1С отримує `errorCode: 0`;
+> - нуль провайдерів (C4): у лозі «**выполнена успешно**», а 1С отримує `502`. Лог бреше
+>   саме в той бік, який ця задача закриває.
+>
+> Весь дефект розслідувався за логом компоненти (задача-вхід §1). Лог, що суперечить відповіді,
+> — пастка для наступного розслідування. Код відповіді 1С не змінюється, лише лог.
+
+**Файли:**
+- Modify: `src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp:798-818`
+- Modify: `tests/native_host.cpp` (`case14_zeroProvidersIsError`, `case15_idempotentInit`)
+
+- [ ] **Крок 1: Червоне — перевірка логу в кейсах 14 і 15**
+
+Механіка — як у `case6_passwordNotLogged` (`tests/native_host.cpp:853`): лог у тимчасовий
+файл із PID в імені, `enableLogging` **до** `INIT`, `unload()` **до** читання (закриває лог).
+
+На початку `case15_idempotentInit`, одразу після `if (!c.load(dllPath)) return false;`:
+
+```cpp
+    wchar_t tmpDir[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tmpDir);
+    const std::wstring logPath = std::wstring(tmpDir) + L"sac_case15_" + std::to_wstring(GetCurrentProcessId()) + L".log";
+    DeleteFileW(logPath.c_str());
+    CHECK(c.enableLogging(L"Trace", logPath), "лог увімкнено");
+```
+
+Наприкінці, замість `c.unload(); return true;`:
+
+```cpp
+    c.unload();                              // закрити лог перед читанням
+    std::string logText;
+    CHECK(readFileText(logPath, logText), "лог прочитано");
+    // Позитивний контроль ПЕРЕД перевіркою відсутності: доводить, що кодування логу й
+    // літерала збігаються. Без нього «рядка немає» зеленіло б і тоді, коли пошук
+    // просто не вміє знайти кирилицю (testing-rules, правило 2).
+    CHECK(logText.find("Команда UAPKI INIT выполнена успешно") != std::string::npos,
+          "у лозі є вердикт успіху INIT (позитивний контроль кодування)");
+    CHECK(logText.find("Команда UAPKI INIT завершилась с ошибкой") == std::string::npos,
+          "у лозі НЕМАЄ вердикту помилки INIT — лог каже те саме, що отримала 1С");
+    DeleteFileW(logPath.c_str());
+    return true;
+```
+
+У `case14_zeroProvidersIsError` — те саме з `sac_case14_`, але перевірки дзеркальні:
+
+```cpp
+    CHECK(logText.find("Команда UAPKI INIT завершилась с ошибкой") != std::string::npos,
+          "у лозі є вердикт помилки INIT (позитивний контроль кодування)");
+    CHECK(logText.find("Команда UAPKI INIT выполнена успешно") == std::string::npos,
+          "у лозі НЕМАЄ вердикту успіху INIT — 1С отримала 502");
+```
+
+Зібрати, прогнати кейси 14 і 15. Очікується червоне **на рядку «НЕМАЄ»** в обох кейсах.
+Позитивний контроль мусить бути зеленим уже зараз. Якщо червоний саме він — зупинитися й
+написати архітектору: тоді проблема в кодуванні, а не в порядку логування.
+
+- [ ] **Крок 2: Зелене — логувати вердикт після пост-обробки**
+
+У `src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp` замінити блок від
+`bool isSuccess = IsOperationSuccess(responseJson);` до `return isSuccess;` включно на:
+
+```cpp
+            // Проверяем успешность операции по полю errorCode
+            bool isSuccess = IsOperationSuccess(responseJson);
+
+            // Для INIT: спершу робимо INIT ідемпотентним (4106 -> вимір PROVIDERS),
+            // і лише потім застосовуємо політику нуля провайдерів. Порядок важливий:
+            // після заміни відповіді вона вже несе реальний countCmProviders.
+            if (methodUpper == "INIT") {
+                if (HandleAlreadyInitialized(responseJson)) {
+                    isSuccess = true;
+                }
+                if (!ProvidersLoadedOrFail(paramsJson, responseJson)) {
+                    isSuccess = false;
+                }
+            }
+
+            // Вердикт у лог — ПІСЛЯ пост-обробки INIT: лог мусить казати те саме, що
+            // отримала 1С. Інакше повторний INIT логувався б як помилка, а INIT без
+            // провайдерів — як успіх.
+            if (isSuccess) {
+                NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "Команда UAPKI " + method + " выполнена успешно");
+            } else {
+                NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Команда UAPKI " + method + " завершилась с ошибкой");
+            }
+
+            return isSuccess;
+```
+
+Поведінка для 1С не змінюється: при `ProvidersLoadedOrFail == false` раніше був
+`return false;`, тепер `isSuccess = false` і той самий `return isSuccess;`.
+
+- [ ] **Крок 3: Зібрати, прогнати кейси 6, 14, 15 — зелене; потім повний гейт x64 і x86**
+
+Кейс 6 — бо він теж читає той самий лог і не мусить зламатися.
+
+- [ ] **Крок 4: Коміт і пуш**
+
+```bash
+git add src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp tests/native_host.cpp version.h
+git commit --only -m "fix(uapki): вердикт INIT у лозі — після пост-обробки, лог каже те саме, що 1С" -- src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp tests/native_host.cpp version.h
+git push
+```
+
+---
+
 ## Task 10: Апстрім — три PR і issue
 
-**Передумова:** Task 9 і Task 9-біс зелені на x64 і x86, архітектор підтвердив обидві контрольні точки.
+**Передумова:** Tasks 9, 9-біс і 9-тер зелені на x64 і x86, архітектор підтвердив контрольні точки.
 
 **Файли:** нові гілки у форку `VSydorenko/UAPKI` (в каталозі `extern/uapki`).
 
