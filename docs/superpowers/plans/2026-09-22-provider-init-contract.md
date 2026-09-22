@@ -60,7 +60,8 @@
   Багаторядкове — через `git commit -F <файл>`.
 
 **Нумерація нових кейсів `native_host`:** 12 (два екземпляри), 13 (безпека вивантаження),
-14 (нуль провайдерів → 502), 15 (ідемпотентний `INIT`). Поточна межа в `main()` —
+14 (нуль провайдерів → 502), 15 (ідемпотентний `INIT`), 16 (завершення процесу з
+завантаженою DLL — додано в Task 4 за результатом контрольної точки 4). Поточна межа в `main()` —
 `if (kase < 1 || kase > 11)` (`tests/native_host.cpp:1643`) — піднімається до `> 15` один раз,
 у Задачі 1, і далі не чіпається.
 
@@ -948,21 +949,103 @@ powershell -ExecutionPolicy Bypass -File build_project.ps1 -WithUAPKI -WithTests
 bin\Release\native_host_x64.exe 13 "" "" "R:\github\SimplyAddinConnect\bin\Release"
 ```
 
-- [ ] **Крок 6: РІШЕННЯ за виміром**
+- [ ] **Крок 5-біс: Кейс 16 — завершення процесу з ЗАВАНТАЖЕНОЮ головною DLL**
 
-**Якщо кейс 13 зелений** (рядок `<- unload() повернувся` надрукувався, провайдера в процесі
-немає, exit 0) — C2 лишається. Додати `13` у цикл `run_tests.ps1`:
-`foreach ($kase in 1,2,3,4,6,10,12,13)`. Перейти до кроку 7.
+> Додано на контрольній точці 4. Кейс 13 міряє **явний** `FreeLibrary` головної DLL. Але 1С
+> може завершитись, не вивантаживши компоненту. Тоді статики UAPKI руйнуються на
+> `DLL_PROCESS_DETACH` **під час завершення процесу**, а порядок detach зворотний до
+> завантаження: провайдер, завантажений пізніше, отримує `DETACH` **раніше** за нашу DLL. З C2
+> деструктор статика кличе `provider_deinit` і `FreeLibrary` у модуль, який уже пройшов
+> `DETACH`. Без C2 цей шлях не виконувався взагалі (витік). Це другий шлях, який вмикає C2, і
+> кейс 13 його не покриває.
 
-**Якщо прогін зависає** (рядок `<- unload() повернувся` не з'явився протягом 60 секунд) **або
-падає** — C2 **знімається**:
+Межу в `main()` підняти з `> 15` до `> 16`, у `usage()` — `<case 1..16>`.
 
-```bash
-cd extern/uapki && git checkout -- library/uapki/src/cm-providers.cpp && cd ../..
+Вставити перед `usage()`:
+
+```cpp
+// ========================================================================
+// КЕЙС 16 — завершення процесу з ЗАВАНТАЖЕНОЮ головною DLL.
+// Кейс 13 міряє явний FreeLibrary. Але 1С може завершитись, не вивантаживши
+// компоненту: тоді статики UAPKI руйнуються на DLL_PROCESS_DETACH під час
+// завершення процесу. Порядок detach — зворотний до завантаження: провайдер
+// (завантажений пізніше) отримує DETACH РАНІШЕ за нашу DLL. З C2 деструктор
+// статика кличе provider_deinit і FreeLibrary вже після DETACH провайдера.
+// Без C2 цей шлях не виконувався (витік).
+// Вердикт — ЛИШЕ exit-код процесу: падіння на завершенні дасть код винятку
+// (напр. 0xC0000005), а зависання — таймаут, а не 0.
+// ========================================================================
+static bool case16_exitWithLoadedDll(const std::wstring& binDir) {
+    printf("== Case 16: завершення процесу з завантаженою головною DLL ==\n");
+    const std::wstring dllPath = binDir + L"\\SimplyAddinConnectWin" + ARCH_W + L".dll";
+
+    // Навмисно НЕ через RAII: Component на купі й не звільняється, щоб DLL
+    // лишилась завантаженою до завершення процесу — як у 1С, що не вивантажила
+    // компоненту.
+    Component* c = new Component();
+    if (!c->load(dllPath)) return false;
+    std::string resp = c->call("INIT", buildInit(true));
+    json j;
+    CHECK(errCode(resp, j) == 0, "INIT errorCode == 0");
+    CHECK(j["result"]["countCmProviders"].get<long>() == 1, "countCmProviders == 1");
+    printf("  процес завершується з завантаженою DLL; вердикт — exit-код (очікується 0)\n");
+    fflush(stdout);
+    return true;   // c свідомо не звільняється
+}
 ```
 
-Кейс 13 лишається в коді, але **не додається** в цикл `run_tests.ps1` (він червоний за
-побудовою й це зафіксований факт, а не регресія). У `docs/tech-debt.md` додається **TD-12** з
+У `switch (kase)`:
+
+```cpp
+            case 16: pass = case16_exitWithLoadedDll(binDir);                  break;
+```
+
+Прогін на **x64 і x86**, під таймаутом 60 с, **з C1+C2**:
+
+```
+bin\Release\native_host_x64.exe 16 "" "" "R:\github\SimplyAddinConnect\bin\Release"
+echo exit=%ERRORLEVEL%
+```
+
+Критерій — **лише exit-код**: `0` = PASS. Рядок `=== Case 16: PASS ===` друкується **до**
+завершення процесу й сам по собі нічого не доводить.
+
+**Негативна верифікація — перевіряємо чутливість, а не дефект.** Природного «червоного» тут
+немає: кейс ловить падіння, якого ми сподіваємось не побачити. Тому доводимо інше — що
+падіння на завершенні **взагалі видно** в exit-коді. Тимчасово додати в `case16_exitWithLoadedDll`
+перед `return true;`:
+
+```cpp
+    atexit([] { volatile int* z = nullptr; *z = 1; });   // ТИМЧАСОВО: негативна верифікація
+```
+
+Прогнати — exit-код має бути **ненульовим** (`-1073741819` = `0xC0000005`). Прибрати рядок,
+перезібрати, переконатися, що exit знову `0`.
+
+- [ ] **Крок 6: РІШЕННЯ за виміром**
+
+**Якщо кейси 13 і 16 зелені на x64 і x86** (у 13 рядок `<- unload() повернувся`
+надрукувався і провайдера в процесі немає; у 16 exit-код `0`) — C2 лишається. Додати обидва в
+цикл `run_tests.ps1`: `foreach ($kase in 1,2,3,4,6,10,12,13,16)`. Перейти до кроку 7.
+
+**Якщо будь-який із двох прогонів зависає** (60 секунд без завершення) **або падає** — C2
+**знімається**. **НЕ через `git checkout --`/`git restore`/`git stash`** — у спільному дереві
+вони заборонені (`~/.claude/CLAUDE.md`, розділ про Git), а незастейджена зміна після
+`checkout --` зникає безповоротно. Замість цього — зберегти патч у файл і відкотити його
+оборотно:
+
+```bash
+cd extern/uapki
+mkdir -p ../../tmp
+git diff -- library/uapki/src/cm-providers.cpp > ../../tmp/c2-raii.patch
+git apply -R ../../tmp/c2-raii.patch
+cd ../..
+```
+
+Патч лишається в `tmp/c2-raii.patch` (тека в `.gitignore`) — його можна прикласти до issue.
+
+Кейси 13 і 16 лишаються в коді, але **не додаються** в цикл `run_tests.ps1` (без C2 кейс 13
+червоний за побудовою — це зафіксований факт, а не регресія). У `docs/tech-debt.md` додається **TD-12** з
 текстом виміру: що саме зависло/впало, на якій архітектурі. PR #2 в апстрім **не подається**;
 натомість у issue (Task 10) додається абзац про виявлене. Далі — Task 5.
 
@@ -974,7 +1057,8 @@ git add library/uapki/src/cm-providers.cpp
 git commit --only -m "UAPKI: own CmStorageProxy via unique_ptr to fix leak on static destruction" -- library/uapki/src/cm-providers.cpp
 cd ../..
 git add extern/uapki run_tests.ps1 version.h
-git commit --only -m "fix(uapki): C2 — RAII-володіння проксі провайдера; кейс 13 у гейт" -- extern/uapki run_tests.ps1 version.h
+git add tests/native_host.cpp
+git commit --only -m "fix(uapki): C2 — RAII-володіння проксі провайдера; кейси 13 і 16 у гейт" -- extern/uapki run_tests.ps1 tests/native_host.cpp version.h
 ```
 
 ---
@@ -1362,7 +1446,7 @@ bin\Release\native_host_x64.exe 14 "" "" "R:\github\SimplyAddinConnect\bin\Relea
 
 - [ ] **Крок 6: Додати кейс у гейт і закомітити**
 
-У `run_tests.ps1`: `foreach ($kase in 1,2,3,4,6,10,12,13,14)` (без `13`, якщо C2 знято).
+У `run_tests.ps1`: `foreach ($kase in 1,2,3,4,6,10,12,13,16,14)` (без `13` і `16`, якщо C2 знято).
 Перевірити BOM.
 
 ```bash
@@ -1553,7 +1637,7 @@ static bool case15_idempotentInit(const std::wstring& binDir) {
 
 - [ ] **Крок 6: Гейт і коміт**
 
-`foreach ($kase in 1,2,3,4,6,10,12,13,14,15)`. Перевірити BOM.
+`foreach ($kase in 1,2,3,4,6,10,12,13,16,14,15)` (без `13` і `16`, якщо C2 знято). Перевірити BOM.
 
 ```bash
 git add src/helpers/UAPKIConnect/UAPKIConnectHelper.h src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp tests/native_host.cpp run_tests.ps1 version.h
@@ -1856,7 +1940,7 @@ C4 → Task 6; C5 → Task 7; §11 тестування → Tasks 1, 2, 4, 5, 6,
 кроці 3 та Task 7 кроці 3. `HandleAlreadyInitialized` — Task 7 кроки 1–3.
 `case12_twoInstances`, `case13_unloadSafety`, `case14_zeroProvidersIsError`,
 `case15_idempotentInit` — оголошені й додані в `switch` у своїх задачах. Межа `kase > 15`
-піднімається один раз (Task 1) і покриває всі чотири кейси.
+піднімається в Task 1, а в Task 4 (крок 5-біс) — до `> 16` для кейса 16.
 
 **Залежності між задачами:** Task 3 потребує Tasks 1–2 (червоні тести). Task 7 крок 3 замінює
 блок, створений Task 6 кроком 3 — виконувати в порядку. Task 10 потребує SHA коммітів із
