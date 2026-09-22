@@ -1798,9 +1798,217 @@ git push
 і x86 (числа PASS/FAIL/SKIP/BLOCKED), рішення по C2 з виміром кейса 13, і SHA коммітів C1/C2/C3
 у сабмодулі. **Апстрім (Task 10) не починати до відповіді.**
 
+## Task 9-біс: Доробка C1 за контрольною точкою 5 — інша конфігурація й збірка `cm-pkcs11`
+
+> Додано 2026-09-23 на контрольній точці 5. Дві знахідки архітектора в уже закоміченому C1
+> (`7afb5e3`), обидві мусять бути закриті **до** апстріму:
+>
+> 1. **Правило «перемагає перша конфігурація» хибне для `cm-pkcs11`.** Там конфігурація —
+>    перелік модулів PKCS#11, які провайдер вантажить
+>    (`extern/uapki/library/cm-pkcs11/src/cm-cryptoki.cpp:110-117`); другий споживач мовчки
+>    отримав би чужий набір драйверів токенів. Нове правило контракту (спека §4.2): та сама
+>    конфігурація → `RET_OK` + лічильник; **інша** → `RET_CM_ALREADY_INITIALIZED`, стан і
+>    лічильник без змін. Однаково для обох провайдерів.
+> 2. **`cm-pkcs11` ніколи не компілювався нашою збіркою** — його немає ні в `CMake/`, ні в
+>    `bin/Release`. Половину PR #1 ніхто не збирав. Подавати в апстрім незібраний код не можна.
+
+**Файли:**
+- Modify: `extern/uapki/library/cm-pkcs12/src/main-cm-pkcs12.cpp`
+- Modify: `extern/uapki/library/cm-pkcs11/src/main-cm-pkcs11.cpp`
+- Modify: `extern/uapki/library/common/cm-api/cm-api.h` (текст контракту)
+- Modify: `tests/provider_contract_selftest.cpp` (CHECK на іншу конфігурацію + шлях провайдера з argv)
+- Modify: `AGENTS.md` (рівень L1.5 — див. крок 7)
+
+- [ ] **Крок 1: Червоне — CHECK на іншу конфігурацію в контрактному тесті**
+
+У `tests/provider_contract_selftest.cpp` перед фінальним `printf("\n=== provider_contract_selftest ...`
+додати блок (після кроку 6 наявного сценарію об'єкт уже звільнено фінальним `deinit`):
+
+```cpp
+    // 7. Інша конфігурація — НЕ та сама операція. Провайдер мусить відмовити
+    //    ГУЧНО й не чіпати ні стану, ні лічильника (контракт cm-api.h).
+    CHECK(api.init(nullptr) == RET_OK, "init з конфігурацією A (null) -> RET_OK");
+    static const char CFG_B[] = "{\"differentConfig\":true}";
+    CM_ERROR eB = api.init((CM_JSON_PCHAR)CFG_B);
+    printf("  init з конфігурацією B -> 0x%04X\n", (unsigned)eB);
+    CHECK(eB == RET_CM_ALREADY_INITIALIZED, "init з ІНШОЮ конфігурацією -> RET_CM_ALREADY_INITIALIZED");
+    // Доказ, що відмова не збільшила лічильник: ОДИН deinit мусить звільнити об'єкт.
+    CHECK(api.deinit() == RET_OK, "deinit після відмови -> RET_OK");
+    CHECK(!providerAlive(api), "після ОДНОГО deinit провайдера немає (відмова не рахувалась)");
+```
+
+Також дозволити передати шлях провайдера аргументом (потрібно для кроку 5). Замінити на початку
+`main()`:
+
+```cpp
+int main() {
+    std::wstring binDir = u8to16(PCS_BIN_DIR);
+    std::wstring path   = binDir + L"\\cm-pkcs12" + ARCH_W + L".dll";
+```
+
+на:
+
+```cpp
+int wmain(int argc, wchar_t** argv) {
+    // argv[1] — повний шлях до провайдера (для разової перевірки cm-pkcs11);
+    // без аргументу — cm-pkcs12 з bin/Release, як у гейті.
+    std::wstring binDir = u8to16(PCS_BIN_DIR);
+    std::wstring path   = (argc > 1) ? std::wstring(argv[1])
+                                     : binDir + L"\\cm-pkcs12" + ARCH_W + L".dll";
+```
+
+> `wmain` у MSVC-консольній цілі працює без змін CMake. Якщо лінкер попросить точку входу —
+> залишити `main()` і взяти аргумент через `CommandLineToArgvW`, як у `tests/native_host.cpp`.
+
+Зібрати, прогнати `provider_contract_selftest_x64.exe` — очікується **червоне** рівно на
+`init з ІНШОЮ конфігурацією -> RET_CM_ALREADY_INITIALIZED` (зараз `RET_OK`) і, як наслідок, на
+`після ОДНОГО deinit провайдера немає`.
+
+- [ ] **Крок 2: Зелене — правило конфігурації в обох провайдерах**
+
+`main-cm-pkcs12.cpp`: під `static size_t cm_pkcs12_refcnt = 0;` додати
+
+```cpp
+//  Configuration text of the first successful initialization. A repeated
+//  provider_init() is idempotent only for the SAME configuration; a different
+//  one is a different request and is rejected without changing the state.
+static std::string cm_pkcs12_initparams;
+
+static std::string params_text (CM_JSON_PCHAR providerParams)
+{
+    return providerParams ? std::string((const char*)providerParams) : std::string();
+}
+```
+
+(`#include <string>`, якщо його ще немає серед include файла.)
+
+У `provider_init`: в успішній гілці поруч із `cm_pkcs12_refcnt = 1;` додати
+`cm_pkcs12_initparams = params_text(providerParams);`. Гілку `else` замінити на:
+
+```cpp
+    else if (params_text(providerParams) == cm_pkcs12_initparams) {
+        //  Idempotent for the SAME configuration: the post-condition already holds.
+        cm_pkcs12_refcnt++;
+        cm_err = RET_OK;
+    }
+    else {
+        //  A different configuration is a different request. Reject it loudly and
+        //  leave both the instance and the reference count untouched.
+        cm_err = RET_CM_ALREADY_INITIALIZED;
+    }
+```
+
+У `provider_deinit` поруч із `cm_pkcs12 = nullptr;` додати `cm_pkcs12_initparams.clear();`.
+Прибрати з коментаря в `else`-гілці фразу про «configuration of the FIRST initialization wins».
+
+`main-cm-pkcs11.cpp` — те саме дзеркально: `cm_cryptoki_initparams`, `params_text` (static у
+цьому файлі), гілки `init`/`deinit`. Коментар «Idempotent, see cm-pkcs12» лишити, він коректний.
+
+`cm-api.h` — у блоці контракту замінити пункт 1) на:
+
+```c
+ *   1) be idempotent for the SAME configuration - when the provider is already
+ *      initialized with an identical providerParams text (NULL and "" are equal)
+ *      it returns RET_OK and increments the reference count;
+ *   2) reject a DIFFERENT configuration with RET_CM_ALREADY_INITIALIZED, leaving
+ *      the instance and the reference count untouched. A provider configuration
+ *      may select what the provider loads (e.g. the list of PKCS#11 modules in
+ *      cm-pkcs11), so silently keeping the first one would hand a consumer
+ *      something it did not ask for;
+ *   3) keep a reference count of init/deinit calls.
+```
+
+і речення про `RET_CM_ALREADY_INITIALIZED` у кінці блоку — на:
+
+```c
+ * RET_CM_ALREADY_INITIALIZED therefore keeps a precise meaning: "already
+ * initialized with a different configuration".
+```
+
+Зібрати, прогнати `provider_contract_selftest_x64.exe` і `_x86.exe` — усе `[PASS]`.
+
+- [ ] **Крок 3: Коміт у сабмодулі (окремим коммітом, НЕ amend)**
+
+```bash
+cd extern/uapki
+git add library/cm-pkcs12/src/main-cm-pkcs12.cpp library/cm-pkcs11/src/main-cm-pkcs11.cpp library/common/cm-api/cm-api.h
+git commit --only -m "CM: reject re-initialization with a different configuration" -- library/cm-pkcs12/src/main-cm-pkcs12.cpp library/cm-pkcs11/src/main-cm-pkcs11.cpp library/common/cm-api/cm-api.h
+cd ../..
+```
+
+Амендити `7afb5e3` не можна — він уже на `origin`. У Task 10 обидва комміти C1 ідуть у PR #1.
+
+- [ ] **Крок 4: Зібрати `cm-pkcs11` окремо — поза `bin/Release` і поза деревом сабмодуля**
+
+Власна збірка апстріму, в scratch-каталог. Мета — щоб **жоден рядок PR #1 не йшов
+незібраним**:
+
+```bash
+cmake -S extern/uapki/library -B "<scratch>/uapki-pkcs11-x64" -A x64
+cmake --build "<scratch>/uapki-pkcs11-x64" --config Release --target cm-pkcs11
+cmake -S extern/uapki/library -B "<scratch>/uapki-pkcs11-x86" -A Win32
+cmake --build "<scratch>/uapki-pkcs11-x86" --config Release --target cm-pkcs11
+git -C extern/uapki status --short     # МУСИТЬ бути чисто — збірка не пише в дерево
+```
+
+`<scratch>` — будь-який каталог поза репозиторієм. Ім'я цілі взяти з
+`extern/uapki/library/cm-pkcs11/CMakeLists.txt`, якщо воно не `cm-pkcs11`. Якщо збірка тягне
+залежності, яких немає (прибудований libcurl вимагає Windows SDK 10.0.26100+ —
+`docs/architecture/uapki.md` §7.2), — **зупинитися й написати архітектору**, не обходити.
+
+- [ ] **Крок 5: Контрактний тест проти `cm-pkcs11`**
+
+```
+bin\Release\provider_contract_selftest_x64.exe "<шлях до зібраної cm-pkcs11 x64 dll>"
+bin\Release\provider_contract_selftest_x86.exe "<шлях до зібраної cm-pkcs11 x86 dll>"
+```
+
+`provider_init(nullptr)` у `cm-pkcs11` з порожньою конфігурацією модулів повертає `RET_OK`
+(`cm-cryptoki.cpp:103-133` — без модулів цикл завантаження порожній), тож увесь сценарій
+застосовний. Очікується: усе `[PASS]`, крім, можливо, пробника `providerAlive`: у
+`cm-pkcs11` `provider_open` на неіснуючому URI може повернути інший код, ніж у `cm-pkcs12`.
+Критерій пробника той самий — **будь-що, крім `RET_CM_NOT_INITIALIZED`**, означає «живий».
+Якщо якийсь CHECK червоний — **зупинитися й прислати вивід архітектору**.
+
+Цей прогін — разовий доказ для PR #1, у гейт він **не** входить (гейт `cm-pkcs11` не збирає).
+Вивід зберегти: він цитується в тілі PR.
+
+- [ ] **Крок 6: Повний гейт повторно — x64 і x86**
+
+C1 змінився, отже Task 9 крок 1 — наново. Цикл кейсів не міняється.
+
+- [ ] **Крок 7: `AGENTS.md` — рівень L1.5**
+
+Відкладено до мерджу апстріму лише зняття винятку «uapki за `main-dev`». Опис рівнів гейта —
+**стабільна частина `AGENTS.md`**, і L1.5 має бути там зараз:
+
+- таблиця тестових цілей (розділ «Тести»): рядок
+  `| provider_contract_selftest.exe | L1.5 | ні (але без -WithUAPKI — SKIP, файлу провайдера немає) | контракт провайдера НКІ напряму через LoadLibraryW: ідемпотентний init для тієї самої конфігурації, відмова для іншої, облік посилань |`
+- перелік «збираються завжди при `-WithTests`» — додати `provider_contract_selftest`;
+- порядок у абзаці «Запуск» — `… → L1 selftest по сценаріях → L1.5 provider_contract_selftest → L2/L3 native_host → …`;
+- абзац про `-NoUapki` — L1.5 → SKIP (exit 3), не FAIL;
+- `tests/provider_contract_selftest.cpp` — у перелік файлів теки `tests/` (розділ «Тести»,
+  перший абзац) і в дерево «Структура».
+
+`python scripts/check-doc-anchors.py` — exit 0.
+
+- [ ] **Крок 8: Коміт у корені, пуш (сабмодуль першим), контрольна точка**
+
+```bash
+git -C extern/uapki push origin simplyaddin/provider-contract
+git add extern/uapki tests/provider_contract_selftest.cpp AGENTS.md version.h
+git commit --only -m "fix(uapki): C1 — інша конфігурація провайдера відхиляється гучно; L1.5 в AGENTS.md" -- extern/uapki tests/provider_contract_selftest.cpp AGENTS.md version.h
+git push
+```
+
+Надіслати архітектору: результат кроку 5 (обидві архітектури), таблиці гейта кроку 6, SHA
+нового комміту в сабмодулі. **Task 10 — після відповіді.**
+
+---
+
 ## Task 10: Апстрім — три PR і issue
 
-**Передумова:** Task 9 зелений на x64 і x86, архітектор підтвердив контрольну точку.
+**Передумова:** Task 9 і Task 9-біс зелені на x64 і x86, архітектор підтвердив обидві контрольні точки.
 
 **Файли:** нові гілки у форку `VSydorenko/UAPKI` (в каталозі `extern/uapki`).
 
@@ -1815,9 +2023,9 @@ git push
 cd extern/uapki
 git log --oneline fda2148..simplyaddin/provider-contract   # переписати SHA кожного комміта
 
-# C1
+# C1 — ДВА комміти: 7afb5e3 і комміт Task 9-біс кроку 3
 git checkout -b fix/provider-init-refcount fda2148
-git cherry-pick <SHA комміта C1>
+git cherry-pick 7afb5e3 <SHA комміта Task 9-біс>
 git push -u origin fix/provider-init-refcount
 
 # C2 — ПРОПУСТИТИ, якщо Task 4 крок 6 дав відмову
@@ -1850,8 +2058,12 @@ gh pr create -R specinfo-ua/UAPKI --base main --head VSydorenko:fix/provider-ini
   registers nothing, and `INIT` reports success with `countCmProviders: 0`.
 - **Root cause:** the CM provider API never specified how many owners a process-wide provider
   may have; both bundled providers independently assumed exactly one.
-- **Fix:** reference counting in `cm-pkcs12` and `cm-pkcs11`, plus the contract written down
-  in `cm-api.h`. `RET_CM_ALREADY_INITIALIZED` is kept for compatibility.
+- **Fix:** reference counting in `cm-pkcs12` and `cm-pkcs11`, idempotent for the SAME
+  configuration; a DIFFERENT configuration is rejected with `RET_CM_ALREADY_INITIALIZED`
+  without touching the state (for `cm-pkcs11` the configuration selects which PKCS#11 modules
+  are loaded). The contract is written down in `cm-api.h`.
+- **Verified:** both providers built and exercised by the contract test on Windows x64/x86
+  (quote the Task 9-біс step 5 output).
 - **Precedent:** the same problem in the PKCS#11 world is solved by p11-kit's managed mode;
   `CKR_CRYPTOKI_ALREADY_INITIALIZED` is already mapped in `cryptoki-storage.cpp:2054`.
 - **Test:** the repeated-init scenario, and what it returns before/after.
