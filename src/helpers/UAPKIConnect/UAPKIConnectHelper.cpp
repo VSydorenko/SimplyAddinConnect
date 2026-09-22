@@ -487,15 +487,13 @@ bool UAPKIConnectHelper::InjectProviderConfig(nlohmann::json& parameters) {
     return true;
 }
 
-// Проверка результата INIT: сравнивает число реально загруженных провайдеров (result.countCmProviders)
-// с числом инъектированных (cmProviders.allowedProviders). При недоборе — WARN с деталями.
-// JSON-ответ НЕ модифицируется (прозрачность для 1С), успешность операции не меняется.
-void UAPKIConnectHelper::WarnIfProvidersNotLoaded(const nlohmann::json& injectedParams, const std::string& responseJson) {
+// Проверка результата INIT: ноль реально загруженных провайдеров при непустом
+// cmProviders.allowedProviders — ошибка для 1С (502), недобор — лишь WARN.
+bool UAPKIConnectHelper::ProvidersLoadedOrFail(const nlohmann::json& injectedParams, std::string& responseJson) {
+    size_t expected = 0;
+    std::string dirInfo;
+    std::string libInfo;
     try {
-        // Сколько провайдеров было инъектировано/передано + диагностические детали
-        size_t expected = 0;
-        std::string dirInfo;
-        std::string libInfo;
         if (injectedParams.is_object() && injectedParams.contains("cmProviders") && injectedParams["cmProviders"].is_object()) {
             const nlohmann::json& cm = injectedParams["cmProviders"];
             if (cm.contains("dir") && cm["dir"].is_string()) {
@@ -514,12 +512,11 @@ void UAPKIConnectHelper::WarnIfProvidersNotLoaded(const nlohmann::json& injected
             }
         }
 
-        // Если провайдеры не инъектировались — проверять нечего
+        // Провайдерів не просили — перевіряти нічого
         if (expected == 0) {
-            return;
+            return true;
         }
 
-        // Читаем result.countCmProviders из ответа
         nlohmann::json resp = nlohmann::json::parse(responseJson);
         long long loaded = -1;
         if (resp.contains("result") && resp["result"].is_object() &&
@@ -529,20 +526,40 @@ void UAPKIConnectHelper::WarnIfProvidersNotLoaded(const nlohmann::json& injected
 
         if (loaded < 0) {
             NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Ответ INIT не содержит result.countCmProviders — невозможно подтвердить загрузку провайдеров; ожидалось: " + std::to_string(expected) + ", dir: " + dirInfo + ", lib: " + libInfo);
-            return;
+            return true;
+        }
+
+        if (loaded == 0) {
+            // ЕДИНСТВЕННЫЙ случай, когда мы меняем ответ библиотеки: INIT доложил
+            // успех, но крипто-стек непригоден — OPEN/SIGN дадут 4102/4121. Именно
+            // эта ложь стоила месяца. Ответ библиотеки сохраняем целиком.
+            const std::string message = "NO_CM_PROVIDERS_LOADED: requested "
+                + std::to_string(expected) + ", loaded 0; dir: " + dirInfo + ", lib: " + libInfo;
+            NEUTRAL_REPORT_ERROR("UAPKIConnectHelper", "Провайдеры НКИ не загружены — INIT считается неуспешным: " + message);
+
+            nlohmann::json envelope;
+            envelope["errorCode"]     = 502;
+            envelope["error"]         = message;
+            envelope["method"]        = "INIT";
+            envelope["uapkiResponse"] = resp;
+            responseJson = envelope.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+            return false;
         }
 
         if (static_cast<size_t>(loaded) < expected) {
-            NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "UAPKI загрузил меньше провайдеров, чем ожидалось: загружено " + std::to_string(loaded) + " из " + std::to_string(expected) + "; dir: " + dirInfo + ", lib: " + libInfo + ". Проверьте наличие файла провайдера и права доступа");
+            NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "UAPKI загрузил меньше провайдеров, чем ожидалось: загружено " + std::to_string(loaded) + " из " + std::to_string(expected) + "; dir: " + dirInfo + ", lib: " + libInfo);
         } else {
             NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper", "INIT: загружено провайдеров " + std::to_string(loaded) + " из " + std::to_string(expected));
         }
+        return true;
     }
     catch (const std::exception& e) {
         NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Не удалось проверить число загруженных провайдеров в ответе INIT: " + std::string(e.what()));
+        return true;
     }
     catch (...) {
         NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Неизвестная ошибка при проверке числа загруженных провайдеров в ответе INIT");
+        return true;
     }
 }
 
@@ -728,10 +745,13 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
                 NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Команда UAPKI " + method + " завершилась с ошибкой");
             }
 
-            // Для INIT дополнительно сверяем число реально загруженных провайдеров с ожидаемым.
-            // Диагностика молчаливого недобора провайдеров (ответ/успешность не меняем).
+            // Для INIT сверяем число реально загруженных провайдеров. Ноль при
+            // непустом allowedProviders — ошибка для 1С (ответ библиотеки
+            // сохраняется в uapkiResponse).
             if (methodUpper == "INIT") {
-                WarnIfProvidersNotLoaded(paramsJson, responseJson);
+                if (!ProvidersLoadedOrFail(paramsJson, responseJson)) {
+                    return false;
+                }
             }
 
             return isSuccess;

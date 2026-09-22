@@ -18,7 +18,8 @@
  * Для метода INIT выполняется автоинъекция конфигурации провайдеров НКИ через InjectProviderConfig
  * (тройной порядок поиска каталога провайдера: явный dir вызывающего → провайдер рядом с DLL →
  * развёртывание встроенного ресурса в %LOCALAPPDATA%) + арх-суффикс имени провайдера. После INIT
- * дополнительно сверяется число реально загруженных провайдеров (WarnIfProvidersNotLoaded).
+ * проверяется число реально загруженных провайдеров (ProvidersLoadedOrFail): ноль при непустом
+ * allowedProviders — ошибка 502 NO_CM_PROVIDERS_LOADED.
  *
  * Успешность операции определяется по полю errorCode ответа (0 = успех) согласно
  * протоколу UAPKI (extern/uapki/doc/UAPKI-PM-2.0.16.md).
@@ -108,17 +109,20 @@ private:
     static bool GetOwnModuleDir(std::string& outUtf8Dir);
 
     /**
-     * @brief Проверяет, что INIT загрузил ожидаемое число провайдеров
+     * @brief Перевіряє, що провайдери НКІ справді піднялись, і формує вердикт.
      *
-     * Сравнивает result.countCmProviders из ответа UAPKI с числом инъектированных
-     * cmProviders.allowedProviders. При недоборе логирует NEUTRAL_REPORT_WARN с деталями
-     * (переданный dir, имена lib, сколько загрузилось). Ответ НЕ модифицируется, успешность
-     * операции не меняется — только диагностика молчаливого сбоя загрузки провайдера.
+     * Правило: просили провайдерів (cmProviders.allowedProviders не порожній), а
+     * завантажилось НУЛЬ — INIT є помилкою для 1С. Недобір (1 з 2) помилкою не є:
+     * перелік законно може містити відсутній на машині провайдер.
      *
-     * @param injectedParams JSON параметров INIT (после инъекции), содержащий cmProviders
-     * @param responseJson Строка JSON-ответа UAPKI на INIT
+     * Відповідь бібліотеки зберігається цілою у полі uapkiResponse — прозорість
+     * не втрачається, втрачається брехня про успіх.
+     *
+     * @param injectedParams параметри INIT після автоінʼєкції
+     * @param responseJson   [in,out] відповідь; при нулі провайдерів ПЕРЕЗАПИСУЄТЬСЯ
+     * @return true — усе гаразд; false — провайдерів нуль, відповідь замінено
      */
-    static void WarnIfProvidersNotLoaded(const nlohmann::json& injectedParams, const std::string& responseJson);
+    static bool ProvidersLoadedOrFail(const nlohmann::json& injectedParams, std::string& responseJson);
 
     /**
      * @brief Рекурсивно маскирует значения полей "password" на любом уровне JSON
