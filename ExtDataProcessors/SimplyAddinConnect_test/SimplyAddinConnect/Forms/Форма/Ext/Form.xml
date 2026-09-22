@@ -418,6 +418,11 @@
 							<CommandName>Form.Command.ЗапроситьЭталонUAPKI</CommandName>
 							<ExtendedTooltip name="КнопкаЗапроситьЭталонUAPKITooltip" id="402"/>
 						</Button>
+						<Button name="КнопкаКомандаШляхАUAPKI" id="440">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.КомандаШляхАUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаКомандаШляхАUAPKITooltip" id="441"/>
+						</Button>
 						<Button name="КнопкаКомандаADDCERTUAPKI" id="421">
 							<Type>UsualButton</Type>
 							<CommandName>Form.Command.КомандаADDCERTUAPKI</CommandName>
@@ -1726,6 +1731,14 @@
 			<Action>КомандаVERIFYUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
 		</Command>
+		<Command name="КомандаШляхАUAPKI" id="442">
+			<Title>
+				<v8:item><v8:lang>uk</v8:lang><v8:content>Шлях А §4.3 цілком: INIT→ADD_CERT→OPEN→SELECT_KEY(certId)→SIGN</v8:content></v8:item>
+				<v8:item><v8:lang>ru</v8:lang><v8:content>Шлях А §4.3 цілком: INIT→ADD_CERT→OPEN→SELECT_KEY(certId)→SIGN</v8:content></v8:item>
+			</Title>
+			<Action>КомандаШляхАUAPKI</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
 		<Command name="КомандаADDCERTUAPKI" id="433">
 			<Title>
 				<v8:item>
@@ -1757,8 +1770,8 @@
 			<Title>
 				<v8:item>
 					<v8:lang>uk</v8:lang>
-					<v8:content>Шлях Б §4.3 цілком: OPEN→KEYS→SELECT_KEY→LIST_CERTS→SELECT_KEY (потрібен INIT)</v8:content>
-				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Шлях Б §4.3 цілком: OPEN→KEYS→SELECT_KEY→LIST_CERTS→SELECT_KEY (потрібен INIT)</v8:content></v8:item>
+					<v8:content>Шлях Б §4.3 цілком: INIT→OPEN→KEYS→SELECT_KEY→LIST_CERTS→SELECT_KEY(certId)</v8:content>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Шлях Б §4.3 цілком: INIT→OPEN→KEYS→SELECT_KEY→LIST_CERTS→SELECT_KEY(certId)</v8:content></v8:item>
 			</Title>
 			<Action>КомандаШляхБUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
