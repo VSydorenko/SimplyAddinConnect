@@ -600,7 +600,7 @@ else {
     # у тому ж циклі, що й 1..4. Кейс 5 (діапазон ПРРО) навмисно НЕ в переліку: йому
     # потрібен окремий аргумент-каталог і власне трактування exit 3, тому він — окремим
     # блоком нижче. Кейс 11 — теж окремим блоком (потребує local-keys.json).
-    foreach ($kase in 1,2,3,4,6,10,12) {
+    foreach ($kase in 1,2,3,4,6,10,12,13,16) {
         $argList = @("$kase", "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"")
         $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_${kase}_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
         $p = Start-Process -FilePath $NativeHostExe -ArgumentList $argList `

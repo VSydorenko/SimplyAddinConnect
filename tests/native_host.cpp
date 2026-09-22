@@ -1852,11 +1852,40 @@ static bool case15_idempotentInit(const std::wstring& binDir) {
 }
 
 // ========================================================================
+// КЕЙС 16 — завершення процесу з ЗАВАНТАЖЕНОЮ головною DLL.
+// Кейс 13 міряє явний FreeLibrary. Але 1С може завершитись, не вивантаживши
+// компоненту: тоді статики UAPKI руйнуються на DLL_PROCESS_DETACH під час
+// завершення процесу. Порядок detach — зворотний до завантаження: провайдер
+// (завантажений пізніше) отримує DETACH РАНІШЕ за нашу DLL. З C2 деструктор
+// статика кличе provider_deinit і FreeLibrary вже після DETACH провайдера.
+// Без C2 цей шлях не виконувався (витік).
+// Вердикт — ЛИШЕ exit-код процесу: падіння на завершенні дасть код винятку
+// (напр. 0xC0000005), а зависання — таймаут, а не 0.
+// ========================================================================
+static bool case16_exitWithLoadedDll(const std::wstring& binDir) {
+    printf("== Case 16: завершення процесу з завантаженою головною DLL ==\n");
+    const std::wstring dllPath = binDir + L"\\SimplyAddinConnectWin" + ARCH_W + L".dll";
+
+    // Навмисно НЕ через RAII: Component на купі й не звільняється, щоб DLL
+    // лишилась завантаженою до завершення процесу — як у 1С, що не вивантажила
+    // компоненту.
+    Component* c = new Component();
+    if (!c->load(dllPath)) return false;
+    std::string resp = c->call("INIT", buildInit(true));
+    json j;
+    CHECK(errCode(resp, j) == 0, "INIT errorCode == 0");
+    CHECK(j["result"]["countCmProviders"].get<long>() == 1, "countCmProviders == 1");
+    printf("  процес завершується з завантаженою DLL; вердикт — exit-код (очікується 0)\n");
+    fflush(stdout);
+    return true;   // c свідомо не звільняється
+}
+
+// ========================================================================
 // main / CLI
 // ========================================================================
 static void usage() {
     printf(
-        "native_host <case 1..15> [mainDll] [dataDir] [binDir] [prroDir] [outSig]\n"
+        "native_host <case 1..16> [mainDll] [dataDir] [binDir] [prroDir] [outSig]\n"
         "  case     : номер сценарію (окремий процес на кейс — INIT раз на процес)\n"
         "  mainDll  : шлях до головної DLL (деф.: <binDir>/SimplyAddinConnectWin"
 #ifdef _WIN64
@@ -1883,7 +1912,7 @@ int main() {
 
     if (argc < 2) { usage(); LocalFree(wargv); return 2; }
     int kase = _wtoi(wargv[1]);
-    if (kase < 1 || kase > 15) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
+    if (kase < 1 || kase > 16) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
 
     std::wstring binDir  = argAt(4)[0] ? std::wstring(argAt(4)) : u8to16(HOST_BIN_DIR);
     std::wstring dataDir = argAt(3)[0] ? std::wstring(argAt(3)) : u8to16(HOST_DATA_DIR);
@@ -1929,6 +1958,7 @@ int main() {
             case 13: pass = case13_unloadSafety(mainDll, binDir);              break;
             case 14: pass = case14_zeroProvidersIsError(binDir);               break;
             case 15: pass = case15_idempotentInit(binDir);                     break;
+            case 16: pass = case16_exitWithLoadedDll(binDir);                  break;
         }
     } catch (const std::exception& e) {
         printf("FATAL: незловлений виняток: %s\n", e.what());
