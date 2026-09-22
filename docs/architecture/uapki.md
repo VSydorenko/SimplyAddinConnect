@@ -272,18 +272,29 @@ ANSI-кодової сторінки. На Linux/macOS той самий мак�
 
 ---
 
-## 6. Мовчазний збій завантаження провайдера й компенсація в хелпері
+## 6. Толерантне завантаження провайдера й компенсація в хелпері
 
-Важлива особливість поведінки ядра: **невдале завантаження провайдера ковтається мовчки**.
+Завантаження провайдера в ядрі — **толерантне за задумом**: `allowedProviders` законно може
+містити провайдер, якого немає на конкретній машині, і `setup_cm_providers` та `uapki_init` не
+зривають увесь `INIT` через збій одного провайдера зі списку — далі йде наступний, а `INIT`
+у підсумку все одно повертає `RET_OK`.
 
-`setup_cm_providers` ігнорує код повернення `CmProviders::loadProvider(...)` через явний
-`(void)`-каст і **завжди** повертає `RET_OK`, незалежно від успіху завантаження кожного
-окремого провайдера (`extern/uapki/library/uapki/src/api/library-init.cpp:82, 85`):
+**До C3 наслідок збою був відкинутий мовчки** (`ret_load` ішов у явний `(void)`-каст, у
+відповідь нічого не потрапляло). Починаючи з C3 наслідок **звітується**:
+`setup_cm_providers` (`extern/uapki/library/uapki/src/api/library-init.cpp:66-119`) веде лічильник
+`cnt_loaded`, а для кожного провайдера, чий `CmProviders::loadProvider(...)` повернув не `RET_OK`,
+дописує елемент у `result.cmProviders.failed` (`library-init.cpp:105-111`, поля `lib`/`errorCode`/
+`error`) і врешті заповнює `result.cmProviders.requested`/`result.cmProviders.loaded`
+(`library-init.cpp:115-116`):
 
 ```cpp
-(void)CmProviders::loadProvider(s_dir, s_lib, s_config);
-...
-return RET_OK;
+const int ret_load = CmProviders::loadProvider(s_dir, s_lib, s_config);
+if (ret_load == RET_OK) {
+    cnt_loaded++;
+}
+else {
+    // ... json_array_append_value(ja_failed, ...) — lib/errorCode/error
+}
 ```
 
 Тому `INIT` може повернути `errorCode:0`, хоча жоден провайдер не завантажився
@@ -569,7 +580,7 @@ OCSP/CRL — `verify.cpp:599-604`) та `FULL` (додатково статус 
 споживачів** — наприклад, кілька екземплярів головної DLL 1С, кожен зі своїм статично злінкованим
 ядром UAPKI (детальний розбір такого сценарію — `docs/tasks/2026-09-22_provider_reinit_defect.md`).
 
-**Контракт, записаний у `extern/uapki/library/common/cm-api/cm-api.h:60-79`** (докладено в
+**Контракт, записаний у `extern/uapki/library/common/cm-api/cm-api.h:61-81`** (докладено в
 upstream, тепер частина протоколу для будь-якого провайдера, не лише `cm-pkcs12`):
 
 1. `provider_init` **ідемпотентний**: повторний виклик на вже ініціалізованому провайдері повертає
