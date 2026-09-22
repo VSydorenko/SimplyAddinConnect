@@ -1782,6 +1782,11 @@ static bool case14_zeroProvidersIsError(const std::wstring& binDir) {
     std::wstring dllPath = binDir + L"\\SimplyAddinConnectWin" + ARCH_W + L".dll";
     Component c;
     if (!c.load(dllPath)) return false;
+    wchar_t tmpDir[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tmpDir);
+    const std::wstring logPath = std::wstring(tmpDir) + L"sac_case14_" + std::to_wstring(GetCurrentProcessId()) + L".log";
+    DeleteFileW(logPath.c_str());
+    CHECK(c.enableLogging(L"Trace", logPath), "лог увімкнено");
 
     // Явний cmProviders вимикає автоінʼєкцію: компонента поважає непорожній dir як є.
     json p;
@@ -1805,7 +1810,21 @@ static bool case14_zeroProvidersIsError(const std::wstring& binDir) {
           && j["uapkiResponse"]["result"]["countCmProviders"].get<long>() == 0,
           "uapkiResponse зберігає оригінальний countCmProviders == 0");
 
-    c.unload();
+    c.unload();                              // закрити лог перед читанням
+    std::string logText;
+    CHECK(readFileText(logPath, logText), "лог прочитано");
+    // Позитивний контроль ПЕРЕД перевіркою відсутності: доводить, що кодування логу й
+    // літерала збігаються. Без нього «рядка немає» зеленіло б і тоді, коли пошук
+    // просто не вміє знайти кирилицю (testing-rules, правило 2).
+    // Контроль кодування — рядок ProvidersLoadedOrFail, що пишеться НЕЗАЛЕЖНО від
+    // порядку логування вердикту (і до виправлення, і після).
+    CHECK(logText.find("Провайдеры НКИ не загружены") != std::string::npos,
+          "у лозі є рядок ProvidersLoadedOrFail (позитивний контроль кодування)");
+    CHECK(logText.find("Команда UAPKI INIT завершилась с ошибкой") != std::string::npos,
+          "у лозі ЗАПИСАНО вердикт помилки INIT — 1С отримала 502");
+    CHECK(logText.find("Команда UAPKI INIT выполнена успешно") == std::string::npos,
+          "у лозі НЕМАЄ вердикту успіху INIT");
+    DeleteFileW(logPath.c_str());
     return true;
 }
 
@@ -1821,6 +1840,11 @@ static bool case15_idempotentInit(const std::wstring& binDir) {
     std::wstring dllPath = binDir + L"\\SimplyAddinConnectWin" + ARCH_W + L".dll";
     Component c;
     if (!c.load(dllPath)) return false;
+    wchar_t tmpDir[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tmpDir);
+    const std::wstring logPath = std::wstring(tmpDir) + L"sac_case15_" + std::to_wstring(GetCurrentProcessId()) + L".log";
+    DeleteFileW(logPath.c_str());
+    CHECK(c.enableLogging(L"Trace", logPath), "лог увімкнено");
 
     std::string r1 = c.call("INIT", buildInit(true));
     json j1;
@@ -1847,7 +1871,17 @@ static bool case15_idempotentInit(const std::wstring& binDir) {
     long ecOpen = errCode(c.call("OPEN", op.dump()), jo);
     CHECK(ecOpen != 4102, "OPEN не дає 4102 UNKNOWN_PROVIDER");
 
-    c.unload();
+    c.unload();                              // закрити лог перед читанням
+    std::string logText;
+    CHECK(readFileText(logPath, logText), "лог прочитано");
+    // Позитивний контроль ПЕРЕД перевіркою відсутності: доводить, що кодування логу й
+    // літерала збігаються. Без нього «рядка немає» зеленіло б і тоді, коли пошук
+    // просто не вміє знайти кирилицю (testing-rules, правило 2).
+    CHECK(logText.find("Команда UAPKI INIT выполнена успешно") != std::string::npos,
+          "у лозі є вердикт успіху INIT (позитивний контроль кодування)");
+    CHECK(logText.find("Команда UAPKI INIT завершилась с ошибкой") == std::string::npos,
+          "у лозі НЕМАЄ вердикту помилки INIT — лог каже те саме, що отримала 1С");
+    DeleteFileW(logPath.c_str());
     return true;
 }
 

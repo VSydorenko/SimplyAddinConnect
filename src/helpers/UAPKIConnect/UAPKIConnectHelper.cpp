@@ -798,12 +798,6 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
             // Проверяем успешность операции по полю errorCode
             bool isSuccess = IsOperationSuccess(responseJson);
 
-            if (isSuccess) {
-                NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "Команда UAPKI " + method + " выполнена успешно");
-            } else {
-                NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Команда UAPKI " + method + " завершилась с ошибкой");
-            }
-
             // Для INIT: спершу робимо INIT ідемпотентним (4106 -> вимір PROVIDERS),
             // і лише потім застосовуємо політику нуля провайдерів. Порядок важливий:
             // після заміни відповіді вона вже несе реальний countCmProviders.
@@ -812,8 +806,17 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
                     isSuccess = true;
                 }
                 if (!ProvidersLoadedOrFail(paramsJson, responseJson)) {
-                    return false;
+                    isSuccess = false;
                 }
+            }
+
+            // Вердикт у лог — ПІСЛЯ пост-обробки INIT: лог мусить казати те саме, що
+            // отримала 1С. Інакше повторний INIT логувався б як помилка, а INIT без
+            // провайдерів — як успіх.
+            if (isSuccess) {
+                NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "Команда UAPKI " + method + " выполнена успешно");
+            } else {
+                NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Команда UAPKI " + method + " завершилась с ошибкой");
             }
 
             return isSuccess;
