@@ -245,26 +245,26 @@
 								<v8:item>
 									<v8:lang>uk</v8:lang>
 									<v8:content>Шлях до ключа .p12</v8:content>
-								</v8:item>
+								</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Шлях до ключа .p12</v8:content></v8:item>
 							</Title>
 							<ContextMenu name="ПолеШляхДоКлючаUAPKIContextMenu" id="354"/>
 							<ExtendedTooltip name="ПолеШляхДоКлючаUAPKIExtendedTooltip" id="355"/>
 						</InputField>
 						<InputField name="ПолеШляхДоСертифікатаUAPKI" id="427">
 							<DataPath>ШляхДоСертифікатаUAPKI</DataPath>
-							<Title><v8:item><v8:lang>uk</v8:lang><v8:content>Шлях до сертифіката (.cer) для ADD_CERT</v8:content></v8:item></Title>
+							<Title><v8:item><v8:lang>uk</v8:lang><v8:content>Шлях до сертифіката (.cer) для ADD_CERT</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Шлях до сертифіката (.cer) для ADD_CERT</v8:content></v8:item></Title>
 							<ContextMenu name="ПолеШляхДоСертифікатаUAPKIContextMenu" id="428"/>
 							<ExtendedTooltip name="ПолеШляхДоСертифікатаUAPKIExtendedTooltip" id="429"/>
 						</InputField>
 						<InputField name="ПолеCertIdUAPKI" id="430">
 							<DataPath>CertIdUAPKI</DataPath>
-							<Title><v8:item><v8:lang>uk</v8:lang><v8:content>certId (Base64)</v8:content></v8:item></Title>
+							<Title><v8:item><v8:lang>uk</v8:lang><v8:content>certId (Base64)</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>certId (Base64)</v8:content></v8:item></Title>
 							<ContextMenu name="ПолеCertIdUAPKIContextMenu" id="431"/>
 							<ExtendedTooltip name="ПолеCertIdUAPKIExtendedTooltip" id="432"/>
 						</InputField>
 						<InputField name="ПолеКаталогДанихUAPKI" id="411">
 							<DataPath>КаталогДанихUAPKI</DataPath>
-							<Title><v8:item><v8:lang>uk</v8:lang><v8:content>Каталог даних UAPKI (certs\ + crls\)</v8:content></v8:item></Title>
+							<Title><v8:item><v8:lang>uk</v8:lang><v8:content>Каталог даних UAPKI (certs\ + crls\)</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Каталог даних UAPKI (certs\ + crls\)</v8:content></v8:item></Title>
 							<ContextMenu name="ПолеКаталогДанихUAPKIContextMenu" id="412"/>
 							<ExtendedTooltip name="ПолеКаталогДанихUAPKIExtendedTooltip" id="413"/>
 						</InputField>
@@ -274,7 +274,7 @@
 								<v8:item>
 									<v8:lang>uk</v8:lang>
 									<v8:content>Пароль ключа</v8:content>
-								</v8:item>
+								</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Пароль ключа</v8:content></v8:item>
 							</Title>
 							<ContextMenu name="ПолеПарольКлючаUAPKIContextMenu" id="357"/>
 							<ExtendedTooltip name="ПолеПарольКлючаUAPKIExtendedTooltip" id="358"/>
@@ -285,7 +285,7 @@
 								<v8:item>
 									<v8:lang>uk</v8:lang>
 									<v8:content>Id ключа</v8:content>
-								</v8:item>
+								</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Id ключа</v8:content></v8:item>
 							</Title>
 							<ContextMenu name="ПолеІдКлючаUAPKIContextMenu" id="360"/>
 							<ExtendedTooltip name="ПолеІдКлючаUAPKIExtendedTooltip" id="361"/>
@@ -296,7 +296,7 @@
 								<v8:item>
 									<v8:lang>uk</v8:lang>
 									<v8:content>Дані для підпису (XML чека)</v8:content>
-								</v8:item>
+								</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Дані для підпису (XML чека)</v8:content></v8:item>
 							</Title>
 							<MultiLine>true</MultiLine>
 							<ContextMenu name="ПолеДаніДляПідписуContextMenu" id="363"/>
@@ -308,7 +308,7 @@
 								<v8:item>
 									<v8:lang>uk</v8:lang>
 									<v8:content>Підпис (Base64)</v8:content>
-								</v8:item>
+								</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Підпис (Base64)</v8:content></v8:item>
 							</Title>
 							<MultiLine>true</MultiLine>
 							<ContextMenu name="ПолеПідписBase64ContextMenu" id="366"/>
@@ -320,7 +320,7 @@
 								<v8:item>
 									<v8:lang>uk</v8:lang>
 									<v8:content>Хост консолі</v8:content>
-								</v8:item>
+								</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Хост консолі</v8:content></v8:item>
 							</Title>
 							<ContextMenu name="ПолеХостКонсоліContextMenu" id="369"/>
 							<ExtendedTooltip name="ПолеХостКонсоліExtendedTooltip" id="370"/>
@@ -331,7 +331,7 @@
 								<v8:item>
 									<v8:lang>uk</v8:lang>
 									<v8:content>Порт консолі</v8:content>
-								</v8:item>
+								</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Порт консолі</v8:content></v8:item>
 							</Title>
 							<ContextMenu name="ПолеПортКонсоліContextMenu" id="372"/>
 							<ExtendedTooltip name="ПолеПортКонсоліExtendedTooltip" id="373"/>
@@ -342,7 +342,7 @@
 								<v8:item>
 									<v8:lang>uk</v8:lang>
 									<v8:content>Результат UAPKI</v8:content>
-								</v8:item>
+								</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Результат UAPKI</v8:content></v8:item>
 							</Title>
 							<MultiLine>true</MultiLine>
 							<ContextMenu name="ПолеРезультатUAPKIContextMenu" id="375"/>
@@ -423,6 +423,11 @@
 							<CommandName>Form.Command.КомандаADDCERTUAPKI</CommandName>
 							<ExtendedTooltip name="КнопкаКомандаADDCERTUAPKITooltip" id="422"/>
 						</Button>
+						<Button name="КнопкаSELECTKEYByCertIdUAPKI" id="437">
+							<Type>UsualButton</Type>
+							<CommandName>Form.Command.КомандаSELECTKEYByCertIdUAPKI</CommandName>
+							<ExtendedTooltip name="КнопкаSELECTKEYByCertIdUAPKITooltip" id="438"/>
+						</Button>
 						<Button name="КнопкаКомандаLISTCERTSUAPKI" id="423">
 							<Type>UsualButton</Type>
 							<CommandName>Form.Command.КомандаLISTCERTSUAPKI</CommandName>
@@ -456,7 +461,7 @@
 						<v8:item>
 							<v8:lang>uk</v8:lang>
 							<v8:content>Группа переменные</v8:content>
-						</v8:item>
+						</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Группа переменные</v8:content></v8:item>
 					</Title>
 					<ToolTip>
 						<v8:item>
@@ -1052,7 +1057,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>Шлях до ключа .p12</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Шлях до ключа .p12</v8:content></v8:item>
 			</Title>
 			<Type>
 				<v8:Type>xs:string</v8:Type>
@@ -1067,7 +1072,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>Пароль ключа</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Пароль ключа</v8:content></v8:item>
 			</Title>
 			<Type>
 				<v8:Type>xs:string</v8:Type>
@@ -1082,7 +1087,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>Дані для підпису (XML чека)</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Дані для підпису (XML чека)</v8:content></v8:item>
 			</Title>
 			<Type>
 				<v8:Type>xs:string</v8:Type>
@@ -1097,7 +1102,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>Підпис (Base64)</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Підпис (Base64)</v8:content></v8:item>
 			</Title>
 			<Type>
 				<v8:Type>xs:string</v8:Type>
@@ -1112,7 +1117,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>Id ключа</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Id ключа</v8:content></v8:item>
 			</Title>
 			<Type>
 				<v8:Type>xs:string</v8:Type>
@@ -1127,7 +1132,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>Результат UAPKI</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Результат UAPKI</v8:content></v8:item>
 			</Title>
 			<Type>
 				<v8:Type>xs:string</v8:Type>
@@ -1142,7 +1147,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>Хост консолі</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Хост консолі</v8:content></v8:item>
 			</Title>
 			<Type>
 				<v8:Type>xs:string</v8:Type>
@@ -1157,7 +1162,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>Порт консолі</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Порт консолі</v8:content></v8:item>
 			</Title>
 			<Type>
 				<v8:Type>xs:string</v8:Type>
@@ -1168,15 +1173,15 @@
 			</Type>
 		</Attribute>
 		<Attribute name="КаталогДанихUAPKI" id="410">
-			<Title><v8:item><v8:lang>uk</v8:lang><v8:content>Каталог даних UAPKI (certs\ + crls\)</v8:content></v8:item></Title>
+			<Title><v8:item><v8:lang>uk</v8:lang><v8:content>Каталог даних UAPKI (certs\ + crls\)</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Каталог даних UAPKI (certs\ + crls\)</v8:content></v8:item></Title>
 			<Type><v8:Type>xs:string</v8:Type><v8:StringQualifiers><v8:Length>0</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers></Type>
 		</Attribute>
 		<Attribute name="ШляхДоСертифікатаUAPKI" id="417">
-			<Title><v8:item><v8:lang>uk</v8:lang><v8:content>Шлях до сертифіката (.cer) для ADD_CERT</v8:content></v8:item></Title>
+			<Title><v8:item><v8:lang>uk</v8:lang><v8:content>Шлях до сертифіката (.cer) для ADD_CERT</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Шлях до сертифіката (.cer) для ADD_CERT</v8:content></v8:item></Title>
 			<Type><v8:Type>xs:string</v8:Type><v8:StringQualifiers><v8:Length>0</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers></Type>
 		</Attribute>
 		<Attribute name="CertIdUAPKI" id="418">
-			<Title><v8:item><v8:lang>uk</v8:lang><v8:content>certId (Base64, з ADD_CERT або LIST_CERTS)</v8:content></v8:item></Title>
+			<Title><v8:item><v8:lang>uk</v8:lang><v8:content>certId (Base64, з ADD_CERT або LIST_CERTS)</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>certId (Base64, з ADD_CERT або LIST_CERTS)</v8:content></v8:item></Title>
 			<Type><v8:Type>xs:string</v8:Type><v8:StringQualifiers><v8:Length>0</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers></Type>
 		</Attribute>
 	</Attributes>
@@ -1626,7 +1631,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>Створити обʼєкт UAPKI</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Створити обʼєкт UAPKI</v8:content></v8:item>
 			</Title>
 			<Action>СоздатьОбъектUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
@@ -1636,7 +1641,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>INIT</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>INIT</v8:content></v8:item>
 			</Title>
 			<Action>КомандаINITUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
@@ -1646,7 +1651,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>DEINIT</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>DEINIT</v8:content></v8:item>
 			</Title>
 			<Action>КомандаDEINITUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
@@ -1656,7 +1661,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>PROVIDERS</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>PROVIDERS</v8:content></v8:item>
 			</Title>
 			<Action>КомандаPROVIDERSUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
@@ -1666,7 +1671,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>OPEN</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>OPEN</v8:content></v8:item>
 			</Title>
 			<Action>КомандаOPENUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
@@ -1676,7 +1681,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>CLOSE</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>CLOSE</v8:content></v8:item>
 			</Title>
 			<Action>КомандаCLOSEUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
@@ -1686,7 +1691,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>KEYS</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>KEYS</v8:content></v8:item>
 			</Title>
 			<Action>КомандаKEYSUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
@@ -1696,7 +1701,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>SELECT_KEY</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>SELECT_KEY</v8:content></v8:item>
 			</Title>
 			<Action>КомандаSELECTKEYUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
@@ -1706,7 +1711,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>SIGN</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>SIGN</v8:content></v8:item>
 			</Title>
 			<Action>КомандаSIGNUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
@@ -1716,7 +1721,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>VERIFY</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>VERIFY</v8:content></v8:item>
 			</Title>
 			<Action>КомандаVERIFYUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
@@ -1726,9 +1731,16 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>2а. ADD_CERT — сертифікат із файлу (потрібен INIT)</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>2а. ADD_CERT — сертифікат із файлу (потрібен INIT)</v8:content></v8:item>
 			</Title>
 			<Action>КомандаADDCERTUAPKI</Action>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="КомандаSELECTKEYByCertIdUAPKI" id="439">
+			<Title>
+				<v8:item><v8:lang>uk</v8:lang><v8:content>2в. SELECT_KEY за certId — вибір ключа ЗА СЕРТИФІКАТОМ</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>2в. SELECT_KEY за certId — вибір ключа ЗА СЕРТИФІКАТОМ</v8:content></v8:item>
+			</Title>
+			<Action>КомандаSELECTKEYByCertIdUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
 		</Command>
 		<Command name="КомандаLISTCERTSUAPKI" id="434">
@@ -1736,7 +1748,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>2б. LIST_CERTS — що вже в кеші (потрібен INIT)</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>2б. LIST_CERTS — що вже в кеші (потрібен INIT)</v8:content></v8:item>
 			</Title>
 			<Action>КомандаLISTCERTSUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
@@ -1746,7 +1758,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>Шлях Б §4.3 цілком: OPEN→KEYS→SELECT_KEY→LIST_CERTS→SELECT_KEY (потрібен INIT)</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Шлях Б §4.3 цілком: OPEN→KEYS→SELECT_KEY→LIST_CERTS→SELECT_KEY (потрібен INIT)</v8:content></v8:item>
 			</Title>
 			<Action>КомандаШляхБUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
@@ -1756,7 +1768,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>DIGEST</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>DIGEST</v8:content></v8:item>
 			</Title>
 			<Action>КомандаDIGESTUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
@@ -1766,7 +1778,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>Підписати й відправити на валідацію</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Підписати й відправити на валідацію</v8:content></v8:item>
 			</Title>
 			<Action>ПодписатьИОтправитьUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
@@ -1776,7 +1788,7 @@
 				<v8:item>
 					<v8:lang>uk</v8:lang>
 					<v8:content>Запитати еталон і перевірити</v8:content>
-				</v8:item>
+				</v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Запитати еталон і перевірити</v8:content></v8:item>
 			</Title>
 			<Action>ЗапроситьЭталонUAPKI</Action>
 			<CurrentRowUse>DontUse</CurrentRowUse>
