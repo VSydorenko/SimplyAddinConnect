@@ -163,6 +163,8 @@ int main (int argc, char* argv[])
             const bool expect_error         = (json_object_get_boolean(jo_task, "expectError") > 0);
             const bool has_expect_count      = (json_object_has_value(jo_task, "expectCountCmProviders") != 0);
             const int  expect_count_prov     = (int)json_object_get_number(jo_task, "expectCountCmProviders");
+            const bool has_expect_failed      = (json_object_has_value(jo_task, "expectCmProvidersFailed") != 0);
+            const int  expect_failed_cnt      = (int)json_object_get_number(jo_task, "expectCmProvidersFailed");
             const bool has_expect_hash       = (json_object_get_string(jo_task, "expectHashHex") != nullptr);
             const std::string expect_hash_hex = ParsonHelper::jsonObjectGetString(jo_task, "expectHashHex");
             const bool has_expect_sigvalid    = (json_object_has_value(jo_task, "expectSignatureValid") != 0);
@@ -230,6 +232,18 @@ int main (int argc, char* argv[])
                 if (got != expect_count_prov) {
                     task_ok = false;
                     detail += " [countCmProviders expected " + std::to_string(expect_count_prov)
+                            + " got " + std::to_string(got) + "]";
+                }
+            }
+
+            //  2-біс) INIT: скільки провайдерів НЕ завантажилось (result.cmProviders.failed)
+            if (task_ok && has_expect_failed) {
+                JSON_Object* jo_cmp = jo_result ? json_object_get_object(jo_result, "cmProviders") : nullptr;
+                JSON_Array*  ja_f   = jo_cmp ? json_object_get_array(jo_cmp, "failed") : nullptr;
+                const int got = ja_f ? (int)json_array_get_count(ja_f) : -1;
+                if (got != expect_failed_cnt) {
+                    task_ok = false;
+                    detail += " [cmProviders.failed expected " + std::to_string(expect_failed_cnt)
                             + " got " + std::to_string(got) + "]";
                 }
             }
