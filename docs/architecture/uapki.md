@@ -38,7 +38,7 @@ cm-pkcs12_x86.dll / cm-pkcs12_x64.dll     (окрема самодостатня
 
 **Формування запиту.** Хелпер збирає JSON-запит формату `{method, parameters}` через
 `nlohmann::json`: `requestJson["method"] = method`, `requestJson["parameters"] = paramsJson`
-(`UAPKIConnectHelper.cpp:623, 675`). Параметри можуть надходити або як JSON, або
+(`UAPKIConnectHelper.cpp:699, 751`). Параметри можуть надходити або як JSON, або
 у плоскому форматі `ключ=значение,...` (розбирається через `ParseParamsString`).
 
 **Виклик C-API.** Оголошення функцій ядра — під `WITH_UAPKI`
@@ -52,15 +52,15 @@ extern "C" {
 ```
 
 Далі хелпер викликає `char* response = ::process(requestStr.c_str())`
-(`UAPKIConnectHelper.cpp:702`). Згідно з протоколом (Таблиця 3 настанови
+(`UAPKIConnectHelper.cpp:778`). Згідно з протоколом (Таблиця 3 настанови
 [`UAPKI-PM-2.0.16.md`](../../extern/uapki/doc/UAPKI-PM-2.0.16.md)), `process()` повертає
 нуль-термінований JSON у UTF-8, пам'ять якого **має завжди звільнятися** функцією `json_free()`.
 
 **Звільнення пам'яті — до аналізу.** Хелпер копіює відповідь у `std::string responseJson`
-(`UAPKIConnectHelper.cpp:707`) і **одразу** звільняє буфер: `::json_free(response)`
-(`UAPKIConnectHelper.cpp:712`). Порядок навмисний — коментар у коді пояснює: звільнення
+(`UAPKIConnectHelper.cpp:783`) і **одразу** звільняє буфер: `::json_free(response)`
+(`UAPKIConnectHelper.cpp:788`). Порядок навмисний — коментар у коді пояснює: звільнення
 до будь-якого аналізу копії гарантує відсутність витоків на всіх гілках нижче
-(`UAPKIConnectHelper.cpp:709-710`).
+(`UAPKIConnectHelper.cpp:785-786`).
 
 **Детекція успіху.** Успішність визначається за полем `errorCode` відповіді
 (`IsOperationSuccess`, `UAPKIConnectHelper.cpp:549-613`): поле обов'язкове й має бути
@@ -74,7 +74,7 @@ extern "C" {
 
 **Спеціальна обробка `INIT`.** Метод `INIT` (регістронезалежно) — єдиний, що має
 спеціальну обробку: перед відправкою хелпер автоматично інжектить конфігурацію
-провайдерів (`InjectProviderConfig`, `UAPKIConnectHelper.cpp:666-672`), а після виклику
+провайдерів (`InjectProviderConfig`, `UAPKIConnectHelper.cpp:742-748`), а після виклику
 звіряє фактичну кількість завантажених провайдерів (`ProvidersLoadedOrFail`,
 `UAPKIConnectHelper.cpp:492-564`; нуль провайдерів при непорожньому запиті — `errorCode: 502`,
 недобір — лише `WARN`) і робить повторний `INIT` ідемпотентним для 1С (`HandleAlreadyInitialized`,
@@ -193,7 +193,7 @@ GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT` та адресою функції
 пишеться. Той самий якір `ModuleAnchor` повторно використовується тут для отримання
 дескриптора модуля під пошук ресурсу (`UAPKIConnectHelper.cpp:271-279`).
 
-Докстрінги, що описують увесь порядок і компоненти, — `UAPKIConnectHelper.h:59-97`.
+Докстрінги, що описують увесь порядок і компоненти, — `UAPKIConnectHelper.h:60-98`.
 
 > **Чому знадобився крок 3.** 1С не розпаковує з ZIP додаткові DLL — у цільовому каталозі
 > лишаються лише файли, описані в `manifest.xml`. Тому провайдер, покладений поруч, у
