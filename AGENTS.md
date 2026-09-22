@@ -125,8 +125,9 @@ TCP-емулятор термінала), `tests/label_printer_selftest.cpp` (х
 опис нижче), `tests/iit_verify.cpp` + `tests/support/IitStore.{h,cpp}` (арбітр L4-iit на нативній
 бібліотеці ІІТ + підготовка його сховища довіри), `tests/support/LocalKeys.{h,cpp}` (читання
 `tests/data/local-keys.json` — особисті КЕП розробника поза git, зразок —
-`tests/data/local-keys.example.json`), `tests/scenarios/*.json`
-(7 сценаріїв L1), `tests/data/` (тестовий контейнер `test-diia.p12`, сертифікати, CRL, еталони ЦЗО
+`tests/data/local-keys.example.json`), `tests/provider_contract_selftest.cpp` (харнес L1.5 —
+контракт провайдера НКІ напряму через `LoadLibraryW`), `tests/scenarios/*.json`
+(8 сценаріїв L1), `tests/data/` (тестовий контейнер `test-diia.p12`, сертифікати, CRL, еталони ЦЗО
 `czo/` — read-only вхід).
 
 Тестові цілі (лише Windows; окремі exe). Детальний склад перевірок кожного драйвера — у
@@ -143,12 +144,14 @@ TCP-емулятор термінала), `tests/label_printer_selftest.cpp` (х
 | `label_native_host.exe` | L-p3 | ні | компонента `LabelPrinter` через головну DLL проти `LabelEmulator` (TCP-захоплювач ZPL) |
 | `label_printer_emulator.exe` | — (ручний) | ні | standalone TCP-емулятор принтера етикеток (захоплює ZPL) для тесту з реальної 1С |
 | `uapki_selftest.exe` | L1 | **так** | UAPKI-ядро: JSON-сценарії `tests/scenarios/` через `process()`/`json_free()` |
+| `provider_contract_selftest.exe` | L1.5 | ні (але без -WithUAPKI — SKIP, файлу провайдера немає) | контракт провайдера НКІ напряму через LoadLibraryW: ідемпотентний init для тієї самої конфігурації, відмова для іншої, облік посилань |
 | `native_host.exe` | L2/L3 | **так** | компонента `AddinUAPKIConnect` через DLL, e2e + крос-валідація ПРРО (кейс 5 потребує `PRRO_DOCS_DIR`; шукає `*.signed` РЕКУРСИВНО, при їх відсутності віддає **exit 3 = SKIP**, а не PASS) |
 | `uapki_fiscal_emulator.exe` | — (ручний) | **так** | HTTP-оракул ЕЦП (грає сервер ДПС/ЄВПЕЗ) для тесту UAPKI з реальної 1С: VERIFY вхідного CMS + підписана квитанція + еталони (`--self-test` — вбудовані перевірки без 1С) |
 | `iit_verify_x86.exe` | L4-iit | ні (**лише x86**) | незалежний арбітр підпису на нативній `EUSignCP.dll` АТ «ІІТ»: один файл → один рядок JSON, exit `0`=VALID / `1`=INVALID / `2`=помилка / `3`=SKIP (арбітр недоступний). Деталі — `docs/architecture/uapki.md` §8.4 |
 
 Цілі без UAPKI (`core`/`wire`/`ecr_*`, а також `iit_verify` — але той лише в x86) збираються
-завжди при `BUILD_TESTS=ON`; `uapki_selftest`/`uapki_fiscal_emulator`/`native_host` — лише разом
+завжди при `BUILD_TESTS=ON`, так само як `provider_contract_selftest` (крипто-ядро не лінкується,
+`cm-api.h` самодостатній); `uapki_selftest`/`uapki_fiscal_emulator`/`native_host` — лише разом
 з `-WithUAPKI` (без UAPKI тихо пропущені).
 `[SKIP]`-рядки (напр. `ComRoundtrip` без пари com0com) — НЕ FAIL: гейт дивиться лише exit-код 0.
 Виняток — `native_host` **кейс 5**: щоб відсутність вхідних еталонів не зараховувалась як покриття,
@@ -160,7 +163,7 @@ TCP-емулятор термінала), `tests/label_printer_selftest.cpp` (х
 L0.5 core_selftest ядра → L0.6 wire_selftest device-ядра → L0.7 ecr_privatjson_selftest драйвера →
 L2-ecr ecr_native_host компоненти ECRPrivatJSON через DLL → L-p1 label_printer_selftest драйвера
 LabelPrinter → L-p3 label_native_host компоненти LabelPrinter через DLL → L1 selftest по
-сценаріях → L2/L3 native_host → L4-iit арбітр ІІТ (негативний контроль + наш підпис + матриця
+сценаріях → L1.5 provider_contract_selftest → L2/L3 native_host → L4-iit арбітр ІІТ (негативний контроль + наш підпис + матриця
 вердиктів «наш двигун проти ІІТ» на корпусі ЦЗО та еталонах ДПС); підсумкова таблиця
 PASS/FAIL/SKIP/BLOCKED, ненульовий exit при провалі). L0.5, L0.6, L0.7, L2-ecr, L-p1 і L-p3
 проходять і без `-WithUAPKI`. L4-iit іде і з x64-прогону (`iit_verify_x86.exe` — окремий процес,
@@ -169,7 +172,11 @@ WOW64); SKIP там означає, що exe не зібрано або арбі
 **Режим без UAPKI (`-NoUapki`):** ганяє ядрові/ECR/LabelPrinter-рівні (L0.5 core + L0.6 wire +
 L0.7 ecr + L2-ecr ecr_native_host + L-p1 label_printer_selftest + L-p3 label_native_host) —
 збирає з `-DBUILD_TESTS=ON` **без** `-DBUILD_WITH_UAPKI=ON`; провайдер (L0.2), L1, L2/L3
-native_host і L4-iit → SKIP (не FAIL). L0.1 (рівно 3 експорти головної DLL), L2-ecr (потребує головну DLL +
+native_host і L4-iit → SKIP (не FAIL). `provider_contract_selftest.exe` (L1.5) збирається
+й запускається і в цьому режимі (крипто-ядро йому не потрібне), але без `-WithUAPKI` у
+`bin/Release` немає файлу провайдера `cm-pkcs12_*.dll` — сам `provider_contract_selftest.exe`
+ловить це (exit 3) і віддає **SKIP**, не FAIL; окремого гейту на `-NoUapki` в оркестраторі для
+L1.5 немає. L0.1 (рівно 3 експорти головної DLL), L2-ecr (потребує головну DLL +
 `ecr_native_host.exe`) і L-p3 (потребує головну DLL + `label_native_host.exe`) лишаються активними.
 Швидкий гейт device-ядра+ECR+LabelPrinter без важкої статичної збірки крипто-стеку:
 `powershell -File run_tests.ps1 -NoUapki [x64|x86]`.
@@ -245,9 +252,10 @@ tests/              # core_selftest (L0.5) + wire_selftest (L0.6) + ecr_privatjs
                     #   ecr_terminal_emulator (standalone EXE для 1С) + label_printer_selftest (L-p1,
                     #   драйвер LabelPrinter) + label_native_host (L-p3, компонента через DLL) +
                     #   label_printer_emulator (standalone EXE для 1С, +support/LabelEmulator) +
-                    #   uapki_selftest (L1) + native_host (L2/L3) + uapki_fiscal_emulator
-                    #   (— ручний, HTTP-оракул ЕЦП для тесту UAPKI з 1С, +support/MiniHttpServer
-                    #   — власний HTTP/1.1-сервер) + scenarios/ + data/
+                    #   uapki_selftest (L1) + provider_contract_selftest (L1.5, контракт
+                    #   провайдера НКІ напряму через LoadLibraryW) + native_host (L2/L3) +
+                    #   uapki_fiscal_emulator (— ручний, HTTP-оракул ЕЦП для тесту UAPKI з 1С,
+                    #   +support/MiniHttpServer — власний HTTP/1.1-сервер) + scenarios/ + data/
 ExtDataProcessors/  # тестова зовнішня обробка 1С у форматі platform XML (Designer) —
                     #   SimplyAddinConnect: форма з кнопками під усі компоненти + макет з DLL;
                     #   v8project.yaml описує цей 1С-воркспейс (source-set

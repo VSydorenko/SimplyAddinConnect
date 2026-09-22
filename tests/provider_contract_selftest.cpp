@@ -85,9 +85,12 @@ static bool providerAlive(ProviderApi& api) {
     return err != RET_CM_NOT_INITIALIZED;
 }
 
-int main() {
+int wmain(int argc, wchar_t** argv) {
+    // argv[1] — повний шлях до провайдера (для разової перевірки cm-pkcs11);
+    // без аргументу — cm-pkcs12 з bin/Release, як у гейті.
     std::wstring binDir = u8to16(PCS_BIN_DIR);
-    std::wstring path   = binDir + L"\\cm-pkcs12" + ARCH_W + L".dll";
+    std::wstring path   = (argc > 1) ? std::wstring(argv[1])
+                                     : binDir + L"\\cm-pkcs12" + ARCH_W + L".dll";
 
     printf("provider_contract_selftest\n  provider=%ls\n", path.c_str());
 
@@ -125,6 +128,17 @@ int main() {
     CHECK(api.init(nullptr) == RET_OK, "init #3 після повного deinit -> RET_OK");
     CHECK(providerAlive(api), "після init #3 провайдер живий");
     CHECK(api.deinit() == RET_OK, "фінальний deinit -> RET_OK");
+
+    // 7. Інша конфігурація — НЕ та сама операція. Провайдер мусить відмовити
+    //    ГУЧНО й не чіпати ні стану, ні лічильника (контракт cm-api.h).
+    CHECK(api.init(nullptr) == RET_OK, "init з конфігурацією A (null) -> RET_OK");
+    static const char CFG_B[] = "{\"differentConfig\":true}";
+    CM_ERROR eB = api.init((CM_JSON_PCHAR)CFG_B);
+    printf("  init з конфігурацією B -> 0x%04X\n", (unsigned)eB);
+    CHECK(eB == RET_CM_ALREADY_INITIALIZED, "init з ІНШОЮ конфігурацією -> RET_CM_ALREADY_INITIALIZED");
+    // Доказ, що відмова не збільшила лічильник: ОДИН deinit мусить звільнити об'єкт.
+    CHECK(api.deinit() == RET_OK, "deinit після відмови -> RET_OK");
+    CHECK(!providerAlive(api), "після ОДНОГО deinit провайдера немає (відмова не рахувалась)");
 
     printf("\n=== provider_contract_selftest: %s (FAIL: %d) ===\n",
            g_fails == 0 ? "PASS" : "FAIL", g_fails);
