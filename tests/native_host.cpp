@@ -22,6 +22,7 @@ int main() {
 
 #include <windows.h>
 #include <shellapi.h>   // CommandLineToArgvW (windows.h не тягне його при WIN32_LEAN_AND_MEAN)
+#include <psapi.h>      // EnumProcessModules — перепис модулів для кейса 12
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -35,6 +36,7 @@ int main() {
 #include "support/LocalKeys.h"
 
 #pragma comment(lib, "shell32.lib")  // CommandLineToArgvW
+#pragma comment(lib, "psapi.lib")    // EnumProcessModules
 
 // SDK 1С (include/). types.h визначає WCHAR_T=wchar_t та ADDIN_API=__stdcall
 // лише коли задано _WINDOWS — його задає CMake для цієї цілі (див. CMakeLists).
@@ -1608,12 +1610,253 @@ static bool case11_jksSelectByCertId(const std::wstring& binDir, const std::wstr
     return true;
 }
 
+// Повні шляхи всіх завантажених у процес модулів із заданим БАЗОВИМ іменем
+// (без урахування регістру). Потрібен, щоб ДОВЕСТИ стан перед перевіркою:
+// скільки саме модулів головної DLL і провайдера живе в процесі й звідки.
+static std::vector<std::wstring> loadedModulePaths(const std::wstring& baseName) {
+    std::vector<std::wstring> out;
+    HMODULE mods[1024];
+    DWORD needed = 0;
+    if (!EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &needed)) return out;
+    const DWORD n = needed / sizeof(HMODULE);
+    for (DWORD i = 0; i < n && i < 1024; ++i) {
+        wchar_t path[MAX_PATH * 2];
+        const DWORD len = GetModuleFileNameW(mods[i], path, (DWORD)(sizeof(path) / sizeof(path[0])));
+        if (len == 0) continue;
+        const std::wstring full(path, len);
+        const size_t slash = full.find_last_of(L"\\/");
+        const std::wstring base = (slash == std::wstring::npos) ? full : full.substr(slash + 1);
+        if (_wcsicmp(base.c_str(), baseName.c_str()) == 0) out.push_back(full);
+    }
+    return out;
+}
+
+// ========================================================================
+// КЕЙС 12 — ДВА екземпляри головної DLL, ОДИН модуль провайдера.
+// Модель сценарію 1С: компонента в процесі двічі (ExtCompT + тимчасова копія
+// v8_*_c.), а провайдера обидва беруть з ОДНОГО каталогу розгортання
+// %LOCALAPPDATA%\SimplyAddinConnect\providers\<VERSION_FULL>\ — бо версія та
+// сама. Два РІЗНІ шляхи до головної DLL -> два модулі зі своїми статиками UAPKI;
+// ОДИН шлях до провайдера -> один модуль, один глобал cm_pkcs12.
+//
+// Пастка, яку кейс мусить виключити: провайдер із ДВОХ різних шляхів дав би
+// ДВА модулі провайдера з двома глобалами — дефект не відтворився б, і кейс
+// зеленів би, нічого не довівши. Тому провайдер — з явного СПІЛЬНОГО
+// cmProviders.dir, а перепис модулів доводить передумову ДО перевірки.
+//
+// До C1: другий INIT дає countCmProviders == 0.
+// ========================================================================
+static bool case12_twoInstances(const std::wstring& mainDllSrc, const std::wstring& binDir) {
+    printf("== Case 12: два екземпляри головної DLL, один модуль провайдера ==\n");
+
+    const std::wstring dllName  = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
+    const std::wstring provName = std::wstring(L"cm-pkcs12") + ARCH_W + L".dll";
+
+    std::wstring dirA = makeTempDir(L"case12a");
+    std::wstring dirB = makeTempDir(L"case12b");
+    CHECK(!dirA.empty() && !dirB.empty() && dirA != dirB, "створено два різні тимчасові каталоги");
+
+    const std::wstring dllA = dirA + L"\\" + dllName;
+    const std::wstring dllB = dirB + L"\\" + dllName;
+    CHECK(CopyFileW(mainDllSrc.c_str(), dllA.c_str(), FALSE) != 0, "скопійовано головну DLL -> A");
+    CHECK(CopyFileW(mainDllSrc.c_str(), dllB.c_str(), FALSE) != 0, "скопійовано головну DLL -> B");
+    // Провайдера поруч із копіями НЕ кладемо: ResolveProviderDir узяв би каталог
+    // кожної копії, і модулів провайдера стало б два.
+
+    // Обидва екземпляри — з ОДНОГО каталогу провайдера (формат як у кейсі 3:
+    // завершальний роздільник обов'язковий, арх-суфікс дописує хелпер).
+    json p;
+    p["offline"] = true;
+    p["cmProviders"]["dir"] = fwd(binDir + L"\\");
+    p["cmProviders"]["allowedProviders"] = json::array({ json{{"lib", "cm-pkcs12"}} });
+    const std::string initParams = p.dump();
+
+    // --- Екземпляр A -----------------------------------------------------
+    Component a;
+    if (!a.load(dllA)) return false;
+    std::string respA = a.call("INIT", initParams);
+    printf("  A INIT: %s\n", respA.c_str());
+    json jA;
+    CHECK(errCode(respA, jA) == 0, "A: INIT errorCode == 0");
+    CHECK(jA["result"]["countCmProviders"].get<long>() == 1, "A: countCmProviders == 1");
+
+    // --- Екземпляр B — ОКРЕМИЙ модуль, свіжі статики UAPKI ---------------
+    Component b;
+    if (!b.load(dllB)) return false;
+    std::string respB = b.call("INIT", initParams);
+    printf("  B INIT: %s\n", respB.c_str());
+    json jB;
+    CHECK(errCode(respB, jB) == 0, "B: INIT errorCode == 0 (свіжі статики UAPKI)");
+
+    // --- Доказ передумови: процес саме в тому стані, який кейс моделює ---
+    const std::vector<std::wstring> mains = loadedModulePaths(dllName);
+    const std::vector<std::wstring> provs = loadedModulePaths(provName);
+    for (const auto& m : mains) printf("  [module] %s\n", w2u8(m).c_str());
+    for (const auto& m : provs) printf("  [module] %s\n", w2u8(m).c_str());
+    CHECK(mains.size() == 2, "у процесі ДВА модулі головної DLL");
+    CHECK(mains.size() == 2 && _wcsicmp(mains[0].c_str(), mains[1].c_str()) != 0,
+          "модулі головної DLL — з РІЗНИХ шляхів");
+    CHECK(provs.size() == 1, "у процесі ОДИН модуль провайдера (інакше кейс нічого не доводить)");
+
+    // --- Власне перевірка -------------------------------------------------
+    CHECK(jB["result"]["countCmProviders"].get<long>() == 1,
+          "B: countCmProviders == 1 <- ЦЕ Й Є ДЕФЕКТ до C1");
+
+    // Лічильник, що піднявся, ще не означає робочого провайдера. Друга ознака:
+    // OPEN у ДРУГОМУ екземплярі не впирається в 4102 UNKNOWN_PROVIDER.
+    // Контейнера навмисно не відкриваємо — досить, щоб помилка була ІНША.
+    json op;
+    op["provider"] = "PKCS12";
+    op["storage"]  = "Z:\\nonexistent-by-design.p12";
+    op["password"] = "x";
+    op["mode"]     = "RO";
+    std::string respOpen = b.call("OPEN", op.dump());
+    printf("  B OPEN(неіснуючий): %s\n", respOpen.c_str());
+    json jO;
+    CHECK(errCode(respOpen, jO) != 4102, "B: OPEN не дає 4102 UNKNOWN_PROVIDER (провайдер зареєстрований)");
+
+    a.unload();
+    b.unload();
+    return true;
+}
+
+// ========================================================================
+// КЕЙС 13 — безпека вивантаження головної DLL.
+// Дві речі одним прогоном:
+//   (а) чи не зависає/падає FreeLibrary головної DLL після INIT — з C2
+//       деструктор статика UAPKI кличе FreeLibrary провайдера з-під
+//       DLL_PROCESS_DETACH, тобто під loader lock;
+//   (б) чи лишається cm-pkcs12_xNN.dll у процесі після вивантаження —
+//       ДО C2 лишається (витік сирого вказівника), ПІСЛЯ C2 має зникнути.
+// ========================================================================
+static bool case13_unloadSafety(const std::wstring& mainDllSrc, const std::wstring& binDir) {
+    printf("== Case 13: безпека вивантаження головної DLL ==\n");
+
+    std::wstring dllName  = std::wstring(L"SimplyAddinConnectWin") + ARCH_W + L".dll";
+    std::wstring provName = std::wstring(L"cm-pkcs12") + ARCH_W + L".dll";
+
+    std::wstring tmp = makeTempDir(L"case13");
+    CHECK(!tmp.empty(), "створено тимчасовий каталог");
+    CHECK(CopyFileW(mainDllSrc.c_str(), (tmp + L"\\" + dllName).c_str(), FALSE) != 0,
+          "скопійовано головну DLL");
+    CHECK(CopyFileW((binDir + L"\\" + provName).c_str(), (tmp + L"\\" + provName).c_str(), FALSE) != 0,
+          "скопійовано провайдера поруч");
+
+    CHECK(GetModuleHandleW(provName.c_str()) == nullptr,
+          "до старту провайдера в процесі НЕМАЄ");
+
+    {
+        Component c;
+        if (!c.load(tmp + L"\\" + dllName)) return false;
+        std::string resp = c.call("INIT", "");
+        json j;
+        CHECK(errCode(resp, j) == 0, "INIT errorCode == 0");
+        CHECK(j["result"]["countCmProviders"].get<long>() == 1, "countCmProviders == 1");
+        CHECK(GetModuleHandleW(provName.c_str()) != nullptr, "провайдер у процесі присутній");
+
+        printf("  -> unload(): DestroyObject + FreeLibrary головної DLL\n");
+        fflush(stdout);
+        c.unload();     // якщо тут зависне — це і є відповідь виміру
+        printf("  <- unload() повернувся\n");
+        fflush(stdout);
+    }
+
+    CHECK(true, "FreeLibrary головної DLL повернувся без зависання й падіння");
+
+    HMODULE stillThere = GetModuleHandleW(provName.c_str());
+    printf("  після вивантаження GetModuleHandleW('%ls') = %p\n", provName.c_str(), (void*)stillThere);
+    CHECK(stillThere == nullptr,
+          "провайдера в процесі БІЛЬШЕ НЕМАЄ (витік закрито) <- ЦЕ ЧЕРВОНЕ до C2");
+    return true;
+}
+
+// ========================================================================
+// КЕЙС 14 — нуль провайдерів є ПОМИЛКОЮ для 1С (політика C4).
+// INIT із єдиним свідомо неіснуючим провайдером: бібліотека віддасть
+// errorCode 0 з countCmProviders 0, а обгортка мусить перетворити це на 502
+// і зберегти відповідь бібліотеки цілою в uapkiResponse.
+// ========================================================================
+static bool case14_zeroProvidersIsError(const std::wstring& binDir) {
+    printf("== Case 14: нуль провайдерів = помилка 502 ==\n");
+
+    std::wstring dllPath = binDir + L"\\SimplyAddinConnectWin" + ARCH_W + L".dll";
+    Component c;
+    if (!c.load(dllPath)) return false;
+
+    // Явний cmProviders вимикає автоінʼєкцію: компонента поважає непорожній dir як є.
+    json p;
+    p["offline"] = true;
+    p["cmProviders"]["dir"] = fwd(binDir) + "/";
+    p["cmProviders"]["allowedProviders"] = json::array({ json{{"lib", "cm-nonexistent"}} });
+
+    std::string resp = c.call("INIT", p.dump());
+    printf("  INIT resp: %s\n", resp.c_str());
+
+    json j;
+    long ec = errCode(resp, j);
+    CHECK(ec == 502, "errorCode == 502 (обгортка не повторює брехню бібліотеки)");
+    CHECK(j.contains("error") && j["error"].is_string()
+          && j["error"].get<std::string>().rfind("NO_CM_PROVIDERS_LOADED", 0) == 0,
+          "error починається з NO_CM_PROVIDERS_LOADED");
+    CHECK(j.contains("uapkiResponse") && j["uapkiResponse"].is_object(),
+          "відповідь бібліотеки збережена в uapkiResponse");
+    CHECK(j["uapkiResponse"].contains("result")
+          && j["uapkiResponse"]["result"].contains("countCmProviders")
+          && j["uapkiResponse"]["result"]["countCmProviders"].get<long>() == 0,
+          "uapkiResponse зберігає оригінальний countCmProviders == 0");
+
+    c.unload();
+    return true;
+}
+
+// ========================================================================
+// КЕЙС 15 — повторний INIT у ТОМУ САМОМУ екземплярі (політика C5).
+// UAPKI віддає 4106 ALREADY_INITIALIZED із порожнім результатом; обгортка
+// мусить зміряти живий стан через PROVIDERS і віддати 1С успіх із реальним
+// числом провайдерів і ознакою alreadyInitialized.
+// ========================================================================
+static bool case15_idempotentInit(const std::wstring& binDir) {
+    printf("== Case 15: повторний INIT ідемпотентний для 1С ==\n");
+
+    std::wstring dllPath = binDir + L"\\SimplyAddinConnectWin" + ARCH_W + L".dll";
+    Component c;
+    if (!c.load(dllPath)) return false;
+
+    std::string r1 = c.call("INIT", buildInit(true));
+    json j1;
+    CHECK(errCode(r1, j1) == 0, "INIT #1 errorCode == 0");
+    CHECK(j1["result"]["countCmProviders"].get<long>() == 1, "INIT #1 countCmProviders == 1");
+
+    std::string r2 = c.call("INIT", buildInit(true));
+    printf("  INIT #2 resp: %s\n", r2.c_str());
+    json j2;
+    CHECK(errCode(r2, j2) == 0, "INIT #2 errorCode == 0 <- ЧЕРВОНЕ до C5 (буде 4106)");
+    CHECK(j2["result"].contains("alreadyInitialized")
+          && j2["result"]["alreadyInitialized"].get<bool>(),
+          "INIT #2 несе alreadyInitialized == true");
+    CHECK(j2["result"]["countCmProviders"].get<long>() == 1,
+          "INIT #2 countCmProviders == 1 (зміряно через PROVIDERS)");
+
+    // Друга ознака: після такого INIT крипто-стек справді придатний.
+    json op;
+    op["provider"] = "PKCS12";
+    op["storage"]  = "Z:\\nonexistent-by-design.p12";
+    op["password"] = "x";
+    op["mode"]     = "RO";
+    json jo;
+    long ecOpen = errCode(c.call("OPEN", op.dump()), jo);
+    CHECK(ecOpen != 4102, "OPEN не дає 4102 UNKNOWN_PROVIDER");
+
+    c.unload();
+    return true;
+}
+
 // ========================================================================
 // main / CLI
 // ========================================================================
 static void usage() {
     printf(
-        "native_host <case 1..11> [mainDll] [dataDir] [binDir] [prroDir] [outSig]\n"
+        "native_host <case 1..15> [mainDll] [dataDir] [binDir] [prroDir] [outSig]\n"
         "  case     : номер сценарію (окремий процес на кейс — INIT раз на процес)\n"
         "  mainDll  : шлях до головної DLL (деф.: <binDir>/SimplyAddinConnectWin"
 #ifdef _WIN64
@@ -1640,7 +1883,7 @@ int main() {
 
     if (argc < 2) { usage(); LocalFree(wargv); return 2; }
     int kase = _wtoi(wargv[1]);
-    if (kase < 1 || kase > 11) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
+    if (kase < 1 || kase > 15) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
 
     std::wstring binDir  = argAt(4)[0] ? std::wstring(argAt(4)) : u8to16(HOST_BIN_DIR);
     std::wstring dataDir = argAt(3)[0] ? std::wstring(argAt(3)) : u8to16(HOST_DATA_DIR);
@@ -1682,6 +1925,10 @@ int main() {
             case 9: pass = case9_verifyOne(binDir, outSig);                    break;
             case 10: pass = case10_selectByCertId(binDir, dataDir);            break;
             case 11: pass = case11_jksSelectByCertId(binDir, dataDir, skipped); break;
+            case 12: pass = case12_twoInstances(mainDll, binDir);              break;
+            case 13: pass = case13_unloadSafety(mainDll, binDir);              break;
+            case 14: pass = case14_zeroProvidersIsError(binDir);               break;
+            case 15: pass = case15_idempotentInit(binDir);                     break;
         }
     } catch (const std::exception& e) {
         printf("FATAL: незловлений виняток: %s\n", e.what());
