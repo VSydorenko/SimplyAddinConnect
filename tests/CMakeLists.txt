@@ -348,6 +348,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_executable(uapki_fiscal_emulator uapki_fiscal_emulator.cpp
     support/MiniHttpServer.cpp            # власний HTTP/1.1-сервер (замість ix::HttpServer)
+    support/UapkiOracle.cpp               # крипто, спільне з prro_fs_emulator
 )
 
 set_target_properties(uapki_fiscal_emulator PROPERTIES
