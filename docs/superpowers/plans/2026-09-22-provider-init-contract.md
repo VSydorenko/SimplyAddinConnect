@@ -2248,7 +2248,15 @@ git status --short    # gitlink у корені не має показувати
 `docs/tasks/2026-09-22_provider_reinit_defect.md` розділом «Анонс для споживачів» і сказати
 про це користувачу.
 
-- [ ] **Крок 2: Живий прогін у 1С**
+- [x] **Крок 2: Живий прогін у 1С** — ВИКОНАНО 2026-09-23 (сесія `simplyaddinconnect-4b`, збірка
+  `3.2.1.230`). Друге відкриття обробки: «перша ініціалізація», провайдерів 1, `OPEN` ok (раніше
+  0 і `4102`). Повторний `INIT` у тій самій формі: `alreadyInitialized: true`,
+  `countCmProviders: 1`. Лог — `C:\log\SimplyAddinConnect.log:1647`, `:1691`, `:1709`;
+  провайдер із `providers\3.2.1.230\` (`:1635`). **Перепис модулів процесу `1cv8c`**: дві копії
+  головної DLL (`%TEMP%\12\v8_DC35_12.tmp`, `v8_DC35_28.tmp`, обидві 3.2.1.230) і **одна**
+  `cm-pkcs12_x64.dll`. Механізм двох екземплярів тепер **виміряно в 1С**, не реконструйовано.
+  Кожне відкриття зовнішньої обробки дає новий модуль, старі лишаються завантаженими. Живий
+  прогін також виявив прогалину C5 — див. Task 12.
 
 > **Перед збіркою для прогону — `VERSION_REVISION` 0 → 1 у `VERSION.txt`** (`3.2.0` → `3.2.1`),
 > за спекою §10.5: змінилась поведінка, видима 1С (C4, C5). У першій редакції плану кроку не
@@ -2271,6 +2279,193 @@ gh pr create --base main --title "Контракт ініціалізації п
 
 У тілі: посилання на спеку й план, перелік C1–C5, результат гейта (числа PASS для x64 і x86),
 стан апстрім-PR, і **явно** — що з кроком 2 (живий прогін) і що з рішенням по C2.
+
+---
+
+## Task 12: C5 — та сама конфігурація успіх, інша — `4106` (спека §8.4)
+
+> Додано 2026-09-23 за живим прогоном у 1С: повторний `INIT` з ІНШОЮ конфігурацією отримав
+> `errorCode: 0` і `alreadyInitialized: true`. Це суперечить принципу C1 (спека §4.2, §8.4).
+> **Виконувати лише коли сесія `simplyaddinconnect-4b` звільнить `bin/Release`** — вона веде
+> живий ретест у 1С.
+
+**Файли:**
+- Modify: `src/helpers/UAPKIConnect/UAPKIConnectHelper.h` (сигнатура `HandleAlreadyInitialized`)
+- Modify: `src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp` (статик параметрів, порівняння, `DEINIT`)
+- Modify: `tests/native_host.cpp` (кейс 17; межа `kase > 16` → `> 17`)
+- Modify: `run_tests.ps1` (кейс 17 у цикл; BOM)
+- Modify: `docs/integration-1c/uapki.md` §4.1
+
+**Інтерфейси:**
+- `static bool HandleAlreadyInitialized(const nlohmann::json& params, std::string& responseJson);`
+  → `true`: відповідь замінено на успішну (та сама конфігурація, провайдери ≥ 1); `false`:
+  відповідь або не зачеплено, або замінено діагностичною `4106` (інша конфігурація).
+- Нове в анонімному namespace `UAPKIConnectHelper.cpp`:
+  `std::mutex g_initMutex; bool g_hasInitParams = false; nlohmann::json g_initParams;`
+  `nlohmann::json NormalizeInitParams(const nlohmann::json& p)` — копія без `skipSelfTest`.
+
+- [ ] **Крок 1: Червоне — кейс 17**
+
+```cpp
+// ========================================================================
+// КЕЙС 17 — повторний INIT з ІНШОЮ конфігурацією (спека §8.4).
+// Та сама конфігурація -> alreadyInitialized (кейс 15). Інша -> 4106 з
+// переліком ключів, що різняться: тиха підміна конфігурації — брехня про
+// успіх (для ПРРО: офлайн замість онлайну з TSP).
+// ========================================================================
+static bool case17_initConfigMismatch(const std::wstring& binDir) {
+    printf("== Case 17: повторний INIT з іншою конфігурацією ==\n");
+    const std::wstring dllPath = binDir + L"\\SimplyAddinConnectWin" + ARCH_W + L".dll";
+    Component c;
+    if (!c.load(dllPath)) return false;
+
+    json a; a["offline"] = true;
+    json j;
+    CHECK(errCode(c.call("INIT", a.dump()), j) == 0, "INIT(A) errorCode == 0");
+    CHECK(!j["result"].contains("alreadyInitialized"), "INIT(A) — справжня ініціалізація");
+
+    // skipSelfTest не є конфігурацією — та сама A.
+    json a2 = a; a2["skipSelfTest"] = true;
+    CHECK(errCode(c.call("INIT", a2.dump()), j) == 0, "INIT(A + skipSelfTest) errorCode == 0");
+    CHECK(j["result"].value("alreadyInitialized", false), "INIT(A + skipSelfTest) -> alreadyInitialized");
+
+    // Інша конфігурація: безпечний ключ, без мережі.
+    json b = a; b["validationByCrl"] = true;
+    std::string rb = c.call("INIT", b.dump());
+    printf("  INIT(B) resp: %s\n", rb.c_str());
+    CHECK(errCode(rb, j) == 4106, "INIT(B) errorCode == 4106 <- ЧЕРВОНЕ до Task 12 (буде 0)");
+    CHECK(j["result"].value("alreadyInitialized", false), "INIT(B) несе alreadyInitialized");
+    bool mentions = false;
+    if (j["result"].contains("configMismatch") && j["result"]["configMismatch"].is_array())
+        for (const auto& k : j["result"]["configMismatch"])
+            if (k.is_string() && k.get<std::string>() == "validationByCrl") mentions = true;
+    CHECK(mentions, "configMismatch називає validationByCrl");
+
+    // Змінити конфігурацію — лише через DEINIT + INIT{skipSelfTest}.
+    CHECK(errCode(c.call("DEINIT", ""), j) == 0, "DEINIT errorCode == 0");
+    json b2 = b; b2["skipSelfTest"] = true;
+    CHECK(errCode(c.call("INIT", b2.dump()), j) == 0, "INIT(B + skipSelfTest) після DEINIT == 0");
+    CHECK(!j["result"].contains("alreadyInitialized"), "INIT(B) після DEINIT — справжня ініціалізація");
+    CHECK(j["result"]["countCmProviders"].get<long>() == 1, "INIT(B) після DEINIT: countCmProviders == 1");
+
+    c.unload();
+    return true;
+}
+```
+
+`switch`: `case 17: pass = case17_initConfigMismatch(binDir); break;`. Межа `kase > 17`, `usage` —
+`1..17`. Зібрати, прогнати — червоне рівно на `INIT(B) errorCode == 4106`.
+
+- [ ] **Крок 2: Зелене — реалізація**
+
+В анонімному namespace `UAPKIConnectHelper.cpp` (поруч з `ModuleAnchor`):
+
+```cpp
+    // Параметри INIT, що СПРАВДІ ініціалізував бібліотеку в цьому модулі (після
+    // автоінʼєкції). Час життя = статики UAPKI того самого модуля. Спека §8.4.
+    std::mutex     g_initMutex;
+    bool           g_hasInitParams = false;
+    nlohmann::json g_initParams;
+
+    // skipSelfTest — прапорець процедури, не конфігурація: у порівнянні не бере участі.
+    nlohmann::json NormalizeInitParams(const nlohmann::json& p) {
+        nlohmann::json c = p;
+        if (c.is_object()) c.erase("skipSelfTest");
+        return c;
+    }
+```
+
+(`<mutex>` уже є в `src/core/pch.h:34`; додати `#include <set>` в include-блок файла — для переліку ключів.)
+
+`HandleAlreadyInitialized` отримує параметр `const nlohmann::json& params`. Після того, як
+встановлено `4106` і зміряно `count` через `PROVIDERS` (наявний код), **перед** формуванням
+успішної відповіді:
+
+```cpp
+        bool same = false;
+        nlohmann::json mismatch = nlohmann::json::array();
+        {
+            std::lock_guard<std::mutex> lock(g_initMutex);
+            if (g_hasInitParams) {
+                const nlohmann::json now  = NormalizeInitParams(params);
+                const nlohmann::json then = NormalizeInitParams(g_initParams);
+                same = (now == then);
+                if (!same && now.is_object() && then.is_object()) {
+                    std::set<std::string> keys;
+                    for (auto it = now.begin(); it != now.end(); ++it)   keys.insert(it.key());
+                    for (auto it = then.begin(); it != then.end(); ++it) keys.insert(it.key());
+                    for (const auto& k : keys) {
+                        const bool inNow = now.contains(k), inThen = then.contains(k);
+                        if (inNow != inThen || (inNow && now[k] != then[k])) mismatch.push_back(k);
+                    }
+                }
+            }
+        }
+
+        if (!same) {
+            NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Повторный INIT с ДРУГОЙ конфигурацией отклонён: " + mismatch.dump());
+            nlohmann::json err;
+            err["errorCode"] = UAPKI_ALREADY_INITIALIZED;
+            err["error"]     = "ALREADY_INITIALIZED: библиотека уже инициализирована с другой конфигурацией; сменить её можно только через DEINIT и INIT с skipSelfTest";
+            err["method"]    = "INIT";
+            err["result"]["alreadyInitialized"] = true;
+            err["result"]["configMismatch"]     = mismatch;
+            err["result"]["countCmProviders"]   = count;
+            responseJson = err.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+            return false;
+        }
+```
+
+> Порядок у функції: спершу виміряти `count` (наявна проба `PROVIDERS`), потім порівняння. Якщо
+> `count < 1` — наявна гілка `return false` без заміни лишається першою: нуль провайдерів
+> обробляє C4 (`502`) і в разі невідповідності конфігурації.
+
+У `ExecuteUapkiCommand`, блок `INIT`:
+
+```cpp
+            if (methodUpper == "INIT") {
+                // Справжня ініціалізація (бібліотека сама відповіла 0) — запам'ятати
+                // параметри, з якими підняли бібліотеку в цьому модулі (спека §8.4).
+                if (isSuccess) {
+                    std::lock_guard<std::mutex> lock(g_initMutex);
+                    g_initParams    = paramsJson;
+                    g_hasInitParams = true;
+                }
+                if (HandleAlreadyInitialized(paramsJson, responseJson)) {
+                    isSuccess = true;
+                }
+                if (!ProvidersLoadedOrFail(paramsJson, responseJson)) {
+                    isSuccess = false;
+                }
+            }
+            else if (methodUpper == "DEINIT" && isSuccess) {
+                std::lock_guard<std::mutex> lock(g_initMutex);
+                g_hasInitParams = false;
+                g_initParams    = nlohmann::json();
+            }
+```
+
+Прогнати кейси 15 і 17 — зелене; кейс 12 (два модулі — у кожного свій статик) — зелене.
+
+- [ ] **Крок 3: Документація для 1С — `docs/integration-1c/uapki.md` §4.1**
+
+Абзац «**`INIT` ідемпотентний.**» замінити: повторний `INIT` з **тією самою** конфігурацією
+(`skipSelfTest` не враховується) → `errorCode: 0` і `alreadyInitialized: true`; з **іншою** →
+`errorCode: 4106`, у `result.configMismatch` — ключі, що різняться; змінити конфігурацію можна
+лише `DEINIT` + `INIT` з `"skipSelfTest": true`. Гард якорів — exit 0.
+
+- [ ] **Крок 4: Гейт x64 + x86, коміт, пуш**
+
+Цикл `run_tests.ps1`: додати `17`. BOM перевірити.
+
+```bash
+git add src/helpers/UAPKIConnect/UAPKIConnectHelper.h src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp tests/native_host.cpp run_tests.ps1 docs/integration-1c/uapki.md version.h
+git commit --only -m "fix(uapki): C5 — повторний INIT з іншою конфігурацією відхиляється 4106 (спека §8.4)" -- src/helpers/UAPKIConnect/UAPKIConnectHelper.h src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp tests/native_host.cpp run_tests.ps1 docs/integration-1c/uapki.md version.h
+git push
+```
+
+- [ ] **Крок 5: Анонс (Task 11 крок 1) доповнити** цим правилом — сесії `prro-uapki-spec` і
+  `simplyaddinconnect-4b` (тестова обробка отримає `4106` на своєму другому варіанті `INIT`).
 
 ---
 
