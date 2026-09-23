@@ -346,6 +346,8 @@ else {
 | [#33](https://github.com/specinfo-ua/UAPKI/pull/33) | `INIT` звітує про кожного незавантаженого провайдера (`result.cmProviders`) | `feat/cm-providers-report` |
 | [issue #34](https://github.com/specinfo-ua/UAPKI/issues/34) | питання: ідемпотентний `uapki_init` для тієї самої конфігурації (у нас — обгортка, `docs/integration-1c/uapki.md` §4.1) | — |
 
+Стан очікування і що робити при кожному результаті (мердж, прохання змін, відмова, мовчання; зобов'язання з issue #34) — трекер `docs/tasks/2026-09-24_uapki_upstream_followup.md`.
+
 Указник сабмодуля в гілці головного репо завжди вказує на коміт **`main-dev`**. Правки в сабмодулі
 комітяться **всередині сабмодуля** (не з кореня) — не загубити при `submodule update`.
 
