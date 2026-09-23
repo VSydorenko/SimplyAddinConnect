@@ -1915,11 +1915,56 @@ static bool case16_exitWithLoadedDll(const std::wstring& binDir) {
 }
 
 // ========================================================================
+// КЕЙС 17 — повторний INIT з ІНШОЮ конфігурацією (спека §8.4).
+// Та сама конфігурація -> alreadyInitialized (кейс 15). Інша -> 4106 з
+// переліком ключів, що різняться: тиха підміна конфігурації — брехня про
+// успіх (для ПРРО: офлайн замість онлайну з TSP).
+// ========================================================================
+static bool case17_initConfigMismatch(const std::wstring& binDir) {
+    printf("== Case 17: повторний INIT з іншою конфігурацією ==\n");
+    const std::wstring dllPath = binDir + L"\\SimplyAddinConnectWin" + ARCH_W + L".dll";
+    Component c;
+    if (!c.load(dllPath)) return false;
+
+    json a; a["offline"] = true;
+    json j;
+    CHECK(errCode(c.call("INIT", a.dump()), j) == 0, "INIT(A) errorCode == 0");
+    CHECK(!j["result"].contains("alreadyInitialized"), "INIT(A) — справжня ініціалізація");
+
+    // skipSelfTest не є конфігурацією — та сама A.
+    json a2 = a; a2["skipSelfTest"] = true;
+    CHECK(errCode(c.call("INIT", a2.dump()), j) == 0, "INIT(A + skipSelfTest) errorCode == 0");
+    CHECK(j["result"].value("alreadyInitialized", false), "INIT(A + skipSelfTest) -> alreadyInitialized");
+
+    // Інша конфігурація: безпечний ключ, без мережі.
+    json b = a; b["validationByCrl"] = true;
+    std::string rb = c.call("INIT", b.dump());
+    printf("  INIT(B) resp: %s\n", rb.c_str());
+    CHECK(errCode(rb, j) == 4106, "INIT(B) errorCode == 4106 <- ЧЕРВОНЕ до Task 12 (буде 0)");
+    CHECK(j["result"].value("alreadyInitialized", false), "INIT(B) несе alreadyInitialized");
+    bool mentions = false;
+    if (j["result"].contains("configMismatch") && j["result"]["configMismatch"].is_array())
+        for (const auto& k : j["result"]["configMismatch"])
+            if (k.is_string() && k.get<std::string>() == "validationByCrl") mentions = true;
+    CHECK(mentions, "configMismatch називає validationByCrl");
+
+    // Змінити конфігурацію — лише через DEINIT + INIT{skipSelfTest}.
+    CHECK(errCode(c.call("DEINIT", ""), j) == 0, "DEINIT errorCode == 0");
+    json b2 = b; b2["skipSelfTest"] = true;
+    CHECK(errCode(c.call("INIT", b2.dump()), j) == 0, "INIT(B + skipSelfTest) після DEINIT == 0");
+    CHECK(!j["result"].contains("alreadyInitialized"), "INIT(B) після DEINIT — справжня ініціалізація");
+    CHECK(j["result"]["countCmProviders"].get<long>() == 1, "INIT(B) після DEINIT: countCmProviders == 1");
+
+    c.unload();
+    return true;
+}
+
+// ========================================================================
 // main / CLI
 // ========================================================================
 static void usage() {
     printf(
-        "native_host <case 1..16> [mainDll] [dataDir] [binDir] [prroDir] [outSig]\n"
+        "native_host <case 1..17> [mainDll] [dataDir] [binDir] [prroDir] [outSig]\n"
         "  case     : номер сценарію (окремий процес на кейс — INIT раз на процес)\n"
         "  mainDll  : шлях до головної DLL (деф.: <binDir>/SimplyAddinConnectWin"
 #ifdef _WIN64
@@ -1946,7 +1991,7 @@ int main() {
 
     if (argc < 2) { usage(); LocalFree(wargv); return 2; }
     int kase = _wtoi(wargv[1]);
-    if (kase < 1 || kase > 16) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
+    if (kase < 1 || kase > 17) { printf("Невідомий кейс: %s\n", w2u8(wargv[1]).c_str()); usage(); LocalFree(wargv); return 2; }
 
     std::wstring binDir  = argAt(4)[0] ? std::wstring(argAt(4)) : u8to16(HOST_BIN_DIR);
     std::wstring dataDir = argAt(3)[0] ? std::wstring(argAt(3)) : u8to16(HOST_DATA_DIR);
@@ -1993,6 +2038,7 @@ int main() {
             case 14: pass = case14_zeroProvidersIsError(binDir);               break;
             case 15: pass = case15_idempotentInit(binDir);                     break;
             case 16: pass = case16_exitWithLoadedDll(binDir);                  break;
+            case 17: pass = case17_initConfigMismatch(binDir);                 break;
         }
     } catch (const std::exception& e) {
         printf("FATAL: незловлений виняток: %s\n", e.what());

@@ -133,10 +133,14 @@ private:
      * успіх. Стан провайдерів НЕ вгадується й НЕ кешується — він МІРЯЄТЬСЯ
      * методом PROVIDERS, який віддає живий CmProviders::count().
      *
+     * Порівнює параметри повторного INIT (без skipSelfTest) з параметрами справжньої
+     * ініціалізації: та сама конфігурація — успіх; інша — 4106 з result.configMismatch.
+     *
+     * @param params       параметри INIT після автоінʼєкції
      * @param responseJson [in,out] відповідь INIT; при спрацюванні замінюється
      * @return true — відповідь замінено на успішну; false — залишити як є
      */
-    static bool HandleAlreadyInitialized(std::string& responseJson);
+    static bool HandleAlreadyInitialized(const nlohmann::json& params, std::string& responseJson);
 
     /**
      * @brief Рекурсивно маскирует значения полей "password" на любом уровне JSON

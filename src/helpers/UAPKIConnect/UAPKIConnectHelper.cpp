@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cctype>
+#include <set>
 
 // Подключаем Windows.h для доступа к функциям Windows API
 #ifdef _WINDOWS
@@ -35,6 +36,21 @@ namespace {
     static void ModuleAnchor() {}
 }
 #endif
+
+namespace {
+    // Параметри INIT, що СПРАВДІ ініціалізував бібліотеку в цьому модулі (після
+    // автоінʼєкції). Час життя = статики UAPKI того самого модуля. Спека §8.4.
+    std::mutex     g_initMutex;
+    bool           g_hasInitParams = false;
+    nlohmann::json g_initParams;
+
+    // skipSelfTest — прапорець процедури, не конфігурація: у порівнянні не бере участі.
+    nlohmann::json NormalizeInitParams(const nlohmann::json& p) {
+        nlohmann::json c = p;
+        if (c.is_object()) c.erase("skipSelfTest");
+        return c;
+    }
+}
 
 bool UAPKIConnectHelper::ParseParamsString(const std::string& paramsString, nlohmann::json& paramsJson) {
     // Инициализируем пустой JSON-объект для параметров
@@ -567,7 +583,7 @@ bool UAPKIConnectHelper::ProvidersLoadedOrFail(const nlohmann::json& injectedPar
 // саме так він приходить у полі errorCode JSON-відповіді.
 static const long long UAPKI_ALREADY_INITIALIZED = 4106;
 
-bool UAPKIConnectHelper::HandleAlreadyInitialized(std::string& responseJson) {
+bool UAPKIConnectHelper::HandleAlreadyInitialized(const nlohmann::json& params, std::string& responseJson) {
     try {
         nlohmann::json resp = nlohmann::json::parse(responseJson);
         if (!resp.contains("errorCode") || !resp["errorCode"].is_number_integer()) {
@@ -599,6 +615,39 @@ bool UAPKIConnectHelper::HandleAlreadyInitialized(std::string& responseJson) {
 
         if (count < 1) {
             NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Библиотека уже инициализирована, но провайдеров нет: " + std::to_string(count) + " — INIT остаётся ошибкой");
+            return false;
+        }
+
+        bool same = false;
+        nlohmann::json mismatch = nlohmann::json::array();
+        {
+            std::lock_guard<std::mutex> lock(g_initMutex);
+            if (g_hasInitParams) {
+                const nlohmann::json now  = NormalizeInitParams(params);
+                const nlohmann::json then = NormalizeInitParams(g_initParams);
+                same = (now == then);
+                if (!same && now.is_object() && then.is_object()) {
+                    std::set<std::string> keys;
+                    for (auto it = now.begin(); it != now.end(); ++it)   keys.insert(it.key());
+                    for (auto it = then.begin(); it != then.end(); ++it) keys.insert(it.key());
+                    for (const auto& k : keys) {
+                        const bool inNow = now.contains(k), inThen = then.contains(k);
+                        if (inNow != inThen || (inNow && now[k] != then[k])) mismatch.push_back(k);
+                    }
+                }
+            }
+        }
+
+        if (!same) {
+            NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Повторный INIT с ДРУГОЙ конфигурацией отклонён: " + mismatch.dump());
+            nlohmann::json err;
+            err["errorCode"] = UAPKI_ALREADY_INITIALIZED;
+            err["error"]     = "ALREADY_INITIALIZED: библиотека уже инициализирована с другой конфигурацией; сменить её можно только через DEINIT и INIT с skipSelfTest";
+            err["method"]    = "INIT";
+            err["result"]["alreadyInitialized"] = true;
+            err["result"]["configMismatch"]     = mismatch;
+            err["result"]["countCmProviders"]   = count;
+            responseJson = err.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
             return false;
         }
 
@@ -802,12 +851,24 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
             // і лише потім застосовуємо політику нуля провайдерів. Порядок важливий:
             // після заміни відповіді вона вже несе реальний countCmProviders.
             if (methodUpper == "INIT") {
-                if (HandleAlreadyInitialized(responseJson)) {
+                // Справжня ініціалізація (бібліотека сама відповіла 0) — запам'ятати
+                // параметри, з якими підняли бібліотеку в цьому модулі (спека §8.4).
+                if (isSuccess) {
+                    std::lock_guard<std::mutex> lock(g_initMutex);
+                    g_initParams    = paramsJson;
+                    g_hasInitParams = true;
+                }
+                if (HandleAlreadyInitialized(paramsJson, responseJson)) {
                     isSuccess = true;
                 }
                 if (!ProvidersLoadedOrFail(paramsJson, responseJson)) {
                     isSuccess = false;
                 }
+            }
+            else if (methodUpper == "DEINIT" && isSuccess) {
+                std::lock_guard<std::mutex> lock(g_initMutex);
+                g_hasInitParams = false;
+                g_initParams    = nlohmann::json();
             }
 
             // Вердикт у лог — ПІСЛЯ пост-обробки INIT: лог мусить казати те саме, що

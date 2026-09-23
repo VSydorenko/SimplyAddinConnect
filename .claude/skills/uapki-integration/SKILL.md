@@ -206,7 +206,7 @@ LIBNAME_EXT` (на Windows префікс порожній, розширення
    ігнорує код повернення `CmProviders::loadProvider(...)` (явний `(void)`-каст) і **завжди
    повертає `RET_OK`** (`library-init.cpp`). Тобто сама бібліотека віддасть `errorCode: 0`
    навіть якщо жоден провайдер не завантажився. Хелпер це компенсує:
-   `UAPKIConnectHelper::ProvidersLoadedOrFail` (`UAPKIConnectHelper.cpp:492-564`) звіряє
+   `UAPKIConnectHelper::ProvidersLoadedOrFail` (`UAPKIConnectHelper.cpp:508-580`) звіряє
    `result.countCmProviders` з очікуваною кількістю — **нуль провайдерів при непорожньому
    запиті переписує відповідь на `errorCode: 502` `NO_CM_PROVIDERS_LOADED`** (оригінал
    бібліотеки лишається в `uapkiResponse`), недобір — лише `WARN`. Контракт ініціалізації
