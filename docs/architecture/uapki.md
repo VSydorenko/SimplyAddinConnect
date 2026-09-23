@@ -326,7 +326,7 @@ else {
 | Гілка | Роль | Base | Указник сабмодуля |
 |---|---|---|---|
 | `main` | **Дзеркало upstream.** Власних правок немає; оновлюється reset/ff до `upstream/main`. | `upstream/main` | ні |
-| `main-dev` | **Гілка розробки/адаптації.** Upstream + наші правки, ще НЕ прийняті в upstream, + за потреби адаптація складу збірки. **Станом на 2026-08-28 власних правок немає** — обидва наші патчі прийняті в upstream, тож `main-dev` == `main`. | `main` | **так** (`.gitmodules: branch = main-dev`) |
+| `main-dev` | **Гілка розробки/адаптації.** Upstream + наші правки, ще НЕ прийняті в upstream, + за потреби адаптація складу збірки. **Станом на 2026-09-23 несе три наші правки під відкритими PR #31–#33** (таблиця «Подано» нижче); `main` — дзеркало `upstream/main` (`fda2148`, тег `v2.0.17`). | `main` | **так** (`.gitmodules: branch = main-dev`) |
 | topic-гілки (напр. `static-export-headers`, `loadlibraryw-utf8`) | **PR у upstream** — по одній атомарній зміні. | `upstream/main` | ні; живуть, доки відкритий відповідний PR (видалення гілки закриває PR) |
 
 **Внесок, прийнятий в upstream** (обидва патчі більше не тримаємо у форку — вони частина ядра):
@@ -335,6 +335,16 @@ else {
 |---|---|---|---|
 | [#25](https://github.com/specinfo-ua/UAPKI/pull/25) | `*_STATIC`-гілки в export-заголовках `uapkic`/`uapkif`/`uapki` + guard `WIN32_LEAN_AND_MEAN` в `asn_system.h` | 2026-07-20 | `c64181c` |
 | [#26](https://github.com/specinfo-ua/UAPKI/pull/26) | Завантаження CM/UAPKI-провайдерів через `LoadLibraryW` (UTF-8→UTF-16); дубль `common/cryptoki/dl-macros.h` зведено в `common/loaders/dl-macros.h` | 2026-07-26 | `e9bb7fa` |
+
+**Подано в upstream, ще не прийнято** — живе в `main-dev`, доки PR не змерджено; після мерджу sync-PR
+`main`→`main-dev` (§7.2) робить зміну частиною бази:
+
+| PR | Що | Topic-гілка |
+|---|---|---|
+| [#31](https://github.com/specinfo-ua/UAPKI/pull/31) | `provider_init` ідемпотентний для тієї самої конфігурації й з обліком посилань (`cm-pkcs12`, `cm-pkcs11`), інша конфігурація — `RET_CM_ALREADY_INITIALIZED`; контракт у `cm-api.h` | `fix/provider-init-refcount` |
+| [#32](https://github.com/specinfo-ua/UAPKI/pull/32) | реєстр провайдерів володіє `CmStorageProxy` через `unique_ptr` — витік при вивантаженні без `DEINIT` | `fix/cm-providers-raii` |
+| [#33](https://github.com/specinfo-ua/UAPKI/pull/33) | `INIT` звітує про кожного незавантаженого провайдера (`result.cmProviders`) | `feat/cm-providers-report` |
+| [issue #34](https://github.com/specinfo-ua/UAPKI/issues/34) | питання: ідемпотентний `uapki_init` для тієї самої конфігурації (у нас — обгортка, `docs/integration-1c/uapki.md` §4.1) | — |
 
 Указник сабмодуля в гілці головного репо завжди вказує на коміт **`main-dev`**. Правки в сабмодулі
 комітяться **всередині сабмодуля** (не з кореня) — не загубити при `submodule update`.

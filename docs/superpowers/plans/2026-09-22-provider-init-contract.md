@@ -18,6 +18,21 @@
 
 **Спека:** `docs/superpowers/specs/2026-09-22-provider-init-contract-design.md`
 
+## Статус виконання (2026-09-23)
+
+- **Tasks 1–9, 9-біс, 9-тер, 12 — виконано**, гейт на `e9ccd6e`: x64 39 PASS, x86 38 PASS + 1 штатний SKIP.
+- **Task 10 — подано в апстрім, описи двомовні EN+UA:** [PR #31](https://github.com/specinfo-ua/UAPKI/pull/31) (C1),
+  [PR #32](https://github.com/specinfo-ua/UAPKI/pull/32) (C2), [PR #33](https://github.com/specinfo-ua/UAPKI/pull/33) (C3),
+  [issue #34](https://github.com/specinfo-ua/UAPKI/issues/34). CI (Linux/Windows) зелений у всіх; у #31 червоний
+  quality gate SonarCloud (`cpp:S5421` ×4, `cpp:S995` ×2) → **Task 13**.
+- **Task 11:** крок 1 (анонс) — надіслано; крок 2 (живий прогін 1С) — виконано, Task 12 теж підтверджено в 1С
+  (3.2.1.232); крок 3 — PR у `main`, після Task 13.
+- **Гілки форку приведено до `docs/architecture/uapki.md` §7.1:** `main-dev` = `af63339` (наші правки), `main` =
+  `fda2148` (дзеркало апстріму), сабмодуль на `main-dev`, `.gitmodules` без змін. Інтеграційну гілку
+  `simplyaddin/provider-contract` видалено — **у тексті плану нижче читати її як `main-dev`**.
+- **Після мерджу апстріму (окремо, пізніше):** sync-PR `main`→`main-dev` (§7.2 архітектурного документа),
+  сабмодуль — на апстрімовий тег.
+
 ## Глобальні обмеження
 
 - **Гілки вже створено:** корінь — `uapki-provider-init-contract`; сабмодуль `extern/uapki` —
@@ -2466,6 +2481,186 @@ git push
 
 - [ ] **Крок 5: Анонс (Task 11 крок 1) доповнити** цим правилом — сесії `prro-uapki-spec` і
   `simplyaddinconnect-4b` (тестова обробка отримає `4106` на своєму другому варіанті `INIT`).
+
+---
+
+## Task 13: Стан провайдера — всередині екземпляра (SonarCloud #31 + порядок руйнування)
+
+> Додано 2026-09-23. **Дві причини, одне виправлення.**
+>
+> 1. **SonarCloud quality gate у PR #31 червоний:** `new_maintainability_rating` = B. Знахідки —
+>    `cpp:S5421` «Global variables should be const» ×4 (`cm_pkcs12_refcnt`, `cm_pkcs12_initparams`,
+>    `cm_cryptoki_refcnt`, `cm_cryptoki_initparams`) і `cpp:S995` ×2 (`params_text` приймає
+>    `unsigned char*`, а не вказівник на const). Тести апстріму (Linux/Windows) зелені. Мейнтейнери
+>    Sonar цінують — у них є злиті PR «fix SonarCloud», тож #31 має бути чистим.
+> 2. **Невизначена поведінка при завершенні процесу (знайдено архітектором при розборі).**
+>    `static std::string cm_pkcs12_initparams` має нетривіальний деструктор. При завершенні процесу
+>    з завантаженою DLL хоста провайдер отримує `DLL_PROCESS_DETACH` **першим** (кейс 16), і рядок
+>    руйнується; далі деструктор статика реєстру (C2, PR #32) кличе `provider_deinit()`, а той —
+>    `.clear()` на зруйнованому об'єкті. Кейс 16 зелений, бо пам'ять модуля ще не звільнена, — але це
+>    UB. Сама лише пара #31+#32 його створює, тож виправляємо в #31.
+>
+> **Рішення:** лічильник і текст конфігурації переїжджають **у сам екземпляр** (`CmPkcs12` /
+> `CmCryptoki`). Їхній час життя збігається з часом життя провайдера — саме ті, що треба. Існуючий
+> глобал-вказівник `cm_pkcs12`/`cm_cryptoki` лишається (тривіально руйнований, рядок не новий):
+> після `DETACH` він цілий, а купа процесу жива, тож пізній `provider_deinit()` працює з валідним
+> об'єктом. Нових глобалів немає, нових `new`/`delete` немає — рядки створення й видалення
+> екземпляра не чіпаємо.
+
+**Файли (сабмодуль, гілка `main-dev`):**
+- Modify: `extern/uapki/library/cm-pkcs12/src/cm-pkcs12.h` (клас `CmPkcs12`)
+- Modify: `extern/uapki/library/cm-pkcs12/src/main-cm-pkcs12.cpp`
+- Modify: `extern/uapki/library/cm-pkcs11/src/cm-cryptoki.h` (клас `CmCryptoki`)
+- Modify: `extern/uapki/library/cm-pkcs11/src/main-cm-pkcs11.cpp`
+
+- [ ] **Крок 1: `CmPkcs12` — стан життєвого циклу в класі**
+
+У `cm-pkcs12.h`, одразу під `FileStorageParam m_DefaultParam;` (до `public:`):
+
+```cpp
+    //  Lifecycle of the process-wide provider instance (see the contract in cm-api.h):
+    //  how many consumers hold it and with which configuration it was created. Kept
+    //  INSIDE the heap instance on purpose: a namespace-scope std::string would be
+    //  destroyed on the provider's DLL_PROCESS_DETACH, while a consumer's static
+    //  destructor may still call provider_deinit() later, at process exit.
+    size_t      m_RefCount = 1;
+    std::string m_InitParams;
+```
+
+і в `public:`-секцію (поруч із `getDefaultParam`):
+
+```cpp
+    void setInitParams (const std::string& params) {
+        m_InitParams = params;
+    }
+    bool isSameInitParams (const std::string& params) const {
+        return (m_InitParams == params);
+    }
+    void addRef (void) {
+        m_RefCount++;
+    }
+    size_t release (void) {
+        return (m_RefCount > 0) ? --m_RefCount : 0;
+    }
+```
+
+(`#include <string>` у заголовку, якщо його там немає.)
+
+- [ ] **Крок 2: `main-cm-pkcs12.cpp` — прибрати нові глобали**
+
+Видалити `static size_t cm_pkcs12_refcnt = 0;` і `static std::string cm_pkcs12_initparams;` з їхніми
+коментарями. Рядок `static CmPkcs12* cm_pkcs12 = nullptr;` — **не чіпати**.
+
+`params_text` — параметр на const (закриває `cpp:S995`) і без C-приведення:
+
+```cpp
+static std::string params_text (const CM_UTF8_CHAR* providerParams)
+{
+    return providerParams ? std::string(reinterpret_cast<const char*>(providerParams)) : std::string();
+}
+```
+
+`provider_init` — рядки `cm_pkcs12 = new CmPkcs12();`, `parseConfig` і `delete` у гілці помилки
+**лишаються як є**; міняються лише гілки:
+
+```cpp
+            if (cm_err != RET_OK) {
+                delete cm_pkcs12;
+                cm_pkcs12 = nullptr;
+            }
+            else {
+                cm_pkcs12->setInitParams(params_text(providerParams));
+            }
+        }
+    }
+    else if (cm_pkcs12->isSameInitParams(params_text(providerParams))) {
+        //  Idempotent for the SAME configuration: the post-condition already holds.
+        cm_pkcs12->addRef();
+        cm_err = RET_OK;
+    }
+    else {
+        //  A different configuration is a different request. Reject it loudly and
+        //  leave both the instance and the reference count untouched.
+        cm_err = RET_CM_ALREADY_INITIALIZED;
+    }
+    return cm_err;
+```
+
+`provider_deinit`:
+
+```cpp
+CM_EXPORT CM_ERROR provider_deinit (void)
+{
+    DEBUG_OUTPUT("provider_deinit()");
+    if (!cm_pkcs12) return RET_CM_NOT_INITIALIZED;
+
+    if (cm_pkcs12->release() == 0) {
+        delete cm_pkcs12;
+        cm_pkcs12 = nullptr;
+    }
+    return RET_OK;
+}
+```
+
+- [ ] **Крок 3: `CmCryptoki` і `main-cm-pkcs11.cpp` — дзеркально**
+
+У `cm-cryptoki.h`, у приватній частині класу `CmCryptoki` (поруч з наявними членами-даними) —
+ті самі `m_RefCount`/`m_InitParams` з тим самим коментарем; у `public:` — ті самі чотири методи.
+У `main-cm-pkcs11.cpp` — видалити `cm_cryptoki_refcnt`/`cm_cryptoki_initparams`, `params_text` на
+const, гілки `provider_init`/`provider_deinit` — як у кроці 2, з `cm_cryptoki`. Рядок
+`static CmCryptoki* cm_cryptoki = nullptr;` не чіпати. Решту експортів (`provider_open`,
+`provider_list_storages` тощо) не чіпати — вони працюють через той самий вказівник.
+
+- [ ] **Крок 4: Перевірка — нічого не змінилось у поведінці**
+
+Повна збірка, потім:
+- `provider_contract_selftest_x64.exe` і `_x86.exe` — усі 17 `[PASS]`;
+- `cm-pkcs11` — зібрати зі знімка `git -C extern/uapki archive <новий SHA> | tar -x` у scratch (як у
+  Task 9-біс, з `library/out/windows-*` і `<build>/out`), прогнати той самий тест із шляхом через
+  argv[1] на x64 і x86 — усі `[PASS]`;
+- кейси `native_host` 12, 13, 16, 17 — зелені на x64 і x86;
+- повний гейт x64 і x86.
+
+Негативної верифікації тут не буде: це рефакторинг без зміни поведінки, і червоне для нього — будь-яке
+відхилення контрактного тесту. UB з пункту 2 тестом не ловиться (пам'ять модуля при завершенні
+процесу не звільняється) — це виправлення за аналізом, так і написати в описі PR.
+
+- [ ] **Крок 5: Комміт на `main-dev`, cherry-pick у гілку PR #31, пуш (без force)**
+
+```bash
+cd extern/uapki
+git add library/cm-pkcs12/src/cm-pkcs12.h library/cm-pkcs12/src/main-cm-pkcs12.cpp library/cm-pkcs11/src/cm-cryptoki.h library/cm-pkcs11/src/main-cm-pkcs11.cpp
+git commit --only -m "CM: keep provider lifecycle state inside the instance" -- library/cm-pkcs12/src/cm-pkcs12.h library/cm-pkcs12/src/main-cm-pkcs12.cpp library/cm-pkcs11/src/cm-cryptoki.h library/cm-pkcs11/src/main-cm-pkcs11.cpp
+git push origin main-dev
+cd ../..
+```
+
+Гілку PR — у **тимчасовому** `git worktree` (як у Task 10), не перемикаючи спільне дерево:
+`cherry-pick <новий SHA>` на `fix/provider-init-refcount`, `git push origin fix/provider-init-refcount`
+(fast-forward, **без** `--force`), worktree прибрати. Потім у корені: gitlink + `version.h`, коміт, пуш
+(сабмодуль першим — він уже запушений).
+
+Тіло коміту в сабмодулі (англійською, через `-F`): чому стан у екземплярі — обидві причини з шапки
+задачі, коротко.
+
+- [ ] **Крок 6: SonarCloud і опис PR #31**
+
+Дочекатися перевірок PR #31 (`gh pr checks 31 -R specinfo-ua/UAPKI`). Quality gate має стати
+зеленим. Якщо ні — зупинитися й прислати архітектору перелік знахідок
+(`https://sonarcloud.io/api/issues/search?componentKeys=specinfo-ua_UAPKI&pullRequest=31&resolved=false`).
+
+Опис PR #31 — **не переписувати**, лише додати короткий абзац в обидві мовні частини (EN у розділ
+«Fix», UA у «Зміна»): третій комміт тримає лічильник і конфігурацію всередині екземпляра провайдера,
+щоб `provider_deinit()`, який приходить після `DLL_PROCESS_DETACH` провайдера (можливо разом із #32),
+не торкався зруйнованих статиків; заодно прибирає нові мутабельні глобали (SonarCloud). Фразу «Two
+commits of one logical change» → «Three commits of one logical change». Тексти абзаців — на рев'ю
+архітектору **до** `gh pr edit`.
+
+- [ ] **Крок 7: Якорі документації**
+
+`docs/architecture/uapki.md` §10 посилається на рядки `main-cm-pkcs12.cpp`/`main-cm-pkcs11.cpp` —
+перевизначити за змістом; `python scripts/check-doc-anchors.py` — exit 0. Контрольна точка
+архітектору: SHA, гейт x64/x86, результат `cm-pkcs11`, стан Sonar.
 
 ---
 
