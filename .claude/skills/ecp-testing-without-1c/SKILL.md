@@ -164,6 +164,13 @@ detached-content, коли `statusSignature` лишається `"VALID"`, а `s
 Практичний висновок: не покладайся на `statusSignature` як на фінальний вердикт для
 CAdES — бери `signatureInfos[0].status`.
 
+**Для рішення «приймати документ» (ПРРО, квитанції ДПС) одного `status` мало** — чотири умови
+разом: `errorCode == 0`, а в `result.signatureInfos[0]` — `status == "TOTAL-VALID"`,
+`validSignatures == true`, `validDigests == true`. Поля **вкладені**; плоска розкладка
+(`result.validSignatures`) буває лише у відповіді HTTP-оракула `uapki_fiscal_emulator`, і
+перенесений звідти критерій у 1С тихо не проходить ніколи. Джерело правди —
+`docs/integration-1c/uapki.md` §4.5.
+
 ## Крос-валідація на еталонах ДФС
 
 Кейс 5 `native_host` проганяє `VERIFY` на файлах `*.signed` з каталогу еталонів ПРРО.

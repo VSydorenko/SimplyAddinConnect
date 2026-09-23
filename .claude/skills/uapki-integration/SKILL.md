@@ -114,9 +114,11 @@ extern "C" {
                      "dataTbs": [ { "bytes": "<base64>" } ],
                      "options": { "ignoreCertStatus": true } } }
    ```
-5. **VERIFY** — перевірити підпис. Холістичний вердикт — у
-   `signatureInfos[0].status` (`"TOTAL-VALID"` == валідно), а НЕ у `statusSignature`
-   (останній лишається `"VALID"` навіть при пошкодженому detached-контенті).
+5. **VERIFY** — перевірити підпис. Приймати лише за чотирма умовами разом: `errorCode == 0`, а
+   в `signatureInfos[0]` — `status == "TOTAL-VALID"`, `validSignatures == true`,
+   `validDigests == true`. НЕ за `statusSignature` (лишається `"VALID"` навіть при пошкодженому
+   detached-контенті). Поля **вкладені** в `signatureInfos[0]`, не на верхньому рівні `result`.
+   Деталі й пастка плоскої розкладки — `docs/integration-1c/uapki.md` §4.5.
 6. **CLOSE** — закрити сховище.
 7. **DEINIT** — деініціалізація ядра.
 
