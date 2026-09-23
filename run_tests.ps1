@@ -59,6 +59,7 @@ $MainDll      = Join-Path $BinRelease "SimplyAddinConnectWin$ArchSuffix.dll"
 $ProviderName = "cm-pkcs12$ArchSuffix"
 $ProviderDll  = Join-Path $BinRelease "$ProviderName.dll"
 $SelfTestExe  = Join-Path $BinRelease "uapki_selftest$ArchSuffix.exe"
+$ProviderContractExe = Join-Path $BinRelease ("provider_contract_selftest" + $ArchSuffix + ".exe")
 $NativeHostExe= Join-Path $BinRelease "native_host$ArchSuffix.exe"
 $CoreSelftestExe = Join-Path $BinRelease ("core_selftest" + $ArchSuffix + ".exe")
 $WireSelftestExe = Join-Path $BinRelease ("wire_selftest" + $ArchSuffix + ".exe")
@@ -546,6 +547,37 @@ else {
 }
 
 # =====================================================================
+# ЕТАП L1.5: provider_contract_selftest — КОНТРАКТ провайдера НКІ.
+# Ідемпотентність provider_init і облік посилань, напряму через LoadLibraryW.
+# Крипто-ядро не лінкується; без -WithUAPKI файлу провайдера немає -> exit 3 (SKIP).
+# =====================================================================
+Section 'ЕТАП L1.5: provider_contract_selftest контракту провайдера'
+
+if (-not (Test-Path $ProviderContractExe)) {
+    Add-Result 'L1.5' 'provider_contract_selftest' 'BLOCKED' `
+        "немає provider_contract_selftest.exe: $ProviderContractExe — зберіть з -WithTests"
+}
+else {
+    $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("pcs_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+    $p = Start-Process -FilePath $ProviderContractExe `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+    $txt = ''
+    if (Test-Path $outF) { $txt = Get-Content -Raw $outF }
+    if ($p.ExitCode -eq 3) {
+        Add-Result 'L1.5' 'provider_contract_selftest' 'SKIP' 'немає файлу провайдера (збірка без -WithUAPKI)'
+    }
+    elseif ($p.ExitCode -eq 0) {
+        $nPassLines = ([regex]::Matches($txt, '\[PASS\]')).Count
+        Add-Result 'L1.5' 'provider_contract_selftest' 'PASS' "усі CHECK пройшли (PASS: $nPassLines)"
+    }
+    else {
+        $fails = ($txt -split "`n" | Where-Object { $_ -match '\[FAIL\]' }) -join ' | '
+        Add-Result 'L1.5' 'provider_contract_selftest' 'FAIL' "exit=$($p.ExitCode) $fails"
+    }
+    Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
+}
+
+# =====================================================================
 # ЕТАП 3 (L2/L3): native_host кейси 1..4 (+5 за наявності ПРРО-еталонів)
 # =====================================================================
 Section 'ЕТАП 3 (L2/L3): native_host кейси'
@@ -568,7 +600,7 @@ else {
     # у тому ж циклі, що й 1..4. Кейс 5 (діапазон ПРРО) навмисно НЕ в переліку: йому
     # потрібен окремий аргумент-каталог і власне трактування exit 3, тому він — окремим
     # блоком нижче. Кейс 11 — теж окремим блоком (потребує local-keys.json).
-    foreach ($kase in 1,2,3,4,6,10) {
+    foreach ($kase in 1,2,3,4,6,10,12,13,16,14,15,17) {
         $argList = @("$kase", "`"$MainDll`"", "`"$DataDir`"", "`"$BinRelease`"")
         $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("nh_${kase}_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
         $p = Start-Process -FilePath $NativeHostExe -ArgumentList $argList `

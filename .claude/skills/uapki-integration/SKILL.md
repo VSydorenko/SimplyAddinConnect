@@ -202,13 +202,17 @@ LIBNAME_EXT` (на Windows префікс порожній, розширення
    3 (`GetClassObject`/`DestroyObject`/`GetClassNames`). Чисті експорти = менше
    шансів на зіткнення в адресному просторі `1cv8.exe`.
 
-5. **Мовчазний збій завантаження.** `setup_cm_providers` ігнорує код повернення
-   `CmProviders::loadProvider(...)` (явний `(void)`-каст) і **завжди повертає
-   `RET_OK`** (`library-init.cpp`). Тобто INIT віддасть `errorCode: 0` навіть якщо
-   жоден провайдер не завантажився. Єдиний надійний індикатор — поле
-   `result.countCmProviders` у відповіді INIT: його треба звіряти з очікуваною
-   кількістю. Приклад: `UAPKIConnectHelper::WarnIfProvidersNotLoaded` логує WARN
-   при недоборі (не змінюючи ні відповідь, ні код).
+5. **Мовчазний збій завантаження — компенсовано на нашому боці.** `setup_cm_providers`
+   ігнорує код повернення `CmProviders::loadProvider(...)` (явний `(void)`-каст) і **завжди
+   повертає `RET_OK`** (`library-init.cpp`). Тобто сама бібліотека віддасть `errorCode: 0`
+   навіть якщо жоден провайдер не завантажився. Хелпер це компенсує:
+   `UAPKIConnectHelper::ProvidersLoadedOrFail` (`UAPKIConnectHelper.cpp:508-580`) звіряє
+   `result.countCmProviders` з очікуваною кількістю — **нуль провайдерів при непорожньому
+   запиті переписує відповідь на `errorCode: 502` `NO_CM_PROVIDERS_LOADED`** (оригінал
+   бібліотеки лишається в `uapkiResponse`), недобір — лише `WARN`. Контракт ініціалізації
+   провайдера (ідемпотентний `provider_init`, лічильник посилань) і повторний `INIT`,
+   зроблений ідемпотентним для 1С через `HandleAlreadyInitialized` — `docs/architecture/uapki.md`
+   §10.
 
 ## Патерн самодоставки провайдера ресурсом
 

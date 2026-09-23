@@ -38,11 +38,11 @@ cm-pkcs12_x86.dll / cm-pkcs12_x64.dll     (окрема самодостатня
 
 **Формування запиту.** Хелпер збирає JSON-запит формату `{method, parameters}` через
 `nlohmann::json`: `requestJson["method"] = method`, `requestJson["parameters"] = paramsJson`
-(`UAPKIConnectHelper.cpp:623, 675`). Параметри можуть надходити або як JSON, або
+(`UAPKIConnectHelper.cpp:748, 800`). Параметри можуть надходити або як JSON, або
 у плоскому форматі `ключ=значение,...` (розбирається через `ParseParamsString`).
 
 **Виклик C-API.** Оголошення функцій ядра — під `WITH_UAPKI`
-(`UAPKIConnectHelper.cpp:20-28`):
+(`UAPKIConnectHelper.cpp:21-29`):
 
 ```cpp
 extern "C" {
@@ -52,18 +52,18 @@ extern "C" {
 ```
 
 Далі хелпер викликає `char* response = ::process(requestStr.c_str())`
-(`UAPKIConnectHelper.cpp:702`). Згідно з протоколом (Таблиця 3 настанови
+(`UAPKIConnectHelper.cpp:827`). Згідно з протоколом (Таблиця 3 настанови
 [`UAPKI-PM-2.0.16.md`](../../extern/uapki/doc/UAPKI-PM-2.0.16.md)), `process()` повертає
 нуль-термінований JSON у UTF-8, пам'ять якого **має завжди звільнятися** функцією `json_free()`.
 
 **Звільнення пам'яті — до аналізу.** Хелпер копіює відповідь у `std::string responseJson`
-(`UAPKIConnectHelper.cpp:707`) і **одразу** звільняє буфер: `::json_free(response)`
-(`UAPKIConnectHelper.cpp:712`). Порядок навмисний — коментар у коді пояснює: звільнення
+(`UAPKIConnectHelper.cpp:832`) і **одразу** звільняє буфер: `::json_free(response)`
+(`UAPKIConnectHelper.cpp:837`). Порядок навмисний — коментар у коді пояснює: звільнення
 до будь-якого аналізу копії гарантує відсутність витоків на всіх гілках нижче
-(`UAPKIConnectHelper.cpp:709-710`).
+(`UAPKIConnectHelper.cpp:834-835`).
 
 **Детекція успіху.** Успішність визначається за полем `errorCode` відповіді
-(`IsOperationSuccess`, `UAPKIConnectHelper.cpp:549-613`): поле обов'язкове й має бути
+(`IsOperationSuccess`, `UAPKIConnectHelper.cpp:676-738`): поле обов'язкове й має бути
 цілим, успіх — коли `errorCode == 0`, інакше формується діагностика з `error`/`method`.
 Це узгоджено з форматом відповіді протоколу (обов'язкове ціле `errorCode`; `method`/`result`/`error`).
 
@@ -74,9 +74,11 @@ extern "C" {
 
 **Спеціальна обробка `INIT`.** Метод `INIT` (регістронезалежно) — єдиний, що має
 спеціальну обробку: перед відправкою хелпер автоматично інжектить конфігурацію
-провайдерів (`InjectProviderConfig`, `UAPKIConnectHelper.cpp:666-672`), а після виклику
-звіряє фактичну кількість завантажених провайдерів (`WarnIfProvidersNotLoaded`,
-`UAPKIConnectHelper.cpp:733-735`). Решта методів (OPEN, SELECT_KEY, SIGN, VERIFY, CLOSE,
+провайдерів (`InjectProviderConfig`, `UAPKIConnectHelper.cpp:791-797`), а після виклику
+звіряє фактичну кількість завантажених провайдерів (`ProvidersLoadedOrFail`,
+`UAPKIConnectHelper.cpp:508-580`; нуль провайдерів при непорожньому запиті — `errorCode: 502`,
+недобір — лише `WARN`) і робить повторний `INIT` ідемпотентним для 1С (`HandleAlreadyInitialized`,
+`UAPKIConnectHelper.cpp:586-672` — деталі §10). Решта методів (OPEN, SELECT_KEY, SIGN, VERIFY, CLOSE,
 DEINIT та інші) проходять тим самим універсальним шляхом без спецобробки.
 
 ---
@@ -170,28 +172,28 @@ CMake генерує per-`$<CONFIG>` `.rc`-файл через `file(GENERATE)` 
 
 | Крок | Джерело каталогу | Поведінка | Код |
 |---|---|---|---|
-| 1 | Явний непорожній `cmProviders.dir` від викликача | Використовується як є, розгортання не виконується (лише дописується арх-суфікс до `lib`) | `UAPKIConnectHelper.cpp:442-474` |
-| 2 | Провайдер `cm-pkcs12_<arch>.dll` **поруч із власною DLL** | Каталог визначається через `GetOwnModuleDir`; покриває тести й не-1С розгортання | `UAPKIConnectHelper.cpp:365-396` (крок — `369-390`) |
-| 3 | Розгортання вбудованого ресурсу в `%LOCALAPPDATA%\SimplyAddinConnect\providers\<VERSION_FULL>\` | `EnsureProviderDeployed`: `FindResourceW` / `LoadResource` / `LockResource` → `CreateDirectoryW` → запис у тимчасове ім'я → атомарний `MoveFileExW` | `UAPKIConnectHelper.cpp:225-357` |
+| 1 | Явний непорожній `cmProviders.dir` від викликача | Використовується як є, розгортання не виконується (лише дописується арх-суфікс до `lib`) | `UAPKIConnectHelper.cpp:458-490` |
+| 2 | Провайдер `cm-pkcs12_<arch>.dll` **поруч із власною DLL** | Каталог визначається через `GetOwnModuleDir`; покриває тести й не-1С розгортання | `UAPKIConnectHelper.cpp:381-412` (крок — `385-406`) |
+| 3 | Розгортання вбудованого ресурсу в `%LOCALAPPDATA%\SimplyAddinConnect\providers\<VERSION_FULL>\` | `EnsureProviderDeployed`: `FindResourceW` / `LoadResource` / `LockResource` → `CreateDirectoryW` → запис у тимчасове ім'я → атомарний `MoveFileExW` | `UAPKIConnectHelper.cpp:241-373` |
 
 **Крок 2 — визначення власного каталогу.** `GetOwnModuleDir`
-(`UAPKIConnectHelper.cpp:178-217`) отримує дескриптор **саме своєї DLL** через
+(`UAPKIConnectHelper.cpp:194-233`) отримує дескриптор **саме своєї DLL** через
 `GetModuleHandleExW` з прапорцями `GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT` та адресою функції-якоря `ModuleAnchor`
-(`UAPKIConnectHelper.cpp:185-188`). Якір — порожня функція в анонімному просторі імен,
-що слугує виключно як адреса всередині поточного модуля (`UAPKIConnectHelper.cpp:30-36`).
+(`UAPKIConnectHelper.cpp:201-204`). Якір — порожня функція в анонімному просторі імен,
+що слугує виключно як адреса всередині поточного модуля (`UAPKIConnectHelper.cpp:31-37`).
 Це критично: `GetModuleFileNameW` без аргументів (тобто через `GetModuleHandle(NULL)`)
 повернув би шлях до хост-процесу `1cv8.exe`, а не до нашої DLL.
 
 **Крок 3 — атомарне розгортання.** `EnsureProviderDeployed` створює директорії поетапно
-(`CreateDirectoryW`, `UAPKIConnectHelper.cpp:301-311`), пише бінарник у тимчасовий файл
+(`CreateDirectoryW`, `UAPKIConnectHelper.cpp:317-327`), пише бінарник у тимчасовий файл
 `<файл>.tmp_<PID>` і переміщує його атомарно через
-`MoveFileExW(MOVEFILE_REPLACE_EXISTING)` (`UAPKIConnectHelper.cpp:313-353`), з обробкою
+`MoveFileExW(MOVEFILE_REPLACE_EXISTING)` (`UAPKIConnectHelper.cpp:329-369`), з обробкою
 програної гонки між процесами 1С. Якщо файл цієї версії вже розгорнутий — повторно не
 пишеться. Той самий якір `ModuleAnchor` повторно використовується тут для отримання
-дескриптора модуля під пошук ресурсу (`UAPKIConnectHelper.cpp:271-279`).
+дескриптора модуля під пошук ресурсу (`UAPKIConnectHelper.cpp:287-295`).
 
-Докстрінги, що описують увесь порядок і компоненти, — `UAPKIConnectHelper.h:59-97`.
+Докстрінги, що описують увесь порядок і компоненти, — `UAPKIConnectHelper.h:60-98`.
 
 > **Чому знадобився крок 3.** 1С не розпаковує з ZIP додаткові DLL — у цільовому каталозі
 > лишаються лише файли, описані в `manifest.xml`. Тому провайдер, покладений поруч, у
@@ -223,7 +225,7 @@ ANSI-кодової сторінки. На Linux/macOS той самий мак�
 `common/cryptoki/dl-macros.h` при злитті прибрано.
 
 **Конфіг `cmProviders`.** Коли викликач не задав `cmProviders`, хелпер підставляє типову
-конфігурацію (`UAPKIConnectHelper.cpp:426-433`):
+конфігурацію (`UAPKIConnectHelper.cpp:442-449`):
 
 ```jsonc
 "cmProviders": {
@@ -234,7 +236,7 @@ ANSI-кодової сторінки. На Linux/macOS той самий мак�
 
 Якщо `cmProviders` заданий, але без `dir` — `dir` підставляється, а до `lib` кожного
 елемента `allowedProviders` без суфікса дописується `_x86` / `_x64`
-(`UAPKIConnectHelper.cpp:436-474`). На боці ядра поля `cmProviders.dir` /
+(`UAPKIConnectHelper.cpp:452-490`). На боці ядра поля `cmProviders.dir` /
 `allowedProviders[].lib` / `allowedProviders[].config` розбираються в `setup_cm_providers`
 (`extern/uapki/library/uapki/src/api/library-init.cpp:63-86`).
 
@@ -270,26 +272,39 @@ ANSI-кодової сторінки. На Linux/macOS той самий мак�
 
 ---
 
-## 6. Мовчазний збій завантаження провайдера й компенсація в хелпері
+## 6. Толерантне завантаження провайдера й компенсація в хелпері
 
-Важлива особливість поведінки ядра: **невдале завантаження провайдера ковтається мовчки**.
+Завантаження провайдера в ядрі — **толерантне за задумом**: `allowedProviders` законно може
+містити провайдер, якого немає на конкретній машині, і `setup_cm_providers` та `uapki_init` не
+зривають увесь `INIT` через збій одного провайдера зі списку — далі йде наступний, а `INIT`
+у підсумку все одно повертає `RET_OK`.
 
-`setup_cm_providers` ігнорує код повернення `CmProviders::loadProvider(...)` через явний
-`(void)`-каст і **завжди** повертає `RET_OK`, незалежно від успіху завантаження кожного
-окремого провайдера (`extern/uapki/library/uapki/src/api/library-init.cpp:82, 85`):
+**До C3 наслідок збою був відкинутий мовчки** (`ret_load` ішов у явний `(void)`-каст, у
+відповідь нічого не потрапляло). Починаючи з C3 наслідок **звітується**:
+`setup_cm_providers` (`extern/uapki/library/uapki/src/api/library-init.cpp:66-119`) веде лічильник
+`cnt_loaded`, а для кожного провайдера, чий `CmProviders::loadProvider(...)` повернув не `RET_OK`,
+дописує елемент у `result.cmProviders.failed` (`library-init.cpp:105-111`, поля `lib`/`errorCode`/
+`error`) і врешті заповнює `result.cmProviders.requested`/`result.cmProviders.loaded`
+(`library-init.cpp:115-116`):
 
 ```cpp
-(void)CmProviders::loadProvider(s_dir, s_lib, s_config);
-...
-return RET_OK;
+const int ret_load = CmProviders::loadProvider(s_dir, s_lib, s_config);
+if (ret_load == RET_OK) {
+    cnt_loaded++;
+}
+else {
+    // ... json_array_append_value(ja_failed, ...) — lib/errorCode/error
+}
 ```
 
 Тому `INIT` може повернути `errorCode:0`, хоча жоден провайдер не завантажився
 (`countCmProviders:0`). Щоб це не лишалося непоміченим, хелпер має компенсуючий механізм
-`WarnIfProvidersNotLoaded` (`UAPKIConnectHelper.h:110-121`; реалізація —
-`UAPKIConnectHelper.cpp:490-547`): **після** `INIT` він звіряє `result.countCmProviders`
-з очікуваною кількістю (`cmProviders.allowedProviders`) і логує WARN при недоборі —
-**не змінюючи** ні відповідь, ні код успішності операції.
+`ProvidersLoadedOrFail` (`UAPKIConnectHelper.h:111-125`; реалізація —
+`UAPKIConnectHelper.cpp:508-580`): **після** `INIT` він звіряє `result.countCmProviders`
+з очікуваною кількістю (`cmProviders.allowedProviders`). Нуль провайдерів при непорожньому
+запиті — **помилка `502` для 1С** (відповідь переписується, оригінал бібліотеки лишається в
+`uapkiResponse`); недобір (частина запитаних) — лише `WARN`, без зміни відповіді чи коду
+успішності. Деталі контракту ініціалізації провайдера — §10.
 
 ---
 
@@ -311,7 +326,7 @@ return RET_OK;
 | Гілка | Роль | Base | Указник сабмодуля |
 |---|---|---|---|
 | `main` | **Дзеркало upstream.** Власних правок немає; оновлюється reset/ff до `upstream/main`. | `upstream/main` | ні |
-| `main-dev` | **Гілка розробки/адаптації.** Upstream + наші правки, ще НЕ прийняті в upstream, + за потреби адаптація складу збірки. **Станом на 2026-08-28 власних правок немає** — обидва наші патчі прийняті в upstream, тож `main-dev` == `main`. | `main` | **так** (`.gitmodules: branch = main-dev`) |
+| `main-dev` | **Гілка розробки/адаптації.** Upstream + наші правки, ще НЕ прийняті в upstream, + за потреби адаптація складу збірки. **Станом на 2026-09-23 несе три наші правки під відкритими PR #31–#33** (таблиця «Подано» нижче); `main` — дзеркало `upstream/main` (`fda2148`, тег `v2.0.17`). | `main` | **так** (`.gitmodules: branch = main-dev`) |
 | topic-гілки (напр. `static-export-headers`, `loadlibraryw-utf8`) | **PR у upstream** — по одній атомарній зміні. | `upstream/main` | ні; живуть, доки відкритий відповідний PR (видалення гілки закриває PR) |
 
 **Внесок, прийнятий в upstream** (обидва патчі більше не тримаємо у форку — вони частина ядра):
@@ -320,6 +335,16 @@ return RET_OK;
 |---|---|---|---|
 | [#25](https://github.com/specinfo-ua/UAPKI/pull/25) | `*_STATIC`-гілки в export-заголовках `uapkic`/`uapkif`/`uapki` + guard `WIN32_LEAN_AND_MEAN` в `asn_system.h` | 2026-07-20 | `c64181c` |
 | [#26](https://github.com/specinfo-ua/UAPKI/pull/26) | Завантаження CM/UAPKI-провайдерів через `LoadLibraryW` (UTF-8→UTF-16); дубль `common/cryptoki/dl-macros.h` зведено в `common/loaders/dl-macros.h` | 2026-07-26 | `e9bb7fa` |
+
+**Подано в upstream, ще не прийнято** — живе в `main-dev`, доки PR не змерджено; після мерджу sync-PR
+`main`→`main-dev` (§7.2) робить зміну частиною бази:
+
+| PR | Що | Topic-гілка |
+|---|---|---|
+| [#31](https://github.com/specinfo-ua/UAPKI/pull/31) | `provider_init` ідемпотентний для тієї самої конфігурації й з обліком посилань (`cm-pkcs12`, `cm-pkcs11`), інша конфігурація — `RET_CM_ALREADY_INITIALIZED`; контракт у `cm-api.h` | `fix/provider-init-refcount` |
+| [#32](https://github.com/specinfo-ua/UAPKI/pull/32) | реєстр провайдерів володіє `CmStorageProxy` через `unique_ptr` — витік при вивантаженні без `DEINIT` | `fix/cm-providers-raii` |
+| [#33](https://github.com/specinfo-ua/UAPKI/pull/33) | `INIT` звітує про кожного незавантаженого провайдера (`result.cmProviders`) | `feat/cm-providers-report` |
+| [issue #34](https://github.com/specinfo-ua/UAPKI/issues/34) | питання: ідемпотентний `uapki_init` для тієї самої конфігурації (у нас — обгортка, `docs/integration-1c/uapki.md` §4.1) | — |
 
 Указник сабмодуля в гілці головного репо завжди вказує на коміт **`main-dev`**. Правки в сабмодулі
 комітяться **всередині сабмодуля** (не з кореня) — не загубити при `submodule update`.
@@ -554,6 +579,117 @@ OCSP/CRL — `verify.cpp:599-604`) та `FULL` (додатково статус 
 
 Прикладний наслідок для 1С — «прийняти документ, підписаний простроченим сертифікатом» — розписано
 в [integration-1c/uapki.md](../integration-1c/uapki.md) §4.5.
+
+---
+
+## 10. Контракт ініціалізації провайдера НКІ
+
+Глобал `CmPkcs12* cm_pkcs12` у провайдерській DLL (`extern/uapki/library/cm-pkcs12/src/main-cm-pkcs12.cpp:68`)
+— **процесо-широкий**, а не на кожен виклик `provider_init`: DLL провайдера вантажиться в процес
+один раз (Windows кешує вже завантажений модуль), але ініціалізувати її можуть **кілька незалежних
+споживачів** — наприклад, кілька екземплярів головної DLL 1С, кожен зі своїм статично злінкованим
+ядром UAPKI (детальний розбір такого сценарію — `docs/tasks/2026-09-22_provider_reinit_defect.md`).
+
+**Контракт, записаний у `extern/uapki/library/common/cm-api/cm-api.h:61-85`** (докладено в
+upstream, тепер частина протоколу для будь-якого провайдера, не лише `cm-pkcs12`):
+
+1. `provider_init` **ідемпотентний лише для ТІЄЇ САМОЇ конфігурації**: повторний виклик з текстом
+   `providerParams`, що збігається з тим, яким провайдер уже ініціалізований (`NULL` і `""`
+   вважаються рівними), повертає `RET_OK` і інкрементує лічильник посилань.
+2. Виклик з **ІНШОЮ** конфігурацією повертає `RET_CM_ALREADY_INITIALIZED`, не чіпаючи ні
+   існуючого екземпляра, ні лічильника. Причина не абстрактна: для `cm-pkcs11` конфігурація — це
+   перелік PKCS#11-модулів, які провайдер вантажить
+   (`extern/uapki/library/cm-pkcs11/src/cm-cryptoki.cpp:110-117`), тож мовчки лишити чинною
+   конфігурацію першого споживача означало б віддати другому чужий набір драйверів токенів.
+   «Перемагає перша конфігурація» — відкинуте правило, воно тут **не** діє.
+3. Реалізація веде **лічильник посилань** init/deinit.
+4. `provider_deinit` звільняє провайдер лише тоді, коли лічильник опускається до нуля; поки він
+   більший за нуль — повертає `RET_OK`, не звільняючи нічого. Виклик на неініціалізованому провайдері
+   — `RET_CM_NOT_INITIALIZED`.
+
+`RET_CM_ALREADY_INITIALIZED` тепер має точний сенс: «уже ініціалізований, але ІНШОЮ конфігурацією»
+— не просто «уже ініціалізований».
+
+Реалізація — лічильник і текст конфігурації живуть **усередині екземпляра**: члени
+`m_RefCount` + `m_InitParams` класу `CmPkcs12`
+(`extern/uapki/library/cm-pkcs12/src/cm-pkcs12.h:47-48`, методи `setInitParams`/`isSameInitParams`/
+`addRef`/`release` — `:63-74`) і дзеркально `CmCryptoki`
+(`extern/uapki/library/cm-pkcs11/src/cm-cryptoki.h:106-107`, методи — `:161-172`).
+`provider_init` на вже піднятому провайдері з тим самим текстом конфігурації інкрементує
+лічильник і повертає `RET_OK`, з іншим — повертає `RET_CM_ALREADY_INITIALIZED` без змін стану
+(`main-cm-pkcs12.cpp:110-119`, гілки `else if`/`else`); `provider_deinit` декрементує і звільняє
+об'єкт лише на нулі (`main-cm-pkcs12.cpp:123-133`).
+
+**Чому не глобали поруч із `cm_pkcs12`.** Спершу лічильник і рядок конфігурації були статиками
+простору імен у `main-cm-pkcs12.cpp`. Рядок має нетривіальний деструктор і руйнується на
+`DLL_PROCESS_DETACH` провайдера; при завершенні процесу з завантаженою DLL хоста провайдер
+отримує `DETACH` **першим** (кейс 16), а деструктор статика реєстру UAPKI (RAII нижче) кличе
+`provider_deinit()` уже після цього — тобто працював би зі зруйнованим об'єктом. Екземпляр на
+купі й тривіально руйнований вказівник `cm_pkcs12` (`main-cm-pkcs12.cpp:68`) у цей момент
+валідні. Тестом це не ловиться (пам'ять модуля при завершенні процесу не звільняється) —
+виправлення за аналізом; заодно прибрано нові мутабельні глобали (SonarCloud `cpp:S5421`).
+
+**Володіння проксі провайдера в ядрі UAPKI — RAII, не сирий вказівник.** `CM_PROVIDER_ST` тримає
+`std::unique_ptr<CmStorageProxy> storage` (`extern/uapki/library/uapki/src/cm-providers.cpp:47-58`),
+тож при вивантаженні/перезавантаженні головної DLL деструктор вектора коректно звільняє проксі, а той
+— провайдера. Виміряно на x64 і x86: `native_host` case 13 (явний `FreeLibrary` головної DLL віддає
+успіх, модуль провайдера вивантажується слідом) і case 16 (завершення процесу з живою головною DLL —
+`exit 0`, без падінь у деструкторах статиків). Тому TD-12 про сирий вказівник **не заводиться** —
+раніше сформульований ризик виміром не підтвердився.
+
+**Чому `DEINIT` НЕ викликається з деструктора `~AddinUAPKIConnect`.** У сеансі 1С законно живуть
+кілька об'єктів компоненти одночасно (маршрут ПРРО й маршрут еквайрингу підключаються окремо,
+§4.4 `docs/tasks/2026-09-22_provider_reinit_defect.md`); знищення одного об'єкта викликом `DEINIT`
+погасило б статично злінковане ядро UAPKI для решти, які ще працюють. Викликати `DEINIT` з
+`DllMain(DLL_PROCESS_DETACH)` теж не можна — вивантаження іншої DLL (провайдера) через `FreeLibrary`
+під loader lock є небезпечним і документовано забороненим на цій стадії. Це **свідоме рішення**, а
+не недогляд: явного `DEINIT` компонента не робить ніде, крім прямого виклику з 1С.
+
+**`INIT` для 1С ідемпотентний — але лише для ТІЄЇ САМОЇ конфігурації.** Повторний `INIT` у тому
+самому екземплярі UAPKI віддає `4106` (`RET_UAPKI_ALREADY_INITIALIZED`) із порожнім `result` — по
+суті правдива, але марна для 1С відповідь: бібліотека жива, а прикладний код цього з коду `4106`
+не бачить. Хелпер (`UAPKIConnectHelper::HandleAlreadyInitialized`,
+`src/helpers/UAPKIConnect/UAPKIConnectHelper.cpp:586-672`, оголошення `UAPKIConnectHelper.h:127-143`)
+пам'ятає (під мʼютексом `g_initMutex`, окремо на модуль) параметри `INIT` після автоінʼєкції, який
+СПРАВДІ підняв бібліотеку в цьому модулі. На `4106` хелпер порівнює нові параметри з
+запам'ятованими, ігноруючи `skipSelfTest` (це прапорець процедури, не конфігурація):
+
+- **та сама конфігурація** — успіх: `errorCode: 0`, `result.alreadyInitialized: true`,
+  `result.countCmProviders` — але не з пам'яті чи припущення, а через окремий **вимір**: допоміжний
+  виклик методу `PROVIDERS`, що повертає живий `CmProviders::count()`. Якщо вимір дав нуль живих
+  провайдерів — `4106` лишається як є, INIT і далі помилка;
+- **інша конфігурація** — `4106` лишається помилкою, але з наповненим `result`:
+  `result.alreadyInitialized: true`, `result.configMismatch` (перелік ключів, які розійшлися між
+  новими й запам'ятованими параметрами) і `result.countCmProviders` (той самий живий вимір).
+
+`DEINIT` очищає запам'ятовані параметри (`g_hasInitParams = false`) — наступний `INIT` після нього
+знову вважається справжньою ініціалізацією.
+
+**Нуль провайдерів — помилка `502` на нашому боці.** `setup_cm_providers` з C3 звітує про невдале
+`CmProviders::loadProvider(...)` (§6) у `result.cmProviders` (деталі нижче), але `errorCode`
+лишається `RET_OK`, тому UAPKI сама віддає `errorCode: 0` навіть при нулі завантажених провайдерів.
+Хелпер (`UAPKIConnectHelper::ProvidersLoadedOrFail`, `UAPKIConnectHelper.cpp:508-580`, оголошення
+`UAPKIConnectHelper.h:111-125`) звіряє `result.countCmProviders` з кількістю запитаних провайдерів
+**після** можливої заміни відповіді в `HandleAlreadyInitialized` (порядок важливий — інакше звірявся б
+застарілий `countCmProviders` з відповіді `4106`): якщо просили хоч одного провайдера, а піднявся
+нуль — відповідь переписується на `errorCode: 502`, `error` починається на `NO_CM_PROVIDERS_LOADED`,
+оригінальна відповідь бібліотеки лишається цілою в `uapkiResponse`. Недобір (наприклад, 1 з 2
+запитаних) помилкою не вважається — лише `NEUTRAL_REPORT_WARN`, бо перелік законно може містити
+провайдер, якого немає на конкретній машині.
+
+Окремо ядро UAPKI тепер звітує про причину невдалого завантаження провайдера в самому `result` —
+`result.cmProviders = {requested, loaded, failed: [{lib, errorCode, error}, ...]}`
+(`extern/uapki/library/uapki/src/api/library-init.cpp`, `setup_cm_providers`); `countCmProviders`
+лишається як був. Сценарій `tests/scenarios/08_provider_missing.json` (L1) перевіряє це на живому
+змішаному переліку — один існуючий провайдер і один вигаданий.
+
+**Нові рівні тестів контракту.** `tests/provider_contract_selftest.cpp` (рівень L1.5) вантажить
+`cm-pkcs12_x<arch>.dll` напряму через `LoadLibraryW`/`GetProcAddress` (UAPKI не лінкується, `cm-api.h`
+самодостатній) і перевіряє ідемпотентність і лічильник посилань на рівні самого провайдера, без
+проходження через `process()`. `tests/native_host.cpp` (кейси 12–16 — два екземпляри головної DLL з
+одним модулем провайдера, безпека вивантаження головної DLL, нуль провайдерів = `502`, повторний
+`INIT` ідемпотентний для 1С, завершення процесу з живою головною DLL) перевіряють те саме через
+реальний шлях компоненти.
 
 ---
 

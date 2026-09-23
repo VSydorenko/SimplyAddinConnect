@@ -1,0 +1,24 @@
+{
+  "comment": "L1: INIT із неіснуючим провайдером — толерантність збережена (errorCode 0), але невдача ВИДИМА в result.cmProviders.failed. x64.",
+  "tasks": [
+    {
+      "method": "INIT",
+      "comment": "cm-pkcs12 є, cm-nonexistent немає. x86: lib=cm-pkcs12_x86",
+      "expectCountCmProviders": 1,
+      "expectCmProvidersFailed": 1,
+      "parameters": {
+        "offline": true,
+        "cmProviders": {
+          "dir": "./",
+          "allowedProviders": [
+            { "lib": "cm-pkcs12_x64" },
+            { "lib": "cm-nonexistent" }
+          ]
+        }
+      }
+    },
+    {
+      "method": "DEINIT"
+    }
+  ]
+}

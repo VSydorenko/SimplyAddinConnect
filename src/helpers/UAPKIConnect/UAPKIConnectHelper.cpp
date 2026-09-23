@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cctype>
+#include <set>
 
 // Подключаем Windows.h для доступа к функциям Windows API
 #ifdef _WINDOWS
@@ -35,6 +36,21 @@ namespace {
     static void ModuleAnchor() {}
 }
 #endif
+
+namespace {
+    // Параметри INIT, що СПРАВДІ ініціалізував бібліотеку в цьому модулі (після
+    // автоінʼєкції). Час життя = статики UAPKI того самого модуля. Спека §8.4.
+    std::mutex     g_initMutex;
+    bool           g_hasInitParams = false;
+    nlohmann::json g_initParams;
+
+    // skipSelfTest — прапорець процедури, не конфігурація: у порівнянні не бере участі.
+    nlohmann::json NormalizeInitParams(const nlohmann::json& p) {
+        nlohmann::json c = p;
+        if (c.is_object()) c.erase("skipSelfTest");
+        return c;
+    }
+}
 
 bool UAPKIConnectHelper::ParseParamsString(const std::string& paramsString, nlohmann::json& paramsJson) {
     // Инициализируем пустой JSON-объект для параметров
@@ -487,15 +503,13 @@ bool UAPKIConnectHelper::InjectProviderConfig(nlohmann::json& parameters) {
     return true;
 }
 
-// Проверка результата INIT: сравнивает число реально загруженных провайдеров (result.countCmProviders)
-// с числом инъектированных (cmProviders.allowedProviders). При недоборе — WARN с деталями.
-// JSON-ответ НЕ модифицируется (прозрачность для 1С), успешность операции не меняется.
-void UAPKIConnectHelper::WarnIfProvidersNotLoaded(const nlohmann::json& injectedParams, const std::string& responseJson) {
+// Проверка результата INIT: ноль реально загруженных провайдеров при непустом
+// cmProviders.allowedProviders — ошибка для 1С (502), недобор — лишь WARN.
+bool UAPKIConnectHelper::ProvidersLoadedOrFail(const nlohmann::json& injectedParams, std::string& responseJson) {
+    size_t expected = 0;
+    std::string dirInfo;
+    std::string libInfo;
     try {
-        // Сколько провайдеров было инъектировано/передано + диагностические детали
-        size_t expected = 0;
-        std::string dirInfo;
-        std::string libInfo;
         if (injectedParams.is_object() && injectedParams.contains("cmProviders") && injectedParams["cmProviders"].is_object()) {
             const nlohmann::json& cm = injectedParams["cmProviders"];
             if (cm.contains("dir") && cm["dir"].is_string()) {
@@ -514,12 +528,11 @@ void UAPKIConnectHelper::WarnIfProvidersNotLoaded(const nlohmann::json& injected
             }
         }
 
-        // Если провайдеры не инъектировались — проверять нечего
+        // Провайдерів не просили — перевіряти нічого
         if (expected == 0) {
-            return;
+            return true;
         }
 
-        // Читаем result.countCmProviders из ответа
         nlohmann::json resp = nlohmann::json::parse(responseJson);
         long long loaded = -1;
         if (resp.contains("result") && resp["result"].is_object() &&
@@ -529,20 +542,132 @@ void UAPKIConnectHelper::WarnIfProvidersNotLoaded(const nlohmann::json& injected
 
         if (loaded < 0) {
             NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Ответ INIT не содержит result.countCmProviders — невозможно подтвердить загрузку провайдеров; ожидалось: " + std::to_string(expected) + ", dir: " + dirInfo + ", lib: " + libInfo);
-            return;
+            return true;
+        }
+
+        if (loaded == 0) {
+            // ЕДИНСТВЕННЫЙ случай, когда мы меняем ответ библиотеки: INIT доложил
+            // успех, но крипто-стек непригоден — OPEN/SIGN дадут 4102/4121. Именно
+            // эта ложь стоила месяца. Ответ библиотеки сохраняем целиком.
+            const std::string message = "NO_CM_PROVIDERS_LOADED: requested "
+                + std::to_string(expected) + ", loaded 0; dir: " + dirInfo + ", lib: " + libInfo;
+            NEUTRAL_REPORT_ERROR("UAPKIConnectHelper", "Провайдеры НКИ не загружены — INIT считается неуспешным: " + message);
+
+            nlohmann::json envelope;
+            envelope["errorCode"]     = 502;
+            envelope["error"]         = message;
+            envelope["method"]        = "INIT";
+            envelope["uapkiResponse"] = resp;
+            responseJson = envelope.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+            return false;
         }
 
         if (static_cast<size_t>(loaded) < expected) {
-            NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "UAPKI загрузил меньше провайдеров, чем ожидалось: загружено " + std::to_string(loaded) + " из " + std::to_string(expected) + "; dir: " + dirInfo + ", lib: " + libInfo + ". Проверьте наличие файла провайдера и права доступа");
+            NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "UAPKI загрузил меньше провайдеров, чем ожидалось: загружено " + std::to_string(loaded) + " из " + std::to_string(expected) + "; dir: " + dirInfo + ", lib: " + libInfo);
         } else {
             NEUTRAL_REPORT_DEBUG("UAPKIConnectHelper", "INIT: загружено провайдеров " + std::to_string(loaded) + " из " + std::to_string(expected));
         }
+        return true;
     }
     catch (const std::exception& e) {
         NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Не удалось проверить число загруженных провайдеров в ответе INIT: " + std::string(e.what()));
+        return true;
     }
     catch (...) {
         NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Неизвестная ошибка при проверке числа загруженных провайдеров в ответе INIT");
+        return true;
+    }
+}
+
+// Код UAPKI RET_UAPKI_ALREADY_INITIALIZED (0x100A) у десятковому вигляді —
+// саме так він приходить у полі errorCode JSON-відповіді.
+static const long long UAPKI_ALREADY_INITIALIZED = 4106;
+
+bool UAPKIConnectHelper::HandleAlreadyInitialized(const nlohmann::json& params, std::string& responseJson) {
+    try {
+        nlohmann::json resp = nlohmann::json::parse(responseJson);
+        if (!resp.contains("errorCode") || !resp["errorCode"].is_number_integer()) {
+            return false;
+        }
+        if (resp["errorCode"].get<long long>() != UAPKI_ALREADY_INITIALIZED) {
+            return false;
+        }
+
+        // МІРЯЄМО живий стан, а не згадуємо минулий: PROVIDERS віддає
+        // CmProviders::count() незалежно від прапорця ініціалізації.
+        nlohmann::json probeReq;
+        probeReq["method"] = "PROVIDERS";
+        const std::string probeStr = probeReq.dump();
+        char* probeRaw = ::process(probeStr.c_str());
+        if (!probeRaw) {
+            NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Проба PROVIDERS не вернула ответ — INIT остаётся с кодом 4106");
+            return false;
+        }
+        const std::string probeResp(probeRaw);
+        ::json_free(probeRaw);
+
+        long long count = -1;
+        nlohmann::json pj = nlohmann::json::parse(probeResp);
+        if (pj.contains("result") && pj["result"].is_object()
+            && pj["result"].contains("providers") && pj["result"]["providers"].is_array()) {
+            count = static_cast<long long>(pj["result"]["providers"].size());
+        }
+
+        if (count < 1) {
+            NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Библиотека уже инициализирована, но провайдеров нет: " + std::to_string(count) + " — INIT остаётся ошибкой");
+            return false;
+        }
+
+        bool same = false;
+        nlohmann::json mismatch = nlohmann::json::array();
+        {
+            std::lock_guard<std::mutex> lock(g_initMutex);
+            if (g_hasInitParams) {
+                const nlohmann::json now  = NormalizeInitParams(params);
+                const nlohmann::json then = NormalizeInitParams(g_initParams);
+                same = (now == then);
+                if (!same && now.is_object() && then.is_object()) {
+                    std::set<std::string> keys;
+                    for (auto it = now.begin(); it != now.end(); ++it)   keys.insert(it.key());
+                    for (auto it = then.begin(); it != then.end(); ++it) keys.insert(it.key());
+                    for (const auto& k : keys) {
+                        const bool inNow = now.contains(k), inThen = then.contains(k);
+                        if (inNow != inThen || (inNow && now[k] != then[k])) mismatch.push_back(k);
+                    }
+                }
+            }
+        }
+
+        if (!same) {
+            NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Повторный INIT с ДРУГОЙ конфигурацией отклонён: " + mismatch.dump());
+            nlohmann::json err;
+            err["errorCode"] = UAPKI_ALREADY_INITIALIZED;
+            err["error"]     = "ALREADY_INITIALIZED: библиотека уже инициализирована с другой конфигурацией; сменить её можно только через DEINIT и INIT с skipSelfTest";
+            err["method"]    = "INIT";
+            err["result"]["alreadyInitialized"] = true;
+            err["result"]["configMismatch"]     = mismatch;
+            err["result"]["countCmProviders"]   = count;
+            responseJson = err.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+            return false;
+        }
+
+        NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "Повторный INIT: библиотека уже инициализирована, провайдеров живых: " + std::to_string(count));
+
+        nlohmann::json ok;
+        ok["errorCode"] = 0;
+        ok["method"]    = "INIT";
+        ok["result"]["countCmProviders"]  = count;
+        ok["result"]["alreadyInitialized"] = true;
+        responseJson = ok.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+        return true;
+    }
+    catch (const std::exception& e) {
+        NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Не удалось обработать повторный INIT: " + std::string(e.what()));
+        return false;
+    }
+    catch (...) {
+        NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Неизвестная ошибка при обработке повторного INIT");
+        return false;
     }
 }
 
@@ -722,16 +847,37 @@ bool UAPKIConnectHelper::ExecuteUapkiCommand(const std::string& method, const st
             // Проверяем успешность операции по полю errorCode
             bool isSuccess = IsOperationSuccess(responseJson);
 
+            // Для INIT: спершу робимо INIT ідемпотентним (4106 -> вимір PROVIDERS),
+            // і лише потім застосовуємо політику нуля провайдерів. Порядок важливий:
+            // після заміни відповіді вона вже несе реальний countCmProviders.
+            if (methodUpper == "INIT") {
+                // Справжня ініціалізація (бібліотека сама відповіла 0) — запам'ятати
+                // параметри, з якими підняли бібліотеку в цьому модулі (спека §8.4).
+                if (isSuccess) {
+                    std::lock_guard<std::mutex> lock(g_initMutex);
+                    g_initParams    = paramsJson;
+                    g_hasInitParams = true;
+                }
+                if (HandleAlreadyInitialized(paramsJson, responseJson)) {
+                    isSuccess = true;
+                }
+                if (!ProvidersLoadedOrFail(paramsJson, responseJson)) {
+                    isSuccess = false;
+                }
+            }
+            else if (methodUpper == "DEINIT" && isSuccess) {
+                std::lock_guard<std::mutex> lock(g_initMutex);
+                g_hasInitParams = false;
+                g_initParams    = nlohmann::json();
+            }
+
+            // Вердикт у лог — ПІСЛЯ пост-обробки INIT: лог мусить казати те саме, що
+            // отримала 1С. Інакше повторний INIT логувався б як помилка, а INIT без
+            // провайдерів — як успіх.
             if (isSuccess) {
                 NEUTRAL_REPORT_INFO("UAPKIConnectHelper", "Команда UAPKI " + method + " выполнена успешно");
             } else {
                 NEUTRAL_REPORT_WARN("UAPKIConnectHelper", "Команда UAPKI " + method + " завершилась с ошибкой");
-            }
-
-            // Для INIT дополнительно сверяем число реально загруженных провайдеров с ожидаемым.
-            // Диагностика молчаливого недобора провайдеров (ответ/успешность не меняем).
-            if (methodUpper == "INIT") {
-                WarnIfProvidersNotLoaded(paramsJson, responseJson);
             }
 
             return isSuccess;

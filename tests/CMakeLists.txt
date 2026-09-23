@@ -248,6 +248,34 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# provider_contract_selftest — L1.5-харнес КОНТРАКТУ провайдера НКІ.
+# Вантажить cm-pkcs12_*.dll напряму (LoadLibraryW+GetProcAddress) і перевіряє
+# ідемпотентність provider_init та облік посилань. Крипто-ядро НЕ лінкується:
+# cm-api.h самодостатній (stdint/stdbool/stddef). Тому ціль стоїть ДО гейта
+# BUILD_WITH_UAPKI — без нього exe збереться й віддасть exit 3 (SKIP), бо
+# самого файлу провайдера не буде.
+# ---------------------------------------------------------------------------
+add_executable(provider_contract_selftest provider_contract_selftest.cpp)
+
+set_target_properties(provider_contract_selftest PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "provider_contract_selftest${_TEST_ARCH_SUFFIX}"
+)
+
+target_include_directories(provider_contract_selftest PRIVATE
+    ${CMAKE_SOURCE_DIR}/extern/uapki/library/common/cm-api   # cm-api.h, cm-errors.h
+)
+
+target_compile_definitions(provider_contract_selftest PRIVATE
+    PCS_BIN_DIR="${CMAKE_SOURCE_DIR}/bin/Release"
+)
+
+if(MSVC)
+    target_compile_options(provider_contract_selftest PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
 # Далі — цілі, що потребують крипто-ядра UAPKI (uapki_bundle існує лише при
 # BUILD_WITH_UAPKI). Без нього тихо пропускаємо решту файлу.
 # ---------------------------------------------------------------------------
