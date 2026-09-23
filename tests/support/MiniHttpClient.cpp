@@ -23,7 +23,7 @@ std::string Lower(std::string s) {
 
 }  // namespace
 
-ClientResult RawRequest(int port, const std::string& raw, int timeoutMs) {
+ClientResult FetchRaw(int port, const std::string& raw, int timeoutMs) {
     ClientResult r;
     const auto t0 = std::chrono::steady_clock::now();
     auto stamp = [&r, t0]() {
@@ -95,14 +95,14 @@ ClientResult RawRequest(int port, const std::string& raw, int timeoutMs) {
     return r;
 }
 
-ClientResult Request(int port, const std::string& method, const std::string& path,
-                     const std::string& body, const std::string& contentType, int timeoutMs) {
+ClientResult Fetch(int port, const std::string& method, const std::string& path,
+                   const std::string& body, const std::string& contentType, int timeoutMs) {
     std::string raw = method + " " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n";
     if (!contentType.empty()) raw += "Content-Type: " + contentType + "\r\n";
     raw += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     raw += "Connection: close\r\n\r\n";
     raw += body;
-    return RawRequest(port, raw, timeoutMs);
+    return FetchRaw(port, raw, timeoutMs);
 }
 
 }  // namespace minihttp

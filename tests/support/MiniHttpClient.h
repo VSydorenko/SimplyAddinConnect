@@ -20,10 +20,13 @@ struct ClientResult {
 };
 
 // Надіслати сирі байти запиту й прочитати відповідь до закриття з'єднання.
-ClientResult RawRequest(int port, const std::string& raw, int timeoutMs);
+// Ім'я Fetch (не Request) — свідомо: minihttp::Request — це ще й struct (розібраний
+// запит сервера, MiniHttpServer.h); в одній TU з обома хедерами якісне ім'я типу
+// без "struct" ховається за іменем функції (правило приховування імені класу).
+ClientResult FetchRaw(int port, const std::string& raw, int timeoutMs);
 
 // Звичайний запит: Content-Length за тілом, Connection: close.
-ClientResult Request(int port, const std::string& method, const std::string& path,
-                     const std::string& body, const std::string& contentType, int timeoutMs);
+ClientResult Fetch(int port, const std::string& method, const std::string& path,
+                   const std::string& body, const std::string& contentType, int timeoutMs);
 
 }  // namespace minihttp

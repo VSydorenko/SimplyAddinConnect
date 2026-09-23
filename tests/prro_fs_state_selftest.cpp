@@ -44,11 +44,7 @@ static void TestTransport() {
     std::printf("== Транспорт MiniHttpServer: заголовки й диспозиції ==\n");
     static const char* kDate = "Thu, 24 Sep 2026 09:00:00 GMT";
     auto common  = []() { return minihttp::HeaderList{ { "Date", kDate } }; };
-    // minihttp::Request — і struct (запит), і функція-клієнт (MiniHttpClient.h);
-    // в одній TU обидва в namespace minihttp, і за правилом приховування імені
-    // класу функцією якісне ім'я типу тут резолвиться у функцію. Тому — явний
-    // elaborated-type-specifier "struct", щоб узяти саме тип.
-    auto handler = [](const struct minihttp::Request& rq) -> minihttp::Response {
+    auto handler = [](const minihttp::Request& rq) -> minihttp::Response {
         minihttp::Response r;
         if (rq.uri == "/send")   { r.body = "ok"; r.headers.push_back({ "X-Extra", "1" }); return r; }
         if (rq.uri == "/abort")  { r.disposition = minihttp::Disposition::Abort; return r; }
@@ -62,29 +58,29 @@ static void TestTransport() {
     CHECK(srv != nullptr, "сервер піднявся на вільному порту 18100..18199");
     if (!srv) return;
 
-    minihttp::ClientResult a = minihttp::Request(port, "GET", "/send", "", "", 3000);
+    minihttp::ClientResult a = minihttp::Fetch(port, "GET", "/send", "", "", 3000);
     CHECK(a.responded && a.code == 200 && a.body == "ok", "Send: відповідь 200 з тілом");
     CHECK(a.headers.count("date") == 1 && a.headers["date"] == kDate, "Send: спільний заголовок Date присутній");
     CHECK(a.headers.count("x-extra") == 1, "Send: власний заголовок відповіді (Response::headers) присутній");
 
-    minihttp::ClientResult t = minihttp::RawRequest(port,
+    minihttp::ClientResult t = minihttp::FetchRaw(port,
         "POST /x HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n\r\n", 3000);
     CHECK(t.responded && t.code == 411, "транспортна відмова 411 віддана самим сервером");
     CHECK(t.headers.count("date") == 1, "транспортна відмова теж має Date (спільні заголовки на кожній відповіді)");
 
-    minihttp::ClientResult b = minihttp::Request(port, "GET", "/abort", "", "", 3000);
+    minihttp::ClientResult b = minihttp::Fetch(port, "GET", "/abort", "", "", 3000);
     CHECK(b.connected && !b.responded, "Abort: з'єднання було, відповіді немає");
     CHECK(b.reset && !b.timedOut, "Abort: клієнт бачить розрив (RST), а не таймаут");
 
     // Правило 3: утримання 2 с, клієнтський таймаут 1 с. Числа в звіті задачі — з виміру.
-    minihttp::ClientResult c = minihttp::Request(port, "GET", "/hold", "", "", 1000);
+    minihttp::ClientResult c = minihttp::Fetch(port, "GET", "/hold", "", "", 1000);
     CHECK(!c.responded && c.timedOut, "HoldThenAbort: клієнт із таймаутом 1 с не отримав нічого");
-    minihttp::ClientResult d = minihttp::Request(port, "GET", "/hold", "", "", 5000);
+    minihttp::ClientResult d = minihttp::Fetch(port, "GET", "/hold", "", "", 5000);
     CHECK(!d.responded && d.reset && d.elapsedMs >= 1800,
           "HoldThenAbort: після ~2 с тиші — розрив (elapsedMs >= 1800)");
 
     // Stop() має перервати утримання, а не чекати holdSeconds.
-    std::thread cli([port]() { minihttp::Request(port, "GET", "/hold30", "", "", 40000); });
+    std::thread cli([port]() { minihttp::Fetch(port, "GET", "/hold30", "", "", 40000); });
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     const auto t0 = std::chrono::steady_clock::now();
     srv->Stop();
@@ -92,7 +88,11 @@ static void TestTransport() {
                                  std::chrono::steady_clock::now() - t0).count();
     cli.join();
     std::printf("  виміряно: Stop() під час утримання 30 с зайняв %lld мс\n", stopMs);
-    CHECK(stopMs < 2000, "Stop() перериває утримання (< 2000 мс; без переривання — ~5000 мс стелі Stop)");
+    // Правило 3: поріг двома вимірами. Виміряно 2026-09-24: з перериванням (notify_all
+    // у Stop()) — 0 мс; без переривання (holdCv_.notify_all() тимчасово прибрано,
+    // негативна верифікація) — 5000 мс (стеля activeCv_.wait_for(5s), MiniHttpServer.cpp:323).
+    // Поріг 2000 мс лежить строго між обома вимірами.
+    CHECK(stopMs < 2000, "Stop() перериває утримання (< 2000 мс; виміряно 2026-09-24: 0 мс / 5000 мс)");
 }
 
 int main() {
