@@ -24,9 +24,12 @@
 - **Task 10 — подано в апстрім, описи двомовні EN+UA:** [PR #31](https://github.com/specinfo-ua/UAPKI/pull/31) (C1),
   [PR #32](https://github.com/specinfo-ua/UAPKI/pull/32) (C2), [PR #33](https://github.com/specinfo-ua/UAPKI/pull/33) (C3),
   [issue #34](https://github.com/specinfo-ua/UAPKI/issues/34). CI (Linux/Windows) зелений у всіх; у #31 червоний
-  quality gate SonarCloud (`cpp:S5421` ×4, `cpp:S995` ×2) → **Task 13**.
+  quality gate SonarCloud (`cpp:S5421` ×4, `cpp:S995` ×2) → **Task 13 — виконано**: стан провайдера в
+  екземплярі (сабмодуль `6e4da30`, у PR #31 — `0bc2b2d`, без force), заодно знято UB порядку руйнування;
+  quality gate #31 — OK. Чотири MINOR `cpp:S6009` (`std::string_view`) незастосовні: апстрім збирає
+  провайдери як C++11 (`cm-pkcs12/CMakeLists.txt:29`). Гейт x64 39 / x86 38 + 1 SKIP.
 - **Task 11:** крок 1 (анонс) — надіслано; крок 2 (живий прогін 1С) — виконано, Task 12 теж підтверджено в 1С
-  (3.2.1.232); крок 3 — PR у `main`, після Task 13.
+  (3.2.1.232); крок 3 — PR у `main`, відкрито.
 - **Гілки форку приведено до `docs/architecture/uapki.md` §7.1:** `main-dev` = `af63339` (наші правки), `main` =
   `fda2148` (дзеркало апстріму), сабмодуль на `main-dev`, `.gitmodules` без змін. Інтеграційну гілку
   `simplyaddin/provider-contract` видалено — **у тексті плану нижче читати її як `main-dev`**.
