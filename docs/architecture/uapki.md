@@ -610,13 +610,24 @@ upstream, тепер частина протоколу для будь-яког�
 `RET_CM_ALREADY_INITIALIZED` тепер має точний сенс: «уже ініціалізований, але ІНШОЮ конфігурацією»
 — не просто «уже ініціалізований».
 
-Реалізація — `cm_pkcs12_refcnt` + `cm_pkcs12_initparams` (`main-cm-pkcs12.cpp:74,78`, поруч із
-глобалом) і дзеркальні `cm_cryptoki_refcnt` + `cm_cryptoki_initparams` у
-`extern/uapki/library/cm-pkcs11/src/main-cm-pkcs11.cpp:49,53`: `provider_init` на вже піднятому
-провайдері з тим самим текстом конфігурації інкрементує лічильник і повертає `RET_OK`, з іншим —
-повертає `RET_CM_ALREADY_INITIALIZED` без змін стану (`main-cm-pkcs12.cpp:122-131`, гілки
-`else if`/`else`); `provider_deinit` декрементує і звільняє об'єкт лише на нулі
-(`main-cm-pkcs12.cpp:135-147`).
+Реалізація — лічильник і текст конфігурації живуть **усередині екземпляра**: члени
+`m_RefCount` + `m_InitParams` класу `CmPkcs12`
+(`extern/uapki/library/cm-pkcs12/src/cm-pkcs12.h:47-48`, методи `setInitParams`/`isSameInitParams`/
+`addRef`/`release` — `:63-74`) і дзеркально `CmCryptoki`
+(`extern/uapki/library/cm-pkcs11/src/cm-cryptoki.h:106-107`, методи — `:161-172`).
+`provider_init` на вже піднятому провайдері з тим самим текстом конфігурації інкрементує
+лічильник і повертає `RET_OK`, з іншим — повертає `RET_CM_ALREADY_INITIALIZED` без змін стану
+(`main-cm-pkcs12.cpp:110-119`, гілки `else if`/`else`); `provider_deinit` декрементує і звільняє
+об'єкт лише на нулі (`main-cm-pkcs12.cpp:123-133`).
+
+**Чому не глобали поруч із `cm_pkcs12`.** Спершу лічильник і рядок конфігурації були статиками
+простору імен у `main-cm-pkcs12.cpp`. Рядок має нетривіальний деструктор і руйнується на
+`DLL_PROCESS_DETACH` провайдера; при завершенні процесу з завантаженою DLL хоста провайдер
+отримує `DETACH` **першим** (кейс 16), а деструктор статика реєстру UAPKI (RAII нижче) кличе
+`provider_deinit()` уже після цього — тобто працював би зі зруйнованим об'єктом. Екземпляр на
+купі й тривіально руйнований вказівник `cm_pkcs12` (`main-cm-pkcs12.cpp:68`) у цей момент
+валідні. Тестом це не ловиться (пам'ять модуля при завершенні процесу не звільняється) —
+виправлення за аналізом; заодно прибрано нові мутабельні глобали (SonarCloud `cpp:S5421`).
 
 **Володіння проксі провайдера в ядрі UAPKI — RAII, не сирий вказівник.** `CM_PROVIDER_ST` тримає
 `std::unique_ptr<CmStorageProxy> storage` (`extern/uapki/library/uapki/src/cm-providers.cpp:47-58`),

@@ -246,9 +246,9 @@ snapshot'а, а не з релізного tarball. Реліз curl 8.21.0 (2026
 ## TD-10. Гонка двох потоків у `provider_init`
 
 **Де:** незахищена перевірка-і-дія `if (!cm_pkcs12) { ... } else { ... }` —
-`extern/uapki/library/cm-pkcs12/src/main-cm-pkcs12.cpp:108`; дзеркально
+`extern/uapki/library/cm-pkcs12/src/main-cm-pkcs12.cpp:97`; дзеркально
 `if (!cm_cryptoki) { ... } else { ... }` —
-`extern/uapki/library/cm-pkcs11/src/main-cm-pkcs11.cpp:80`.
+`extern/uapki/library/cm-pkcs11/src/main-cm-pkcs11.cpp:72`.
 
 **Що не так.** Ні глобал, ні лічильник посилань не захищені синхронізацією; два одночасні
 перші виклики `provider_init` з різних потоків дали б два `new` і втрату одного з об'єктів.
