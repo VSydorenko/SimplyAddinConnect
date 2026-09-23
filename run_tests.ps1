@@ -68,6 +68,7 @@ $EcrNativeHostExe= Join-Path $BinRelease ("ecr_native_host" + $ArchSuffix + ".ex
 $LabelSelftestExe = Join-Path $BinRelease ("label_printer_selftest" + $ArchSuffix + ".exe")
 $LabelNativeHostExe = Join-Path $BinRelease ("label_native_host" + $ArchSuffix + ".exe")
 $PrroFsStateExe = Join-Path $BinRelease ("prro_fs_state_selftest" + $ArchSuffix + ".exe")
+$PrroFsEmulatorExe = Join-Path $BinRelease ("prro_fs_emulator" + $ArchSuffix + ".exe")
 $DataDir      = Join-Path $Root 'tests/data'
 $ScenDir      = Join-Path $Root 'tests/scenarios'
 # Особистий КЕП розробника (поза git). Оголошено на рівні скрипта, бо на нього посилаються
@@ -603,6 +604,38 @@ else {
     else {
         $fails = ($txt -split "`n" | Where-Object { $_ -match '\[FAIL\]' }) -join ' | '
         Add-Result 'L1.5' 'provider_contract_selftest' 'FAIL' "exit=$($p.ExitCode) $fails"
+    }
+    Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
+}
+
+# =====================================================================
+# ЕТАП L-f2: prro_fs_emulator --self-test — протокол імітації фіскального сервера ДПС:
+# сценарії споживача (зміна, обриви до/після реєстрації, збої, формати відповідей) без 1С.
+# Потребує UAPKI (підпис квитанцій і перевірка CMS): без -WithUAPKI — SKIP, не FAIL.
+# Спека: docs/superpowers/specs/2026-09-23-prro-fs-emulator-design.md §10.2.
+# =====================================================================
+Section 'ЕТАП L-f2: prro_fs_emulator --self-test (протокол ДПС)'
+
+if ($NoUapki) {
+    Add-Result 'L-f2' 'prro_fs_emulator' 'SKIP' 'режим -NoUapki: крипто-стек UAPKI не збирається'
+}
+elseif (-not (Test-Path $PrroFsEmulatorExe)) {
+    Add-Result 'L-f2' 'prro_fs_emulator' 'FAIL' `
+        "немає prro_fs_emulator.exe: $PrroFsEmulatorExe — зберіть build_project.ps1 -WithUAPKI -WithTests"
+}
+else {
+    $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("prro_fs_emu_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+    $p = Start-Process -FilePath $PrroFsEmulatorExe -ArgumentList @('--self-test') `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+    $txt = ''
+    if (Test-Path $outF) { $txt = Get-Content -Raw $outF }
+    if ($p.ExitCode -eq 0) {
+        $nPassLines = ([regex]::Matches($txt, '\[PASS\]')).Count
+        Add-Result 'L-f2' 'prro_fs_emulator' 'PASS' "усі CHECK пройшли (PASS: $nPassLines)"
+    }
+    else {
+        $fails = ($txt -split "`n" | Where-Object { $_ -match '\[FAIL\]' }) -join ' | '
+        Add-Result 'L-f2' 'prro_fs_emulator' 'FAIL' "exit=$($p.ExitCode) $fails"
     }
     Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
 }
