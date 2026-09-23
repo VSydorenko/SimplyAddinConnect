@@ -285,6 +285,7 @@ add_executable(prro_fs_state_selftest prro_fs_state_selftest.cpp
     support/MiniHttpServer.cpp
     support/MiniHttpClient.cpp
     support/FiscalServerState.cpp
+    support/FaultPlan.cpp
     ${CMAKE_SOURCE_DIR}/extern/pugixml/src/pugixml.cpp
 )
 set_target_properties(prro_fs_state_selftest PROPERTIES

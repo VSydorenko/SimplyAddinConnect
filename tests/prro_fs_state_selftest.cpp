@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -22,6 +23,7 @@
 #include "support/MiniHttpServer.h"   // winsock2.h — до windows.h
 #include "support/MiniHttpClient.h"
 #include "support/FiscalServerState.h"
+#include "support/FaultPlan.h"
 #include "support/PrroFsFixtures.h"
 
 #include <windows.h>
@@ -216,6 +218,58 @@ static void TestTotals() {
           "рядок із SIGN: TurnoverDiscount з документа");
 }
 
+static void TestFaultPlan() {
+    std::printf("== FaultPlan ==\n");
+    using prrofs::Fault;
+    using prrofs::FaultMode;
+    using prrofs::FaultPlan;
+    int calls = 0;
+    auto name = [&calls](const char* n) {
+        return std::function<std::string()>([&calls, n]() { ++calls; return std::string(n); });
+    };
+
+    FaultPlan fp;
+    Fault drop;
+    drop.mode = FaultMode::DropAfterRegister;
+    CHECK(fp.Arm("doc", drop) == FaultPlan::ArmResult::Ok, "Arm doc -> Ok");
+    CHECK(fp.Arm("doc", drop) == FaultPlan::ArmResult::Conflict, "повторне взведення тієї самої цілі -> Conflict (черги немає)");
+    CHECK(fp.Arm("foo", drop) == FaultPlan::ArmResult::BadTarget && fp.Arm("cmd:", drop) == FaultPlan::ArmResult::BadTarget,
+          "некоректна ціль -> BadTarget");
+    Fault got;
+    CHECK(!fp.Take("cmd", name("ServerState"), got), "збій doc не спрацьовує на cmd");
+    CHECK(fp.Take("doc", nullptr, got) && got.mode == FaultMode::DropAfterRegister, "збій doc спрацював на doc");
+    CHECK(!fp.Take("doc", nullptr, got), "вдруге не спрацьовує (витрачено)");
+
+    Fault s503;
+    s503.mode = FaultMode::Status;
+    s503.code = 503;
+    CHECK(fp.Arm("cmd", s503) == FaultPlan::ArmResult::Ok, "Arm cmd -> Ok");
+    calls = 0;
+    CHECK(fp.Take("cmd", name("ServerState"), got) && got.code == 503, "загальний cmd спрацював");
+    CHECK(calls == 0, "лише загальний cmd: ім'я команди не розбиралось");
+
+    Fault s500 = s503;
+    s500.code = 500;
+    fp.Arm("cmd", s500);
+    fp.Arm("cmd:CheckExt", s503);
+    calls = 0;
+    CHECK(fp.Take("cmd", name("CheckExt"), got) && got.code == 503, "cmd:CheckExt має перевагу над cmd");
+    CHECK(calls == 1 && fp.Armed().size() == 1 && fp.Armed()[0].first == "cmd",
+          "витрачено рівно один збій — загальний cmd лишився");
+    fp.Arm("cmd:CheckExt", s503);
+    CHECK(fp.Take("cmd", name("ServerState"), got) && got.code == 500, "інша команда бере загальний cmd");
+    CHECK(fp.Armed().size() == 1 && fp.Armed()[0].first == "cmd:CheckExt", "cmd:CheckExt лишився для CheckExt");
+
+    fp.dateSkewSeconds = 40;
+    fp.rejectFormat = prrofs::RejectFormat::Ticket;
+    fp.Clear();
+    CHECK(fp.Armed().empty() && fp.dateSkewSeconds == 0 && fp.rejectFormat == prrofs::RejectFormat::Text,
+          "Clear (reset) скидає збої й постійні налаштування");
+    FaultMode m = FaultMode::Delay;
+    CHECK(prrofs::ParseFaultMode("dropBeforeRegister", m) && m == FaultMode::DropBeforeRegister
+          && !prrofs::ParseFaultMode("drop", m), "ParseFaultMode: відома назва — так, невідома — ні");
+}
+
 // Сервер на першому вільному порту 18100..18199.
 static std::unique_ptr<minihttp::Server> StartServer(minihttp::Handler h,
                                                      minihttp::CommonHeadersFn common, int& port) {
@@ -294,6 +348,7 @@ int main() {
     TestInsertOrderTaxNum();
     TestStateFlow();
     TestTotals();
+    TestFaultPlan();
 
     minihttp::ShutdownNetwork();
     std::printf(g_failures ? "\n=== FAILED: %d ===\n" : "\n=== ALL PASS ===\n", g_failures);
