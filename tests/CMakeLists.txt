@@ -276,6 +276,30 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# prro_fs_state_selftest — рівень L-f1: чиста логіка імітації фіскального сервера
+# ДПС (стан, нумерація, підсумки, збої) + диспозиції MiniHttpServer. Без UAPKI:
+# збирається завжди при BUILD_TESTS=ON і проходить у run_tests.ps1 -NoUapki.
+# Спека: docs/superpowers/specs/2026-09-23-prro-fs-emulator-design.md §10.1.
+# ---------------------------------------------------------------------------
+add_executable(prro_fs_state_selftest prro_fs_state_selftest.cpp
+    support/MiniHttpServer.cpp
+    support/MiniHttpClient.cpp
+)
+set_target_properties(prro_fs_state_selftest PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "prro_fs_state_selftest${_TEST_ARCH_SUFFIX}"
+)
+target_include_directories(prro_fs_state_selftest PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_definitions(prro_fs_state_selftest PRIVATE _WINDOWS UNICODE _UNICODE)
+target_link_libraries(prro_fs_state_selftest PRIVATE ws2_32)
+if(MSVC)
+    target_compile_options(prro_fs_state_selftest PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
 # Далі — цілі, що потребують крипто-ядра UAPKI (uapki_bundle існує лише при
 # BUILD_WITH_UAPKI). Без нього тихо пропускаємо решту файлу.
 # ---------------------------------------------------------------------------

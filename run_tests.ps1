@@ -67,6 +67,7 @@ $EcrSelftestExe  = Join-Path $BinRelease ("ecr_privatjson_selftest" + $ArchSuffi
 $EcrNativeHostExe= Join-Path $BinRelease ("ecr_native_host" + $ArchSuffix + ".exe")
 $LabelSelftestExe = Join-Path $BinRelease ("label_printer_selftest" + $ArchSuffix + ".exe")
 $LabelNativeHostExe = Join-Path $BinRelease ("label_native_host" + $ArchSuffix + ".exe")
+$PrroFsStateExe = Join-Path $BinRelease ("prro_fs_state_selftest" + $ArchSuffix + ".exe")
 $DataDir      = Join-Path $Root 'tests/data'
 $ScenDir      = Join-Path $Root 'tests/scenarios'
 # Особистий КЕП розробника (поза git). Оголошено на рівні скрипта, бо на нього посилаються
@@ -489,6 +490,35 @@ else {
     else {
         $fails = ($txt -split "`n" | Where-Object { $_ -match '\[FAIL\]' }) -join ' | '
         Add-Result 'L-p3' 'label_native_host' 'FAIL' "exit=$($p.ExitCode) $fails"
+    }
+    Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
+}
+
+# =====================================================================
+# ЕТАП L-f1: prro_fs_state_selftest — чиста логіка імітації фіскального сервера ДПС
+# (стан, нумерація, підсумки, збої) і диспозиції MiniHttpServer. Без UAPKI: збирається
+# завжди при BUILD_TESTS=ON і проходить у -NoUapki. Критерій — exit 0.
+# Спека: docs/superpowers/specs/2026-09-23-prro-fs-emulator-design.md §10.1.
+# =====================================================================
+Section 'ЕТАП L-f1: prro_fs_state_selftest імітації ДПС'
+
+if (-not (Test-Path $PrroFsStateExe)) {
+    Add-Result 'L-f1' 'prro_fs_state_selftest' 'FAIL' `
+        "немає prro_fs_state_selftest.exe: $PrroFsStateExe — зберіть з -WithTests (збирається завжди при BUILD_TESTS=ON, без UAPKI)"
+}
+else {
+    $outF = Join-Path ([System.IO.Path]::GetTempPath()) ("prro_fs_state_" + [guid]::NewGuid().ToString('N').Substring(0,6) + '.out')
+    $p = Start-Process -FilePath $PrroFsStateExe `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outF -RedirectStandardError "$outF.err"
+    $txt = ''
+    if (Test-Path $outF) { $txt = Get-Content -Raw $outF }
+    if ($p.ExitCode -eq 0) {
+        $nPassLines = ([regex]::Matches($txt, '\[PASS\]')).Count
+        Add-Result 'L-f1' 'prro_fs_state_selftest' 'PASS' "усі CHECK пройшли (PASS: $nPassLines)"
+    }
+    else {
+        $fails = ($txt -split "`n" | Where-Object { $_ -match '\[FAIL\]' }) -join ' | '
+        Add-Result 'L-f1' 'prro_fs_state_selftest' 'FAIL' "exit=$($p.ExitCode) $fails"
     }
     Remove-Item $outF, "$outF.err" -ErrorAction SilentlyContinue
 }

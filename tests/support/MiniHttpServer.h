@@ -7,6 +7,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 #include <winsock2.h>
 
 // Мінімальний HTTP/1.1-сервер для тестових харнесів (лише тести, лише loopback).
@@ -38,15 +39,31 @@ struct Request {
     std::map<std::string, std::string> headers;
 };
 
+using HeaderList = std::vector<std::pair<std::string, std::string>>;
+
+// Що зробити з з'єднанням після обробника.
+enum class Disposition {
+    Send,           // штатно: відповідь + shutdown(SD_SEND)
+    Abort,          // закрити БЕЗ відповіді, RST (SO_LINGER {1,0}) — «обрив» для тестів
+    HoldThenAbort   // мовчати holdSeconds, потім RST; Stop() перериває очікування
+};
+
 // Відповідь. Порожній reason -> сервер підставить стандартний текст для code.
 struct Response {
     int         code = 200;
     std::string reason;
     std::string contentType = "text/plain; charset=utf-8";
     std::string body;
+    HeaderList  headers;                          // додаткові заголовки (Location тощо)
+    Disposition disposition = Disposition::Send;
+    int         holdSeconds = 0;                  // лише для HoldThenAbort
 };
 
 using Handler = std::function<Response(const Request&)>;
+
+// Заголовки, що додаються до КОЖНОЇ відповіді — і обробника, і власних відмов
+// транспорту (400/411/413/431). Імітація ДПС ставить так заголовок Date.
+using CommonHeadersFn = std::function<HeaderList()>;
 
 // Winsock: ініціалізація/зупинка на процес (WSAStartup/WSACleanup).
 bool InitNetwork();
@@ -65,6 +82,7 @@ public:
     Server& operator=(const Server&) = delete;
 
     void SetHandler(Handler h);
+    void SetCommonHeaders(CommonHeadersFn f);
 
     // bind+listen. false + текст помилки, якщо порт зайнятий/недоступний —
     // саме за цим викликач шукає наступний вільний порт.
@@ -79,10 +97,15 @@ public:
 private:
     void AcceptLoop();
     void Serve(SOCKET client);
+    HeaderList CommonHeaders() const;
 
     int         port_;
     std::string host_;
     Handler     handler_;
+    CommonHeadersFn commonHeaders_;
+    // Утримання з'єднання (HoldThenAbort): Stop() будить очікування через holdCv_.
+    std::mutex              holdMx_;
+    std::condition_variable holdCv_;
 
     std::atomic<SOCKET> listen_{ INVALID_SOCKET };
     std::thread         acceptThread_;
