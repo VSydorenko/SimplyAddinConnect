@@ -284,6 +284,8 @@ endif()
 add_executable(prro_fs_state_selftest prro_fs_state_selftest.cpp
     support/MiniHttpServer.cpp
     support/MiniHttpClient.cpp
+    support/FiscalServerState.cpp
+    ${CMAKE_SOURCE_DIR}/extern/pugixml/src/pugixml.cpp
 )
 set_target_properties(prro_fs_state_selftest PROPERTIES
     CXX_STANDARD 17
@@ -292,8 +294,11 @@ set_target_properties(prro_fs_state_selftest PROPERTIES
 )
 target_include_directories(prro_fs_state_selftest PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/extern/pugixml/src
 )
-target_compile_definitions(prro_fs_state_selftest PRIVATE _WINDOWS UNICODE _UNICODE)
+target_compile_definitions(prro_fs_state_selftest PRIVATE _WINDOWS UNICODE _UNICODE
+    PRRO_FS_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data/prro_fs"
+)
 target_link_libraries(prro_fs_state_selftest PRIVATE ws2_32)
 if(MSVC)
     target_compile_options(prro_fs_state_selftest PRIVATE /utf-8)
