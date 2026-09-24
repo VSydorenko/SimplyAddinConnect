@@ -262,9 +262,11 @@ static void TestFaultPlan() {
 
     fp.dateSkewSeconds = 40;
     fp.rejectFormat = prrofs::RejectFormat::Ticket;
+    fp.resultCodeFormat = prrofs::ResultCodeFormat::Number;
     fp.Clear();
-    CHECK(fp.Armed().empty() && fp.dateSkewSeconds == 0 && fp.rejectFormat == prrofs::RejectFormat::Text,
-          "Clear (reset) скидає збої й постійні налаштування");
+    CHECK(fp.Armed().empty() && fp.dateSkewSeconds == 0 && fp.rejectFormat == prrofs::RejectFormat::Text
+          && fp.resultCodeFormat == prrofs::ResultCodeFormat::Name,
+          "Clear (reset) скидає збої й постійні налаштування (+ resultCodeFormat)");
     FaultMode m = FaultMode::Delay;
     CHECK(prrofs::ParseFaultMode("dropBeforeRegister", m) && m == FaultMode::DropBeforeRegister
           && !prrofs::ParseFaultMode("drop", m), "ParseFaultMode: відома назва — так, невідома — ні");

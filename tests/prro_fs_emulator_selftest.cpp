@@ -179,7 +179,7 @@ void ScenarioShift(int port) {
                                                          { "NumFiscal", tz }, { "Type", 1 }, { "UID", "u5" } }, true);
         json j = Body(r);
         std::string data;
-        CHECK(r.code == 200 && j["ResultCode"] == 0 && oracle::b64decode(Data(j), data) && data == Fx("zrep_1251.xml", 4),
+        CHECK(r.code == 200 && j["ResultCode"] == "Ok" && oracle::b64decode(Data(j), data) && data == Fx("zrep_1251.xml", 4),
               "ZRepExt Type 1: побайтовий оригінал Z-звіту");
         CHECK(j.contains("Timestamp"), "ZRepExt: Timestamp присутній (F3, §6.4)");
     }
@@ -188,7 +188,7 @@ void ScenarioShift(int port) {
                                                          { "NumLocal", 2 }, { "Type", 2 }, { "UID", "u6" } }, false);
         json j = Body(r);
         std::string der, xml;
-        const bool got = r.code == 200 && j["ResultCode"] == 0 && oracle::b64decode(Data(j), der) && !der.empty();
+        const bool got = r.code == 200 && j["ResultCode"] == "Ok" && oracle::b64decode(Data(j), der) && !der.empty();
         const oracle::VerifyOutcome v = oracle::Verify(der);
         CHECK(got && v.accepted && oracle::b64decode(v.contentB64, xml), "CheckExt Type 2: Data — CMS, що проходить перевірку");
         CHECK(xml.find("<ORDERTAXNUM>" + t2 + "</ORDERTAXNUM></CHECKHEAD>") != std::string::npos,
@@ -206,7 +206,7 @@ void ScenarioShift(int port) {
     {
         const minihttp::ClientResult r = PostCmd(port, { { "Command", "CheckExt" }, { "RegistrarNumFiscal", kReg },
                                                          { "NumLocal", 99 }, { "Type", 2 }, { "UID", "u8" } }, false);
-        CHECK(r.code == 200 && Body(r)["ResultCode"] == 5, "CheckExt неіснуючого номера: ResultCode 5 DocumentAbsent");
+        CHECK(r.code == 200 && Body(r)["ResultCode"] == "DocumentAbsent", "CheckExt неіснуючого номера: ResultCode DocumentAbsent");
     }
 }
 
@@ -317,8 +317,8 @@ void ScenarioDrops(int port) {
     CHECK(again.code == 400 && LastNumber(again.body) == 3, "повтор №2 -> «повинен дорівнювати 3»");
     const minihttp::ClientResult ce = PostCmd(port, { { "Command", "CheckExt" }, { "RegistrarNumFiscal", kReg },
                                                       { "NumLocal", 2 }, { "Type", 2 }, { "UID", "d1" } }, false);
-    CHECK(ce.code == 200 && Body(ce)["ResultCode"] == 0 && !Data(Body(ce)).empty(),
-          "CheckExt №2 після обриву: знайдено (ResultCode 0, Data є)");
+    CHECK(ce.code == 200 && Body(ce)["ResultCode"] == "Ok" && !Data(Body(ce)).empty(),
+          "CheckExt №2 після обриву: знайдено (ResultCode Ok, Data є)");
     CHECK(TicketOk(PostDoc(port, "check_sale_1251.xml", 3), t), "наступний чек іде з №3");
 
     // --- Обрив ДО реєстрації ---
@@ -330,7 +330,7 @@ void ScenarioDrops(int port) {
           "стан: чек №4 НЕ зареєстровано (NextLocalNum = 4, документа №4 немає)");
     const minihttp::ClientResult ce2 = PostCmd(port, { { "Command", "CheckExt" }, { "RegistrarNumFiscal", kReg },
                                                        { "NumLocal", 4 }, { "Type", 2 }, { "UID", "d2" } }, false);
-    CHECK(ce2.code == 200 && Body(ce2)["ResultCode"] == 5, "CheckExt №4: DocumentAbsent");
+    CHECK(ce2.code == 200 && Body(ce2)["ResultCode"] == "DocumentAbsent", "CheckExt №4: DocumentAbsent");
     CHECK(TicketOk(PostDoc(port, "check_sale_1251.xml", 4), t), "повторна відправка №4 з тим самим номером проходить");
 
     // --- «Мовчати довше за таймаут» + Review Focus 1 (архітекторська правка після коду-рев'ю:
@@ -483,6 +483,56 @@ void ScenarioSkewAndReject(int port) {
           "reset повертає постійні налаштування до типових");
 }
 
+// Формат ResultCode у CheckExt/ZRepExt: типово — ім'я enum рядком, resultCodeFormat=number —
+// число (§9.2 [Опис]/[споживач]). Перевіряється саме ТИП значення (is_string/is_number_integer),
+// не лише його рівність, — щоб не пропустити регрес, де хелпер ігнорує режим.
+void ScenarioResultCodeFormat(int port) {
+    std::printf("== Формат ResultCode (name/number) ==\n");
+    CHECK(Reset(port), "reset для перевірки resultCodeFormat");
+    std::string t1;
+    CHECK(TicketOk(PostDoc(port, "open_shift_1251.xml", 1), t1), "відкриття зміни прийнято (документ NumLocal=1)");
+
+    {
+        const minihttp::ClientResult r = PostCmd(port, { { "Command", "CheckExt" }, { "RegistrarNumFiscal", kReg },
+                                                          { "NumLocal", 1 }, { "Type", 0 }, { "UID", "rc1" } }, false);
+        json j = Body(r);
+        CHECK(r.code == 200 && j["ResultCode"].is_string() && j["ResultCode"] == "Ok",
+              "типово (name): знайдений документ -> ResultCode \"Ok\" рядком");
+    }
+    {
+        const minihttp::ClientResult r = PostCmd(port, { { "Command", "CheckExt" }, { "RegistrarNumFiscal", "4999999999" },
+                                                          { "NumLocal", 1 }, { "Type", 0 }, { "UID", "rc2" } }, false);
+        json j = Body(r);
+        CHECK(r.code == 200 && j["ResultCode"].is_string() && j["ResultCode"] == "TransactionsRegistrarNotRegistered",
+              "типово (name): невідомий ПРРО -> ResultCode \"TransactionsRegistrarNotRegistered\" рядком");
+    }
+
+    CHECK(Control(port, { { "action", "set" }, { "resultCodeFormat", "number" } }).code == 200, "resultCodeFormat = number");
+    {
+        const minihttp::ClientResult r = PostCmd(port, { { "Command", "CheckExt" }, { "RegistrarNumFiscal", kReg },
+                                                          { "NumLocal", 1 }, { "Type", 0 }, { "UID", "rc3" } }, false);
+        json j = Body(r);
+        CHECK(r.code == 200 && j["ResultCode"].is_number_integer() && j["ResultCode"] == 0,
+              "number: знайдений документ -> ResultCode 0 числом");
+    }
+    {
+        const minihttp::ClientResult r = PostCmd(port, { { "Command", "CheckExt" }, { "RegistrarNumFiscal", kReg },
+                                                          { "NumLocal", 99 }, { "Type", 0 }, { "UID", "rc4" } }, false);
+        json j = Body(r);
+        CHECK(r.code == 200 && j["ResultCode"].is_number_integer() && j["ResultCode"] == 5,
+              "number: неіснуючий документ -> ResultCode 5 числом");
+    }
+    {
+        const minihttp::ClientResult r = PostCmd(port, { { "Command", "CheckExt" }, { "RegistrarNumFiscal", "4999999999" },
+                                                          { "NumLocal", 1 }, { "Type", 0 }, { "UID", "rc5" } }, false);
+        json j = Body(r);
+        CHECK(r.code == 200 && j["ResultCode"].is_number_integer() && j["ResultCode"] == 4,
+              "number: невідомий ПРРО -> ResultCode 4 числом");
+    }
+    CHECK(Control(port, { { "action", "set" }, { "resultCodeFormat", "bogus" } }).code == 400, "невідомий resultCodeFormat -> 400");
+    CHECK(Reset(port) && State(port)["resultCodeFormat"] == "name", "reset повертає resultCodeFormat до \"name\"");
+}
+
 }  // namespace
 
 int RunPrroFsSelfTest() {
@@ -509,6 +559,7 @@ int RunPrroFsSelfTest() {
         ScenarioDrops(port);
         ScenarioStatus(port);
         ScenarioSkewAndReject(port);
+        ScenarioResultCodeFormat(port);
         srv->Stop();
     }
     minihttp::ShutdownNetwork();

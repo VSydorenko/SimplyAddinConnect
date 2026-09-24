@@ -772,7 +772,13 @@ UAPKI (не вдалось підписати квитанцію/еталон).
   оригінал, тип 3 — текст UTF-8. `Objects`, `TransactionsRegistrarState`, `Shifts`, `LastShiftTotals`,
   `ZRepExt` без підпису відхиляються (**[Опис]** вимагає підпис; код — **[припущення]**). Гроші в
   JSON (`Sum`, `Turnover`, `TurnoverDiscount` тощо) — `double`, друкуються найкоротшим точним
-  записом (`150.0`, `150.05`), а НЕ фіксованими двома знаками після коми.
+  записом (`150.0`, `150.05`), а НЕ фіксованими двома знаками після коми. `ResultCode` у `CheckExt`/
+  `ZRepExt` за замовчуванням — РЯДОК, ім'я значення `DocumentRequestResultCode` (`"Ok"`,
+  `"OnlineDocumentAbsent"`, `"OfflineNumberReserved"`, `"OfflineNumberNotReserved"`,
+  `"TransactionsRegistrarNotRegistered"`, `"DocumentAbsent"`): у Описі значення `ResultCode` стоїть
+  у лапках (рядки 1251, 1325), на відміну від `ShiftId` без лапок — **[Опис]**; попередній
+  числовий вигляд ламав перевірку споживача `= "Ok"` — **[споживач]**. Числова форма лишена
+  перемикачем `resultCodeFormat` (нижче) — бойовий ДПС не виміряно жоден із варіантів.
 - Відмова → `400` + `Код помилки: <n> <СимвольнийКод>\r\n<опис>` **[Опис]**; для коду 7 опис містить
   «Номер документа повинен дорівнювати N», N — останнє число **[споживач]**; розмір тіла поза
   `10…512000` → `416` **[споживач]**; `Date` за Гринвічем на кожній відповіді **[споживач]**; `204` —
@@ -781,8 +787,9 @@ UAPKI (не вдалось підписати квитанцію/еталон).
 **Керування** (від кореня, поза `/fs`): `POST /control` з `{"action":"reset","registrars":[{"numFiscal":"…","nextLocalNum":1}]}`
 (ПРРО реєструються лише так; невідомий → код `1`), `{"action":"fault","target":"doc"|"cmd"|"cmd:<Команда>","mode":"delay"|"status"|"dropBeforeRegister"|"dropAfterRegister",…}`
 (одноразовий збій на наступний запит своєї цілі; повторне взведення тієї самої цілі → `409`),
-`{"action":"set","dateSkewSeconds":N,"rejectFormat":"text"|"ticket"}` (до наступного `reset`);
-`GET /control/state` — стан ПРРО, документи, взведені збої. **Обриви:** `dropAfterRegister` —
+`{"action":"set","dateSkewSeconds":N,"rejectFormat":"text"|"ticket","resultCodeFormat":"name"|"number"}`
+(до наступного `reset`; невідоме значення будь-якого з полів → `400`);
+`GET /control/state` — стан ПРРО, документи, взведені збої, `resultCodeFormat`. **Обриви:** `dropAfterRegister` —
 документ повністю зареєстровано (номер зайнято, фіскальний номер видано, `CheckExt` його знайде),
 з'єднання розірвано RST без відповіді; `dropBeforeRegister` — стан не змінено, розрив;
 `holdSeconds` — «мовчати» заданий час, потім розрив. Ззовні обидва обриви однакові — розрізняє

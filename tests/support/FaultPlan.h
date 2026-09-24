@@ -23,6 +23,7 @@ struct Fault {
 };
 
 enum class RejectFormat { Text, Ticket };
+enum class ResultCodeFormat { Name, Number };   // CheckExt/ZRepExt ResultCode: ім'я enum | число
 
 class FaultPlan {
 public:
@@ -37,8 +38,9 @@ public:
     void Clear();                                          // reset: збої + постійні налаштування
     std::vector<std::pair<std::string, Fault>> Armed() const { return armed_; }
 
-    int          dateSkewSeconds = 0;
-    RejectFormat rejectFormat    = RejectFormat::Text;
+    int              dateSkewSeconds  = 0;
+    RejectFormat     rejectFormat     = RejectFormat::Text;
+    ResultCodeFormat resultCodeFormat = ResultCodeFormat::Name;
 
 private:
     bool TakeTarget(const std::string& target, Fault& out);
