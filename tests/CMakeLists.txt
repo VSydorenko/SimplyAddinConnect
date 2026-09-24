@@ -276,6 +276,36 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# prro_fs_state_selftest — рівень L-f1: чиста логіка імітації фіскального сервера
+# ДПС (стан, нумерація, підсумки, збої) + диспозиції MiniHttpServer. Без UAPKI:
+# збирається завжди при BUILD_TESTS=ON і проходить у run_tests.ps1 -NoUapki.
+# Спека: docs/superpowers/specs/2026-09-23-prro-fs-emulator-design.md §10.1.
+# ---------------------------------------------------------------------------
+add_executable(prro_fs_state_selftest prro_fs_state_selftest.cpp
+    support/MiniHttpServer.cpp
+    support/MiniHttpClient.cpp
+    support/FiscalServerState.cpp
+    support/FaultPlan.cpp
+    ${CMAKE_SOURCE_DIR}/extern/pugixml/src/pugixml.cpp
+)
+set_target_properties(prro_fs_state_selftest PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "prro_fs_state_selftest${_TEST_ARCH_SUFFIX}"
+)
+target_include_directories(prro_fs_state_selftest PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/extern/pugixml/src
+)
+target_compile_definitions(prro_fs_state_selftest PRIVATE _WINDOWS UNICODE _UNICODE
+    PRRO_FS_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data/prro_fs"
+)
+target_link_libraries(prro_fs_state_selftest PRIVATE ws2_32)
+if(MSVC)
+    target_compile_options(prro_fs_state_selftest PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
 # Далі — цілі, що потребують крипто-ядра UAPKI (uapki_bundle існує лише при
 # BUILD_WITH_UAPKI). Без нього тихо пропускаємо решту файлу.
 # ---------------------------------------------------------------------------
@@ -324,6 +354,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_executable(uapki_fiscal_emulator uapki_fiscal_emulator.cpp
     support/MiniHttpServer.cpp            # власний HTTP/1.1-сервер (замість ix::HttpServer)
+    support/UapkiOracle.cpp               # крипто, спільне з prro_fs_emulator
 )
 
 set_target_properties(uapki_fiscal_emulator PROPERTIES
@@ -359,6 +390,41 @@ add_dependencies(uapki_fiscal_emulator cm-pkcs12-provider)
 # (імена файлів-зразків ПРРО), інакше MSVC зіпсує і коментарі, і літерали.
 if(MSVC)
     target_compile_options(uapki_fiscal_emulator PRIVATE /utf-8)
+endif()
+
+# ---------------------------------------------------------------------------
+# prro_fs_emulator — імітація фіскального сервера ДПС зі станом і керованими
+# збоями для наскрізних тестів ПРРО споживача (SMP_SimplyConnect). Ручний
+# інструмент + рівень гейта L-f2 через вбудований --self-test.
+# Спека: docs/superpowers/specs/2026-09-23-prro-fs-emulator-design.md.
+# ---------------------------------------------------------------------------
+add_executable(prro_fs_emulator prro_fs_emulator.cpp prro_fs_emulator_selftest.cpp
+    support/PrroFsService.cpp
+    support/FiscalServerState.cpp
+    support/FaultPlan.cpp
+    support/UapkiOracle.cpp
+    support/MiniHttpServer.cpp
+    support/MiniHttpClient.cpp
+    ${CMAKE_SOURCE_DIR}/extern/pugixml/src/pugixml.cpp
+)
+set_target_properties(prro_fs_emulator PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME "prro_fs_emulator${_TEST_ARCH_SUFFIX}"
+)
+target_link_libraries(prro_fs_emulator PRIVATE uapki_bundle parson ws2_32)
+target_include_directories(prro_fs_emulator PRIVATE
+    ${NLOHMANN_JSON_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/extern/pugixml/src
+)
+target_compile_definitions(prro_fs_emulator PRIVATE _WINDOWS UNICODE _UNICODE
+    HOST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data"
+    PRRO_FS_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data/prro_fs"
+)
+add_dependencies(prro_fs_emulator cm-pkcs12-provider)
+if(MSVC)
+    target_compile_options(prro_fs_emulator PRIVATE /utf-8)
 endif()
 
 # ---------------------------------------------------------------------------

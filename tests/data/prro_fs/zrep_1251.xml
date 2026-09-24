@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<ZREP xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="zrep01.xsd">
+  <ZREPHEAD>
+    <UID>30000000-0000-0000-0000-000000000001</UID>
+    <TIN>99900000</TIN>
+    <IPN>999000000009</IPN>
+    <ORGNM>ТОВ "Тест"</ORGNM>
+    <POINTNM>Магазин "Тест"</POINTNM>
+    <POINTADDR>м. Київ, вул. Тестова, 1</POINTADDR>
+    <ORDERDATE>24092026</ORDERDATE>
+    <ORDERTIME>200000</ORDERTIME>
+    <ORDERNUM>{N}</ORDERNUM>
+    <CASHDESKNUM>1</CASHDESKNUM>
+    <CASHREGISTERNUM>{REG}</CASHREGISTERNUM>
+    <CASHIER>Тестовий Касир</CASHIER>
+    <VER>1</VER>
+  </ZREPHEAD>
+  <ZREPREALIZ>
+    <SUM>150.00</SUM>
+    <ORDERSCNT>1</ORDERSCNT>
+  </ZREPREALIZ>
+</ZREP>

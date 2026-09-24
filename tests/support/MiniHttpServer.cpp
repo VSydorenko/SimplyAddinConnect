@@ -60,18 +60,22 @@ bool SendAll(SOCKET s, const char* data, size_t len) {
 }
 
 void SendRaw(SOCKET s, int code, const std::string& reason,
-             const std::string& ctype, const std::string& body) {
-    char head[512];
-    const int n = std::snprintf(head, sizeof(head),
-                                "HTTP/1.1 %d %s\r\n"
-                                "Content-Type: %s\r\n"
-                                "Content-Length: %zu\r\n"
-                                "Connection: close\r\n"
-                                "\r\n",
-                                code, reason.c_str(), ctype.c_str(), body.size());
-    if (n <= 0) return;
-    if (!SendAll(s, head, static_cast<size_t>(n))) return;
+             const std::string& ctype, const std::string& body, const HeaderList& extra) {
+    std::string head = "HTTP/1.1 " + std::to_string(code) + " " + reason + "\r\n";
+    head += "Content-Type: " + ctype + "\r\n";
+    head += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+    for (const auto& h : extra) head += h.first + ": " + h.second + "\r\n";
+    head += "Connection: close\r\n\r\n";
+    if (!SendAll(s, head.data(), head.size())) return;
     if (!body.empty()) SendAll(s, body.data(), body.size());
+}
+
+// «Обрив»: SO_LINGER {1,0} — closesocket у потоці з'єднання надішле RST замість FIN.
+void AbortConnection(SOCKET s) {
+    linger l;
+    l.l_onoff  = 1;
+    l.l_linger = 0;
+    setsockopt(s, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&l), sizeof(l));
 }
 
 }  // namespace
@@ -79,13 +83,19 @@ void SendRaw(SOCKET s, int code, const std::string& reason,
 const char* ReasonFor(int code) {
     switch (code) {
         case 200: return "OK";
+        case 204: return "No Content";
+        case 302: return "Found";
         case 400: return "Bad Request";
         case 404: return "Not Found";
+        case 409: return "Conflict";
         case 411: return "Length Required";
         case 413: return "Payload Too Large";
+        case 416: return "Requested Range Not Satisfiable";
         case 422: return "Unprocessable Entity";
         case 431: return "Request Header Fields Too Large";
         case 500: return "Internal Server Error";
+        case 502: return "Bad Gateway";
+        case 503: return "Service Unavailable";
         default:  return "Status";
     }
 }
@@ -108,6 +118,14 @@ Server::~Server() {
 
 void Server::SetHandler(Handler h) {
     handler_ = std::move(h);
+}
+
+void Server::SetCommonHeaders(CommonHeadersFn f) {
+    commonHeaders_ = std::move(f);
+}
+
+HeaderList Server::CommonHeaders() const {
+    return commonHeaders_ ? commonHeaders_() : HeaderList();
 }
 
 std::pair<bool, std::string> Server::Listen() {
@@ -182,7 +200,7 @@ void Server::Serve(SOCKET client) {
         if (headEnd != std::string::npos) break;
         if (buf.size() > MAX_HEADER_BYTES) {
             SendRaw(client, 431, ReasonFor(431), "text/plain; charset=utf-8",
-                    "headers too large");
+                    "headers too large", CommonHeaders());
             return;
         }
         const int n = recv(client, chunk, sizeof(chunk), 0);
@@ -202,7 +220,8 @@ void Server::Serve(SOCKET client) {
         const size_t sp1 = requestLine.find(' ');
         const size_t sp2 = (sp1 == std::string::npos) ? std::string::npos : requestLine.find(' ', sp1 + 1);
         if (sp1 == std::string::npos || sp2 == std::string::npos) {
-            SendRaw(client, 400, ReasonFor(400), "text/plain; charset=utf-8", "bad request line");
+            SendRaw(client, 400, ReasonFor(400), "text/plain; charset=utf-8", "bad request line",
+                    CommonHeaders());
             return;
         }
         req.method = requestLine.substr(0, sp1);
@@ -230,7 +249,7 @@ void Server::Serve(SOCKET client) {
     const auto teIt = req.headers.find("transfer-encoding");
     if (teIt != req.headers.end() && ToLower(teIt->second).find("chunked") != std::string::npos) {
         SendRaw(client, 411, ReasonFor(411), "text/plain; charset=utf-8",
-                "chunked transfer-encoding not supported, use Content-Length");
+                "chunked transfer-encoding not supported, use Content-Length", CommonHeaders());
         return;
     }
 
@@ -240,7 +259,8 @@ void Server::Serve(SOCKET client) {
         char* end = nullptr;
         const unsigned long long v = std::strtoull(clIt->second.c_str(), &end, 10);
         if (end == clIt->second.c_str() || v > MAX_BODY_BYTES) {
-            SendRaw(client, 413, ReasonFor(413), "text/plain; charset=utf-8", "body too large");
+            SendRaw(client, 413, ReasonFor(413), "text/plain; charset=utf-8", "body too large",
+                    CommonHeaders());
             return;
         }
         contentLength = static_cast<size_t>(v);
@@ -262,8 +282,24 @@ void Server::Serve(SOCKET client) {
         resp.code = 500;
         resp.body = "no handler";
     }
+
+    if (resp.disposition == Disposition::Abort) {
+        AbortConnection(client);      // closesocket у потоці з'єднання дасть RST
+        return;
+    }
+    if (resp.disposition == Disposition::HoldThenAbort) {
+        std::unique_lock<std::mutex> lk(holdMx_);
+        holdCv_.wait_for(lk, std::chrono::seconds(resp.holdSeconds),
+                         [this] { return stopping_.load(); });
+        lk.unlock();
+        AbortConnection(client);
+        return;
+    }
+
     const std::string reason = resp.reason.empty() ? std::string(ReasonFor(resp.code)) : resp.reason;
-    SendRaw(client, resp.code, reason, resp.contentType, resp.body);
+    HeaderList all = CommonHeaders();
+    all.insert(all.end(), resp.headers.begin(), resp.headers.end());
+    SendRaw(client, resp.code, reason, resp.contentType, resp.body, all);
 
     // Дати клієнту дочитати відповідь до закриття сокета.
     shutdown(client, SD_SEND);
@@ -271,6 +307,10 @@ void Server::Serve(SOCKET client) {
 
 void Server::Stop() {
     if (stopping_.exchange(true)) return;
+
+    // Розбудити утримувані з'єднання (HoldThenAbort): предикат бачить stopping_.
+    { std::lock_guard<std::mutex> lk(holdMx_); }
+    holdCv_.notify_all();
 
     const SOCKET ls = listen_.exchange(INVALID_SOCKET);
     if (ls != INVALID_SOCKET) closesocket(ls);   // будить accept()
