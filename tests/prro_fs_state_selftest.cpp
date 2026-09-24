@@ -313,14 +313,14 @@ static void TestTransport() {
 
     minihttp::ClientResult b = minihttp::Fetch(port, "GET", "/abort", "", "", 3000);
     CHECK(b.connected && !b.responded, "Abort: з'єднання було, відповіді немає");
-    CHECK(b.reset && !b.timedOut, "Abort: клієнт бачить розрив (RST), а не таймаут");
+    CHECK(b.rst && !b.timedOut, "Abort: клієнт бачить розрив (RST), а не таймаут");
 
     // Правило 3: утримання 2 с, клієнтський таймаут 1 с. Числа в звіті задачі — з виміру.
     minihttp::ClientResult c = minihttp::Fetch(port, "GET", "/hold", "", "", 1000);
     CHECK(!c.responded && c.timedOut, "HoldThenAbort: клієнт із таймаутом 1 с не отримав нічого");
     minihttp::ClientResult d = minihttp::Fetch(port, "GET", "/hold", "", "", 5000);
-    CHECK(!d.responded && d.reset && d.elapsedMs >= 1800,
-          "HoldThenAbort: після ~2 с тиші — розрив (elapsedMs >= 1800)");
+    CHECK(!d.responded && d.rst && d.elapsedMs >= 1800,
+          "HoldThenAbort: після ~2 с тиші — розрив (RST, elapsedMs >= 1800)");
 
     // Stop() має перервати утримання, а не чекати holdSeconds.
     std::thread cli([port]() { minihttp::Fetch(port, "GET", "/hold30", "", "", 40000); });

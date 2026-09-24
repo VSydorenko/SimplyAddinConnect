@@ -62,8 +62,15 @@ ClientResult FetchRaw(int port, const std::string& raw, int timeoutMs) {
         if (n > 0) { buf.append(chunk, static_cast<size_t>(n)); continue; }
         if (n == 0) break;                                   // штатне закриття (FIN)
         const int err = WSAGetLastError();
-        if (err == WSAETIMEDOUT) r.timedOut = true;          // клієнтський таймаут
-        else                     r.reset    = true;          // WSAECONNRESET тощо
+        if (err == WSAETIMEDOUT) {
+            r.timedOut = true;                                // клієнтський таймаут
+        } else {
+            // Виміряно 2026-09-24 на цій машині (AbortConnection() у MiniHttpServer.cpp,
+            // SO_LINGER{1,0}, 3 спрацювання /abort і /hold): щоразу WSAECONNRESET (10054);
+            // WSAECONNABORTED (10053) не спостережено. rst — САМЕ цей код, а не будь-яка
+            // інша помилка recv().
+            if (err == WSAECONNRESET) r.rst = true;
+        }
         break;
     }
     closesocket(s);
@@ -71,7 +78,10 @@ ClientResult FetchRaw(int port, const std::string& raw, int timeoutMs) {
 
     const size_t headEnd = buf.find("\r\n\r\n");
     if (buf.compare(0, 5, "HTTP/") != 0 || headEnd == std::string::npos) {
-        // Відповіді не було. Закриття без жодного байта — теж розрив з погляду клієнта.
+        // Відповіді не було: клієнтський таймаут (timedOut, уже виставлено) АБО з'єднання
+        // закрито до status-line — RST (rst уже виставлено в циклі вище) чи штатне FIN
+        // (recv()==0, без жодної помилки — rst лишається false). reset — загальний прапор
+        // «розрив без відповіді» для обох підвипадків; rst — вужчий, лише для дійсного RST.
         if (!r.timedOut) r.reset = true;
         return r;
     }

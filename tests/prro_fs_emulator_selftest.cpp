@@ -305,7 +305,7 @@ void ScenarioDrops(int port) {
     CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "dropAfterRegister" } }).code == 200,
           "збій dropAfterRegister взведено");
     const minihttp::ClientResult a = PostDoc(port, "check_sale_1251.xml", 2);
-    CHECK(a.connected && !a.responded && a.reset, "чек №2: з'єднання розірвано без відповіді (НетОтвета)");
+    CHECK(a.connected && !a.responded && a.rst, "чек №2: з'єднання розірвано без відповіді (НетОтвета, RST)");
     // Правило 2: стан доводиться парою предикатів — номер зайнято І документ збережено.
     CHECK(RegState(port)["nextLocalNum"] == 3 && HasDoc(port, 2),
           "стан: чек №2 ЗАРЕЄСТРОВАНО (NextLocalNum = 3, документ №2 є)");
@@ -321,7 +321,7 @@ void ScenarioDrops(int port) {
     CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "dropBeforeRegister" } }).code == 200,
           "збій dropBeforeRegister взведено");
     const minihttp::ClientResult b = PostDoc(port, "check_sale_1251.xml", 4);
-    CHECK(b.connected && !b.responded && b.reset, "чек №4: з'єднання розірвано без відповіді");
+    CHECK(b.connected && !b.responded && b.rst, "чек №4: з'єднання розірвано без відповіді (RST)");
     CHECK(RegState(port)["nextLocalNum"] == 4 && !HasDoc(port, 4),
           "стан: чек №4 НЕ зареєстровано (NextLocalNum = 4, документа №4 немає)");
     const minihttp::ClientResult ce2 = PostCmd(port, { { "Command", "CheckExt" }, { "RegistrarNumFiscal", kReg },
@@ -383,7 +383,9 @@ void ScenarioDrops(int port) {
     // тобто отримана відповідь стосується саме вікна утримання, а не випадково пізнішого
     // моменту (коли утримання вже скінчилось і mx_ у будь-якому разі вільний).
     CHECK(cmdDoneAt < docDoneAt, "проба /fs/cmd завершилась ДО завершення doc-запиту (друга половина пари — правило 2)");
-    CHECK(c.connected && !c.responded, "утримання: doc-клієнт не отримав відповіді (розрив або власний таймаут 5 с)");
+    // Утримання 3 с < клієнтський таймаут 5 с, тож клієнт мусить побачити саме RST
+    // (AbortConnection після завершення утримання), а не власний таймаут.
+    CHECK(c.connected && !c.responded && c.rst, "утримання: doc-клієнт бачить розрив (RST) після ~3 с утримання");
     CHECK(RegState(port)["nextLocalNum"] == 6 && HasDoc(port, 5), "утримання після реєстрації: №5 зареєстровано (повторно, після join)");
 
     CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "dropBeforeRegister" },
