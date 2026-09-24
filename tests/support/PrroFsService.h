@@ -25,6 +25,11 @@ bool        ParseDateTime(const std::string& s, long long& epoch);
 // "Код помилки: <n> <Назва>\r\n<опис>" ([Опис] ~899-901).
 std::string ErrorBody(int code, const std::string& description);
 
+// Розгортання тіла /fs/cmd (JSON або CMS) — ОДНОРАЗОВЕ й ЛІНИВЕ: обчислюється лише
+// коли знадобиться (CommandNameOf для "cmd:<Команда>" або HandleCmd), інакше тіло
+// лишається неторканим (Task 6, amendment A). Повне визначення — у .cpp (несе json).
+struct UnwrappedCmd;
+
 class PrroFsService {
 public:
     explicit PrroFsService(int port) : port_(port) {}
@@ -36,14 +41,14 @@ public:
 
 private:
     minihttp::Response HandleDoc(const std::string& body);
-    minihttp::Response HandleCmd(const std::string& body);
+    minihttp::Response HandleCmd(const std::string& body, UnwrappedCmd& memo);
     minihttp::Response HandleControl(const std::string& body);
     minihttp::Response StateJson();
     minihttp::Response Reject(int code, const std::string& text, const ParsedDoc* doc);
     std::string        BuildTicket(const ParsedDoc* doc, const std::string& taxNum, std::time_t now,
                                    int errorCode, const std::string& errorTextUtf8);
     // Збої (Task 6):
-    std::string        CommandNameOf(const std::string& body);
+    std::string        CommandNameOf(const std::string& body, UnwrappedCmd& memo);
     minihttp::Response FaultStatus(const Fault& f);
     static minihttp::Response FaultDrop(const Fault& f);
 

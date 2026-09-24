@@ -250,6 +250,11 @@ void ScenarioFormats(int port) {
               "ServerState без підпису, з BOM і пробілами -> 200 (Review Focus 2)");
         // Той самий сценарій BOM+пробіли, але ВСЕРЕДИНІ підписаного CMS (Review Focus 2:
         // прогалина закрита — перевіряємо і непідписаний, і підписаний шлях StripJsonPrefix).
+        // Task 6, amendment B/C: пари правила 1 тут немає — на цьому шляху BOM і пробіли
+        // пропускає лексер nlohmann (extern/nlohmann_json/include/nlohmann/detail/input/
+        // lexer.hpp:1495-1516), власного механізму (другого StripJsonPrefix) у нашому коді
+        // більше нема; перевірено 2026-09-24 — видалення StripJsonPrefix на підписаному
+        // шляху дає 0 FAIL двічі.
         const json sIn = { { "Command", "ServerState" }, { "UID", "s2" } };
         const minihttp::ClientResult cs = minihttp::Fetch(port, "POST", "/fs/cmd",
             oracle::Sign("\xEF\xBB\xBF  " + sIn.dump()), "application/octet-stream", 5000);
@@ -272,6 +277,147 @@ void ScenarioFormats(int port) {
         std::string t;
         CHECK(TicketOk(PostDoc(port, "open_shift_1251.xml", 5), t), "після самовідновлення лічильника №5 проходить");
     }
+}
+
+// Парсинг RFC 1123 (для перевірки зсуву Date). -1 — не розібрано.
+long long ParseHttpDate(const std::string& s) {
+    static const char* kM = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    char mon[4] = { 0 };
+    int d = 0, y = 0, h = 0, mi = 0, se = 0;
+    if (std::sscanf(s.c_str(), "%*3s, %2d %3s %4d %2d:%2d:%2d GMT", &d, mon, &y, &h, &mi, &se) != 6) return -1;
+    const char* p = std::strstr(kM, mon);
+    if (!p) return -1;
+    std::tm t{};
+    t.tm_year = y - 1900; t.tm_mon = static_cast<int>(p - kM) / 3; t.tm_mday = d;
+    t.tm_hour = h;        t.tm_min = mi;                            t.tm_sec = se;
+    return static_cast<long long>(_mkgmtime(&t));
+}
+
+// Сценарії споживача 2 і 3: обриви до й після реєстрації (+ «мовчати довше за таймаут»).
+void ScenarioDrops(int port) {
+    std::printf("== Сценарії 2-3: обриви ==\n");
+    CHECK(Reset(port), "reset для обривів");
+    std::string t;
+    CHECK(TicketOk(PostDoc(port, "open_shift_1251.xml", 1), t), "зміну відкрито");
+
+    // --- Обрив ПІСЛЯ реєстрації ---
+    CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "dropAfterRegister" } }).code == 200,
+          "збій dropAfterRegister взведено");
+    const minihttp::ClientResult a = PostDoc(port, "check_sale_1251.xml", 2);
+    CHECK(a.connected && !a.responded && a.reset, "чек №2: з'єднання розірвано без відповіді (НетОтвета)");
+    // Правило 2: стан доводиться парою предикатів — номер зайнято І документ збережено.
+    CHECK(RegState(port)["nextLocalNum"] == 3 && HasDoc(port, 2),
+          "стан: чек №2 ЗАРЕЄСТРОВАНО (NextLocalNum = 3, документ №2 є)");
+    const minihttp::ClientResult again = PostDoc(port, "check_sale_1251.xml", 2);
+    CHECK(again.code == 400 && LastNumber(again.body) == 3, "повтор №2 -> «повинен дорівнювати 3»");
+    const minihttp::ClientResult ce = PostCmd(port, { { "Command", "CheckExt" }, { "RegistrarNumFiscal", kReg },
+                                                      { "NumLocal", 2 }, { "Type", 2 }, { "UID", "d1" } }, false);
+    CHECK(ce.code == 200 && Body(ce)["ResultCode"] == 0 && !Data(Body(ce)).empty(),
+          "CheckExt №2 після обриву: знайдено (ResultCode 0, Data є)");
+    CHECK(TicketOk(PostDoc(port, "check_sale_1251.xml", 3), t), "наступний чек іде з №3");
+
+    // --- Обрив ДО реєстрації ---
+    CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "dropBeforeRegister" } }).code == 200,
+          "збій dropBeforeRegister взведено");
+    const minihttp::ClientResult b = PostDoc(port, "check_sale_1251.xml", 4);
+    CHECK(b.connected && !b.responded && b.reset, "чек №4: з'єднання розірвано без відповіді");
+    CHECK(RegState(port)["nextLocalNum"] == 4 && !HasDoc(port, 4),
+          "стан: чек №4 НЕ зареєстровано (NextLocalNum = 4, документа №4 немає)");
+    const minihttp::ClientResult ce2 = PostCmd(port, { { "Command", "CheckExt" }, { "RegistrarNumFiscal", kReg },
+                                                       { "NumLocal", 4 }, { "Type", 2 }, { "UID", "d2" } }, false);
+    CHECK(ce2.code == 200 && Body(ce2)["ResultCode"] == 5, "CheckExt №4: DocumentAbsent");
+    CHECK(TicketOk(PostDoc(port, "check_sale_1251.xml", 4), t), "повторна відправка №4 з тим самим номером проходить");
+
+    // --- «Мовчати довше за таймаут» (правило 3: клієнт 1 с, утримання 2 с) ---
+    CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "dropAfterRegister" },
+                          { "holdSeconds", 2 } }).code == 200, "утримання після реєстрації взведено");
+    const minihttp::ClientResult c = PostDoc(port, "check_sale_1251.xml", 5, 1000);
+    CHECK(!c.responded && c.timedOut, "утримання: клієнт із таймаутом 1 с не отримав нічого");
+    // Review Focus 1: утримання не тримає замок стану — інші запити обслуговуються.
+    const minihttp::ClientResult ss = PostCmd(port, { { "Command", "ServerState" }, { "UID", "h" } }, false, 1000);
+    CHECK(ss.code == 200, "під час утримання /fs/cmd відповідає (утримання не блокує інші запити)");
+    CHECK(RegState(port)["nextLocalNum"] == 6 && HasDoc(port, 5), "утримання після реєстрації: №5 зареєстровано");
+
+    CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "dropBeforeRegister" },
+                          { "holdSeconds", 2 } }).code == 200, "утримання до реєстрації взведено");
+    const minihttp::ClientResult e = PostDoc(port, "check_sale_1251.xml", 6, 1000);
+    CHECK(!e.responded && e.timedOut, "утримання до реєстрації: клієнт не отримав нічого");
+    CHECK(RegState(port)["nextLocalNum"] == 6 && !HasDoc(port, 6), "утримання до реєстрації: №6 НЕ зареєстровано");
+}
+
+// Сценарій 8 споживача + механіка збоїв: 204/5xx/302, delay, 409, фільтр цілі.
+void ScenarioStatus(int port) {
+    std::printf("== Сценарій 8: збої-статуси й фільтр цілі ==\n");
+    CHECK(Reset(port), "reset для збоїв-статусів");
+    for (int code : { 204, 503 }) {
+        CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "status" }, { "code", code } }).code == 200,
+              "збій status взведено");
+        const minihttp::ClientResult r = PostDoc(port, "open_shift_1251.xml", 1);
+        CHECK(r.responded && r.code == code, code == 204 ? "status 204 віддано" : "status 503 віддано");
+        CHECK(RegState(port)["nextLocalNum"] == 1, "status-збій: документ не оброблено (NextLocalNum = 1)");
+    }
+    CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "status" }, { "code", 302 } }).code == 200,
+          "збій 302 взведено");
+    const minihttp::ClientResult r302 = PostDoc(port, "open_shift_1251.xml", 1);
+    CHECK(r302.code == 302 && r302.headers.count("location") == 1
+          && r302.headers.at("location") == "http://127.0.0.1:" + std::to_string(port) + "/moved",
+          "302 з Location за замовчуванням");
+
+    CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "delay" }, { "seconds", 1 } }).code == 200,
+          "збій delay 1 с взведено");
+    std::string t;
+    const minihttp::ClientResult d = PostDoc(port, "open_shift_1251.xml", 1, 5000);
+    std::printf("  виміряно: відповідь із delay 1 с — %lld мс\n", d.elapsedMs);
+    CHECK(d.elapsedMs >= 900 && TicketOk(d, t), "delay: відповідь після паузи, документ прийнято");
+
+    CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "delay" }, { "seconds", 1 } }).code == 200,
+          "delay знову взведено");
+    CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "status" }, { "code", 500 } }).code == 409,
+          "друге взведення тієї самої цілі -> 409");
+    CHECK(Control(port, { { "action", "fault" }, { "target", "nope" }, { "mode", "delay" }, { "seconds", 1 } }).code == 400,
+          "некоректна ціль -> 400");
+    CHECK(Reset(port) && State(port)["faults"].is_array() && State(port)["faults"].empty(), "reset очищає взведені збої");
+
+    CHECK(Control(port, { { "action", "fault" }, { "target", "cmd:CheckExt" }, { "mode", "status" }, { "code", 503 } }).code == 200,
+          "збій cmd:CheckExt взведено");
+    const minihttp::ClientResult s1 = PostCmd(port, { { "Command", "ServerState" }, { "UID", "f1" } }, false);
+    CHECK(s1.code == 200, "інша команда збій cmd:CheckExt не витрачає");
+    const minihttp::ClientResult s2 = PostCmd(port, { { "Command", "CheckExt" }, { "RegistrarNumFiscal", kReg },
+                                                      { "NumLocal", 1 }, { "Type", 0 }, { "UID", "f2" } }, false);
+    CHECK(s2.code == 503 && State(port)["faults"].is_array() && State(port)["faults"].empty(),
+          "CheckExt отримав 503, збій витрачено");
+}
+
+// Сценарій 7 споживача (зсув Date) + альтернативний формат відмови.
+void ScenarioSkewAndReject(int port) {
+    std::printf("== Сценарій 7: зсув годинника; формат відмови ==\n");
+    CHECK(Reset(port), "reset для зсуву годинника");
+    CHECK(Control(port, { { "action", "set" }, { "dateSkewSeconds", 40 } }).code == 200, "dateSkewSeconds = 40");
+    const minihttp::ClientResult p = minihttp::Fetch(port, "GET", "/ping", "", "", 3000);
+    const long long skewDate = ParseHttpDate(p.headers.count("date") ? p.headers.at("date") : std::string())
+                             - static_cast<long long>(std::time(nullptr));
+    std::printf("  виміряно: зсув Date = %lld с\n", skewDate);
+    CHECK(skewDate >= 35 && skewDate <= 45, "Date зсунуто на ~40 с");
+    long long ts = 0;
+    const minihttp::ClientResult s = PostCmd(port, { { "Command", "ServerState" }, { "UID", "k" } }, false);
+    json js = Body(s);
+    const bool tsOk = js.contains("Timestamp") && js["Timestamp"].is_string()
+                      && prrofs::ParseDateTime(js["Timestamp"].get<std::string>(), ts);
+    const long long skewTs = ts - static_cast<long long>(std::time(nullptr));
+    CHECK(tsOk && skewTs >= 35 && skewTs <= 45, "Timestamp ServerState теж зсунуто (годинник сервера один)");
+    CHECK(Control(port, { { "action", "set" }, { "dateSkewSeconds", 0 } }).code == 200, "зсув знято");
+
+    CHECK(Control(port, { { "action", "set" }, { "rejectFormat", "ticket" } }).code == 200, "rejectFormat = ticket");
+    const minihttp::ClientResult r = PostDoc(port, "open_shift_1251.xml", 5);
+    const oracle::VerifyOutcome v = oracle::Verify(r.body);
+    std::string xml;
+    CHECK(r.code == 200 && v.accepted && oracle::b64decode(v.contentB64, xml)
+          && xml.find("<ERRORCODE>7</ERRORCODE>") != std::string::npos
+          && xml.find("<ORDERTAXNUM>") == std::string::npos,
+          "rejectFormat ticket: 200 + підписана квитанція з ERRORCODE 7 без ORDERTAXNUM");
+    CHECK(Control(port, { { "action", "set" }, { "rejectFormat", "bogus" } }).code == 400, "невідомий rejectFormat -> 400");
+    CHECK(Reset(port) && State(port)["rejectFormat"] == "text" && State(port)["dateSkewSeconds"] == 0,
+          "reset повертає постійні налаштування до типових");
 }
 
 }  // namespace
@@ -297,6 +443,9 @@ int RunPrroFsSelfTest() {
         ScenarioPing(port);
         ScenarioShift(port);
         ScenarioFormats(port);
+        ScenarioDrops(port);
+        ScenarioStatus(port);
+        ScenarioSkewAndReject(port);
         srv->Stop();
     }
     minihttp::ShutdownNetwork();

@@ -172,6 +172,45 @@ std::string Visualization(const StoredDoc& d) {
 
 }  // namespace
 
+// Розгортання тіла /fs/cmd — ОДНОРАЗОВЕ й ЛІНИВЕ (Task 6, amendment A): і лямбда
+// CommandNameOf, передана в faults_.Take(...), і HandleCmd отримують посилання на
+// той самий локальний UnwrappedCmd із Handle; повторний виклик UnwrapCmd — no-op.
+// Для цілей "doc" і generic "cmd" ця функція взагалі не викликається (§8.2): тіло
+// лишається неторканим до спрацювання.
+struct UnwrappedCmd {
+    bool        done            = false;   // обчислено (успішно чи ні)
+    bool        ok              = false;   // розгорнуто й розпарсено як JSON-об'єкт
+    bool        signatureFailed = false;   // тіло було CMS, підпис/розгортання не пройшло
+    std::string text;                      // розгорнутий JSON-текст (валідний лише якщо ok)
+    bool        isSigned        = false;
+    json        q;                         // розібраний об'єкт (валідний лише якщо ok)
+};
+
+namespace {
+
+void UnwrapCmd(const std::string& body, UnwrappedCmd& m) {
+    if (m.done) return;
+    m.done = true;
+    std::string text = StripJsonPrefix(body);          // рядок 1: JSON чи CMS — за першим символом
+    if (text.empty() || text[0] != '{') {
+        const oracle::VerifyOutcome v = oracle::Verify(body);
+        std::string content;
+        if (!v.accepted || !oracle::b64decode(v.contentB64, content)) { m.signatureFailed = true; return; }
+        // Amendment B: без другого StripJsonPrefix і без перевірки першого символу тут —
+        // лексер nlohmann сам пропускає BOM/пробіли (extern/nlohmann_json/include/nlohmann/
+        // detail/input/lexer.hpp:1495-1516); власного механізму на цьому шляху нема.
+        text = std::move(content);
+        m.isSigned = true;
+    }
+    json q = json::parse(text, nullptr, false);
+    if (q.is_discarded() || !q.is_object()) return;     // ok лишається false
+    m.text = std::move(text);
+    m.q    = std::move(q);
+    m.ok   = true;
+}
+
+}  // namespace
+
 std::time_t ServerNow(int skewSeconds) {
     return std::time(nullptr) + skewSeconds;
 }
@@ -275,8 +314,55 @@ minihttp::Response PrroFsService::Handle(const minihttp::Request& req) {
     const bool isCmd = (req.method == "POST" && path == "/fs/cmd");
     if (!isDoc && !isCmd) return Text(404, "unknown endpoint");
 
-    std::lock_guard<std::mutex> lk(mx_);
-    return isDoc ? HandleDoc(req.body) : HandleCmd(req.body);
+    // Розгортання тіла — ЛІНИВЕ: memo лишається порожнім, доки CommandNameOf (лише коли
+    // взведено "cmd:<Команда>") чи HandleCmd його не торкнуться (Task 6, amendment A).
+    UnwrappedCmd memo;
+
+    // Збій береться під замком; пауза й утримання — БЕЗ замка (Review Focus 1).
+    Fault f;
+    bool faulted = false;
+    {
+        std::lock_guard<std::mutex> lk(mx_);
+        faulted = faults_.Take(isDoc ? "doc" : "cmd",
+                                [this, &req, &memo]() { return CommandNameOf(req.body, memo); }, f);
+    }
+    if (faulted) {
+        if (trace_) std::printf("  збій: %s\n", FaultModeName(f.mode));
+        if (f.mode == FaultMode::Delay)              std::this_thread::sleep_for(std::chrono::seconds(f.seconds));
+        if (f.mode == FaultMode::Status)             return FaultStatus(f);
+        if (f.mode == FaultMode::DropBeforeRegister) return FaultDrop(f);
+    }
+
+    minihttp::Response r;
+    {
+        std::lock_guard<std::mutex> lk(mx_);
+        r = isDoc ? HandleDoc(req.body) : HandleCmd(req.body, memo);
+    }
+    if (faulted && f.mode == FaultMode::DropAfterRegister) return FaultDrop(f);   // стан змінено, відповідь не йде
+    return r;
+}
+
+std::string PrroFsService::CommandNameOf(const std::string& body, UnwrappedCmd& memo) {
+    UnwrapCmd(body, memo);
+    return memo.ok ? StrField(memo.q, "Command") : std::string();
+}
+
+minihttp::Response PrroFsService::FaultStatus(const Fault& f) {
+    minihttp::Response r;
+    r.code = f.code;
+    r.body = (f.code == 204) ? std::string() : f.body;
+    if (f.code == 302)
+        r.headers.push_back({ "Location", f.location.empty()
+                                          ? "http://127.0.0.1:" + std::to_string(port_) + "/moved"
+                                          : f.location });
+    return r;
+}
+
+minihttp::Response PrroFsService::FaultDrop(const Fault& f) {
+    minihttp::Response r;
+    r.disposition = (f.holdSeconds > 0) ? minihttp::Disposition::HoldThenAbort : minihttp::Disposition::Abort;
+    r.holdSeconds = f.holdSeconds;
+    return r;
 }
 
 std::string PrroFsService::BuildTicket(const ParsedDoc* doc, const std::string& taxNum, std::time_t now,
@@ -327,28 +413,22 @@ minihttp::Response PrroFsService::HandleDoc(const std::string& body) {
     return Binary(der);
 }
 
-minihttp::Response PrroFsService::HandleCmd(const std::string& body) {
+minihttp::Response PrroFsService::HandleCmd(const std::string& body, UnwrappedCmd& memo) {
     if (body.size() < kMinBody || body.size() > kMaxBody)
         return Text(416, "Недопустимий розмір повідомлення: " + std::to_string(body.size()) + " байт (допустимо 10…512000)");
     try {
-        std::string text = StripJsonPrefix(body);
-        bool isSigned = false;
-        if (text.empty() || text[0] != '{') {
-            const oracle::VerifyOutcome v = oracle::Verify(body);
-            std::string content;
-            if (!v.accepted || !oracle::b64decode(v.contentB64, content))
-                return ErrorResponse(kDocumentValidationError, "Підпис команди не пройшов перевірку");
-            text = StripJsonPrefix(content);
-            isSigned = true;
-        }
-        const json q = json::parse(text, nullptr, false);
-        if (q.is_discarded() || !q.is_object()) return ErrorResponse(kInvalidQueryParameter, "Запит не є JSON-об'єктом");
+        // memo — та сама структура, яку (можливо) уже торкнулась CommandNameOf у Handle
+        // (Task 6, amendment A): UnwrapCmd повторно не розбирає, якщо done уже true.
+        UnwrapCmd(body, memo);
+        if (memo.signatureFailed) return ErrorResponse(kDocumentValidationError, "Підпис команди не пройшов перевірку");
+        if (!memo.ok) return ErrorResponse(kInvalidQueryParameter, "Запит не є JSON-об'єктом");
+        const json& q = memo.q;
 
         const std::string cmd = StrField(q, "Command");
         const std::string uid = StrField(q, "UID");
         static const std::set<std::string> kSigned = { "Objects", "TransactionsRegistrarState", "ZRepExt",
                                                        "Shifts", "LastShiftTotals" };
-        if (kSigned.count(cmd) && !isSigned)
+        if (kSigned.count(cmd) && !memo.isSigned)
             return ErrorResponse(kDocumentValidationError, "Запит " + cmd + " має бути засвідчений КЕП");
         const std::time_t now = ServerNow(faults_.dateSkewSeconds);
         const std::string ts = IsoLocal(now);
@@ -484,6 +564,56 @@ minihttp::Response PrroFsService::HandleControl(const std::string& body) {
             faults_.Clear();
             return Json(200, { { "ok", true } });
         }
+
+        if (action == "fault") {
+            Fault f;
+            if (!ParseFaultMode(StrField(q, "mode"), f.mode))
+                return Json(400, { { "ok", false }, { "error", "mode: delay | status | dropBeforeRegister | dropAfterRegister" } });
+            long long v = 0;
+            if (f.mode == FaultMode::Delay) {
+                if (!IntField(q, "seconds", v) || v < 0 || v > 600)
+                    return Json(400, { { "ok", false }, { "error", "seconds — 0..600" } });
+                f.seconds = static_cast<int>(v);
+            }
+            if (f.mode == FaultMode::Status) {
+                if (!IntField(q, "code", v) || v < 100 || v > 599)
+                    return Json(400, { { "ok", false }, { "error", "code — 100..599" } });
+                f.code     = static_cast<int>(v);
+                f.body     = StrField(q, "body");
+                f.location = StrField(q, "location");
+            }
+            if ((f.mode == FaultMode::DropBeforeRegister || f.mode == FaultMode::DropAfterRegister)
+                && q.contains("holdSeconds")) {
+                if (!IntField(q, "holdSeconds", v) || v < 0 || v > 600)
+                    return Json(400, { { "ok", false }, { "error", "holdSeconds — 0..600" } });
+                f.holdSeconds = static_cast<int>(v);
+            }
+            switch (faults_.Arm(StrField(q, "target"), f)) {
+                case FaultPlan::ArmResult::Ok:       return Json(200, { { "ok", true } });
+                case FaultPlan::ArmResult::Conflict: return Json(409, { { "ok", false }, { "error", "для цієї цілі вже взведено збій" } });
+                default:                             return Json(400, { { "ok", false }, { "error", "target: doc | cmd | cmd:<Команда>" } });
+            }
+        }
+
+        if (action == "set") {
+            bool any = false;
+            long long v = 0;
+            if (q.contains("dateSkewSeconds")) {
+                if (!IntField(q, "dateSkewSeconds", v)) return Json(400, { { "ok", false }, { "error", "dateSkewSeconds — ціле" } });
+                faults_.dateSkewSeconds = static_cast<int>(v);
+                any = true;
+            }
+            if (q.contains("rejectFormat")) {
+                const std::string rf = StrField(q, "rejectFormat");
+                if (rf == "text")        faults_.rejectFormat = RejectFormat::Text;
+                else if (rf == "ticket") faults_.rejectFormat = RejectFormat::Ticket;
+                else return Json(400, { { "ok", false }, { "error", "rejectFormat: text | ticket" } });
+                any = true;
+            }
+            if (!any) return Json(400, { { "ok", false }, { "error", "set: dateSkewSeconds і/або rejectFormat" } });
+            return Json(200, { { "ok", true } });
+        }
+
         return Json(400, { { "ok", false }, { "error", "невідома дія: " + action } });
     } catch (const std::exception& e) {
         return Json(400, { { "ok", false }, { "error", e.what() } });
