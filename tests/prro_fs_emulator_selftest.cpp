@@ -18,6 +18,7 @@
 #include <ctime>
 #include <memory>
 #include <string>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
@@ -328,15 +329,62 @@ void ScenarioDrops(int port) {
     CHECK(ce2.code == 200 && Body(ce2)["ResultCode"] == 5, "CheckExt №4: DocumentAbsent");
     CHECK(TicketOk(PostDoc(port, "check_sale_1251.xml", 4), t), "повторна відправка №4 з тим самим номером проходить");
 
-    // --- «Мовчати довше за таймаут» (правило 3: клієнт 1 с, утримання 2 с) ---
+    // --- «Мовчати довше за таймаут» + Review Focus 1 (архітекторська правка після коду-рев'ю:
+    // булевий CHECK ss.code==200 не міг зчервоніти детерміновано — /fs/cmd відправлявся
+    // ЛИШЕ після власного таймауту doc-клієнта (~1 с у вікні утримання 2 с), тож лишалось
+    // ~1 с утримання проти 1000 мс таймауту cmd — гонка, яку вирішувала гранулярність
+    // SO_RCVTIMEO Windows (~8-12 мс понад номінал), а не сам замок).
+    //
+    // Новий дизайн: doc-запит (утримання 3 с) іде в ОКРЕМОМУ потоці з клієнтським
+    // таймаутом 5000 мс (>> утримання), щоб цей потік НЕ відпускав doc-з'єднання по
+    // СВОЄМУ таймауту раніше, ніж завершиться утримання; /fs/cmd-проба також отримує
+    // таймаут 5000 мс (>> утримання), щоб elapsedMs відбивав РЕАЛЬНЕ очікування на mx_
+    // (Review Focus 1), а не штучну стелю власного таймауту.
     CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "dropAfterRegister" },
-                          { "holdSeconds", 2 } }).code == 200, "утримання після реєстрації взведено");
-    const minihttp::ClientResult c = PostDoc(port, "check_sale_1251.xml", 5, 1000);
-    CHECK(!c.responded && c.timedOut, "утримання: клієнт із таймаутом 1 с не отримав нічого");
-    // Review Focus 1: утримання не тримає замок стану — інші запити обслуговуються.
-    const minihttp::ClientResult ss = PostCmd(port, { { "Command", "ServerState" }, { "UID", "h" } }, false, 1000);
-    CHECK(ss.code == 200, "під час утримання /fs/cmd відповідає (утримання не блокує інші запити)");
-    CHECK(RegState(port)["nextLocalNum"] == 6 && HasDoc(port, 5), "утримання після реєстрації: №5 зареєстровано");
+                          { "holdSeconds", 3 } }).code == 200, "утримання після реєстрації взведено (3 с)");
+
+    minihttp::ClientResult c;
+    std::chrono::steady_clock::time_point docDoneAt;
+    std::thread docThread([&]() {
+        c = PostDoc(port, "check_sale_1251.xml", 5, 5000);
+        docDoneAt = std::chrono::steady_clock::now();
+    });
+
+    // Правило 2, перша половина пари стану («зареєстровано, утримання ще не скінчилось»):
+    // короткий (<= ~300 мс, ЩОБ НЕ конкурувати з тим самим mx_, який тестуємо нижче) retry
+    // на /control/state — доводить №5 ЗАРЕЄСТРОВАНО ще до відправки проби, а не «почекали
+    // й сподіваємось». Довший бюджет тут зробив би сам доказ нерозрізненним від симптому
+    // (обидва чекають на той самий mx_).
+    bool registered = false;
+    for (int i = 0; i < 6 && !registered; ++i) {
+        const minihttp::ClientResult probe = minihttp::Fetch(port, "GET", "/control/state", "", "", 40);
+        if (probe.responded && probe.code == 200) {
+            const json st = Body(probe);
+            for (const json& r : st.value("registrars", json::array()))
+                if (r.value("numFiscal", std::string()) == kReg && r.value("nextLocalNum", 0LL) == 6) { registered = true; break; }
+        }
+        if (!registered) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    CHECK(registered, "стан: №5 зареєстровано (доведено /control/state перед пробою — правило 2)");
+
+    // Проба /fs/cmd — надсилається одразу після спроби довести стан, ПОКИ doc-потік ще
+    // не повернувся; таймаут 5000 мс (> утримання 3 с) — elapsedMs покаже РЕАЛЬНЕ очікування.
+    const minihttp::ClientResult ss = PostCmd(port, { { "Command", "ServerState" }, { "UID", "h" } }, false, 5000);
+    const std::chrono::steady_clock::time_point cmdDoneAt = std::chrono::steady_clock::now();
+    std::printf("  виміряно: /fs/cmd під час утримання — %lld мс\n", ss.elapsedMs);
+    // Правило 3: поріг 800 мс лежить між зміряними 2026-09-24 значеннями — без збою
+    // ~3-6 мс, зі збоєм «mx_ під замком під час утримання» (Step 6, Review Focus 1)
+    // ~2700-2750 мс (обидва виміряно build+run цим самим сценарієм, не розрахунком).
+    CHECK(ss.code == 200 && ss.elapsedMs < 800,
+          "під час утримання /fs/cmd відповідає ШВИДКО (elapsedMs < 800 мс — mx_ не тримається під час утримання)");
+
+    docThread.join();
+    // Правило 2, друга половина пари: проба дійсно завершилась ДО завершення doc-запиту —
+    // тобто отримана відповідь стосується саме вікна утримання, а не випадково пізнішого
+    // моменту (коли утримання вже скінчилось і mx_ у будь-якому разі вільний).
+    CHECK(cmdDoneAt < docDoneAt, "проба /fs/cmd завершилась ДО завершення doc-запиту (друга половина пари — правило 2)");
+    CHECK(c.connected && !c.responded, "утримання: doc-клієнт не отримав відповіді (розрив або власний таймаут 5 с)");
+    CHECK(RegState(port)["nextLocalNum"] == 6 && HasDoc(port, 5), "утримання після реєстрації: №5 зареєстровано (повторно, після join)");
 
     CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "dropBeforeRegister" },
                           { "holdSeconds", 2 } }).code == 200, "утримання до реєстрації взведено");
@@ -394,10 +442,15 @@ void ScenarioSkewAndReject(int port) {
     CHECK(Reset(port), "reset для зсуву годинника");
     CHECK(Control(port, { { "action", "set" }, { "dateSkewSeconds", 40 } }).code == 200, "dateSkewSeconds = 40");
     const minihttp::ClientResult p = minihttp::Fetch(port, "GET", "/ping", "", "", 3000);
-    const long long skewDate = ParseHttpDate(p.headers.count("date") ? p.headers.at("date") : std::string())
-                             - static_cast<long long>(std::time(nullptr));
+    const bool hasDate = p.headers.count("date") == 1;
+    const long long skewDate = hasDate
+        ? ParseHttpDate(p.headers.at("date")) - static_cast<long long>(std::time(nullptr))
+        : -999999;
     std::printf("  виміряно: зсув Date = %lld с\n", skewDate);
-    CHECK(skewDate >= 35 && skewDate <= 45, "Date зсунуто на ~40 с");
+    // Заголовок Date гарантує CommonHeaders() (перевірено окремо в ScenarioPing), але
+    // .at("date") тут викликається лише за hasDate у ТІЙ САМІЙ && — відсутність заголовка
+    // дає [FAIL], а не std::out_of_range.
+    CHECK(hasDate && skewDate >= 35 && skewDate <= 45, "Date зсунуто на ~40 с");
     long long ts = 0;
     const minihttp::ClientResult s = PostCmd(port, { { "Command", "ServerState" }, { "UID", "k" } }, false);
     json js = Body(s);
