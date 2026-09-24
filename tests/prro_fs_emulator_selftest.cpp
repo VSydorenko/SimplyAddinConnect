@@ -138,6 +138,7 @@ void ScenarioShift(int port) {
         const minihttp::ClientResult r = PostCmd(port, { { "Command", "LastShiftTotals" }, { "NumFiscal", kReg }, { "UID", "u1" } }, true);
         json j = Body(r);
         CHECK(r.code == 200 && j["ShiftState"] == 1 && j["Totals"].is_object(), "LastShiftTotals: зміна відкрита, Totals є");
+        CHECK(j.contains("Timestamp"), "LastShiftTotals: Timestamp присутній (F3, §6.4)");
         json& t = j["Totals"];
         CHECK(t["Real"].is_object() && t["Real"]["OrdersCount"] == 0 && t["Real"]["PayForm"].is_array()
               && t["Real"]["PayForm"].empty() && t["Real"]["Tax"].is_array(),
@@ -171,6 +172,7 @@ void ScenarioShift(int port) {
         json j = Body(r);
         CHECK(r.code == 200 && j["Shifts"].size() == 1 && j["Shifts"][0]["ZRepFiscalNum"] == tz,
               "Shifts: ZRepFiscalNum = фіскальний номер Z-звіту");
+        CHECK(j.contains("Timestamp"), "Shifts: Timestamp присутній (F3, §6.4)");
     }
     {
         const minihttp::ClientResult r = PostCmd(port, { { "Command", "ZRepExt" }, { "RegistrarNumFiscal", kReg },
@@ -179,6 +181,7 @@ void ScenarioShift(int port) {
         std::string data;
         CHECK(r.code == 200 && j["ResultCode"] == 0 && oracle::b64decode(Data(j), data) && data == Fx("zrep_1251.xml", 4),
               "ZRepExt Type 1: побайтовий оригінал Z-звіту");
+        CHECK(j.contains("Timestamp"), "ZRepExt: Timestamp присутній (F3, §6.4)");
     }
     {
         const minihttp::ClientResult r = PostCmd(port, { { "Command", "CheckExt" }, { "RegistrarNumFiscal", kReg },
@@ -190,6 +193,7 @@ void ScenarioShift(int port) {
         CHECK(got && v.accepted && oracle::b64decode(v.contentB64, xml), "CheckExt Type 2: Data — CMS, що проходить перевірку");
         CHECK(xml.find("<ORDERTAXNUM>" + t2 + "</ORDERTAXNUM></CHECKHEAD>") != std::string::npos,
               "CheckExt Type 2: у XML сервера вставлено ORDERTAXNUM чека");
+        CHECK(j.contains("Timestamp"), "CheckExt: Timestamp присутній (F3, §6.4)");
     }
     {
         const minihttp::ClientResult r = PostCmd(port, { { "Command", "CheckExt" }, { "RegistrarNumFiscal", kReg },
@@ -418,7 +422,11 @@ void ScenarioStatus(int port) {
     std::string t;
     const minihttp::ClientResult d = PostDoc(port, "open_shift_1251.xml", 1, 5000);
     std::printf("  виміряно: відповідь із delay 1 с — %lld мс\n", d.elapsedMs);
-    CHECK(d.elapsedMs >= 900 && TicketOk(d, t), "delay: відповідь після паузи, документ прийнято");
+    // Правило 3: поріг 900 мс лежить між зміряними 2026-09-24 значеннями того самого
+    // запиту (open_shift_1251.xml, той самий handler) — без delay (sleep_for у
+    // PrroFsService::Handle тимчасово прибрано, негативна верифікація) ~18 мс, із
+    // delay 1 с ~1020 мс. 900 лежить строго між обома — поріг не зсунуто.
+    CHECK(d.elapsedMs >= 900 && TicketOk(d, t), "delay: відповідь після паузи, документ прийнято (виміряно 2026-09-24: 18 мс / 1020 мс)");
 
     CHECK(Control(port, { { "action", "fault" }, { "target", "doc" }, { "mode", "delay" }, { "seconds", 1 } }).code == 200,
           "delay знову взведено");

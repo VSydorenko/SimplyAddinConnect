@@ -311,6 +311,23 @@ static void TestTransport() {
     CHECK(t.responded && t.code == 411, "транспортна відмова 411 віддана самим сервером");
     CHECK(t.headers.count("date") == 1, "транспортна відмова теж має Date (спільні заголовки на кожній відповіді)");
 
+    // F4d: та сама перевірка Date для решти транспортних відмов сервера (413, 431,
+    // 400 з непарсованим request-line) — усі йдуть напряму з MiniHttpServer::Serve(),
+    // повз handler_, тож CommonHeaders() там треба брати явно на кожному SendRaw.
+    minihttp::ClientResult big413 = minihttp::FetchRaw(port,
+        "POST /x HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 99999999999\r\n\r\n", 3000);
+    CHECK(big413.responded && big413.code == 413, "413 (тіло за MAX_BODY_BYTES) віддано самим сервером");
+    CHECK(big413.headers.count("date") == 1, "413 теж має Date");
+
+    const std::string hugeHeader(70000, 'A');   // > MAX_HEADER_BYTES (64 KiB), без "\r\n\r\n"
+    minihttp::ClientResult big431 = minihttp::FetchRaw(port, hugeHeader, 3000);
+    CHECK(big431.responded && big431.code == 431, "431 (заголовки за MAX_HEADER_BYTES) віддано самим сервером");
+    CHECK(big431.headers.count("date") == 1, "431 теж має Date");
+
+    minihttp::ClientResult bad400 = minihttp::FetchRaw(port, "BADREQUESTLINE\r\n\r\n", 3000);
+    CHECK(bad400.responded && bad400.code == 400, "400 (непарсований request-line) віддано самим сервером");
+    CHECK(bad400.headers.count("date") == 1, "400 bad request line теж має Date");
+
     minihttp::ClientResult b = minihttp::Fetch(port, "GET", "/abort", "", "", 3000);
     CHECK(b.connected && !b.responded, "Abort: з'єднання було, відповіді немає");
     CHECK(b.rst && !b.timedOut, "Abort: клієнт бачить розрив (RST), а не таймаут");

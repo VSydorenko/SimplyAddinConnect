@@ -108,7 +108,7 @@ bool prepareWorkDir(const std::wstring& dataDir) {
         return false;
     }
     // Ctrl-хендлер уже зареєстровано, тож публікуємо/скидаємо g_workDir під тим самим
-    // замком, що й removeWorkDir() (одного g_workDirMtx досить — g_uapkiMtx тут не беремо,
+    // замком, що й Shutdown() (одного g_workDirMtx досить — g_uapkiMtx тут не беремо,
     // тож циклу в порядку захоплення немає).
     const std::wstring dir = std::wstring(tp) + L"uapki_oracle_" + std::to_wstring(GetCurrentProcessId());
     {

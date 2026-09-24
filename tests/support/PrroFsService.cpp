@@ -95,6 +95,16 @@ minihttp::Response Json(int code, const json& j) {
     return r;
 }
 
+// Спека §6.4: спільні поля КОЖНОЇ 200 JSON-відповіді /fs/cmd — UID і Timestamp.
+// Єдина точка, що їх додає (не для 204/NoContent і не для 400/ErrorResponse — там
+// інший формат тіла). body — решта полів конкретної команди; UID/Timestamp сюди
+// не кладуть — CmdJson їх виставляє сама, перезаписуючи, якщо випадково вже є.
+minihttp::Response CmdJson(const std::string& uid, const std::string& ts, json body) {
+    body["UID"]       = uid;
+    body["Timestamp"] = ts;
+    return Json(200, body);
+}
+
 minihttp::Response Binary(const std::string& der) {
     minihttp::Response r;
     r.contentType = "application/octet-stream";
@@ -433,24 +443,28 @@ minihttp::Response PrroFsService::HandleCmd(const std::string& body, UnwrappedCm
         const std::time_t now = ServerNow(faults_.dateSkewSeconds);
         const std::string ts = IsoLocal(now);
 
-        if (cmd == "ServerState") return Json(200, { { "UID", uid }, { "Timestamp", ts } });
+        if (cmd == "ServerState") return CmdJson(uid, ts, json::object());
 
         if (cmd == "Objects") {
             const std::vector<const RegistrarState*> regs = state_.Registrars();
             if (regs.empty()) return NoContent();
-            return Json(200, { { "UID", uid }, { "Timestamp", ts }, { "TaxObjects", json::array({ TaxObjectJson(regs) }) } });
+            return CmdJson(uid, ts, { { "TaxObjects", json::array({ TaxObjectJson(regs) }) } });
         }
 
         if (cmd == "TransactionsRegistrarState") {
             const RegistrarState* r = state_.Find(StrField(q, "NumFiscal"));
             if (!r) return NoContent();
             json j = {
-                { "UID", uid }, { "Timestamp", ts },
                 { "ShiftState", r->shiftOpen ? 1 : 0 },
                 { "ShiftId", r->shiftId },
                 { "OpenShiftFiscalNum", r->shiftOpen ? json(r->openShiftFiscalNum) : json(nullptr) },
                 { "ZRepPresent", r->zRepPresent },
                 { "Testing", r->testing },
+                // Спека §4.2 «Name — CASHIER документа відкриття; нема — стала»: "нема"
+                // означає відсутність CASHIER У ДОКУМЕНТІ ВІДКРИТТЯ (це вже обробляє
+                // Submit — див. r->name), а не "зміни ще не було". До першої зміни
+                // оператора не існує взагалі, тож тут null (споживач читає r->name лише
+                // через Свойство; справжній ДПС теж не вигадав би ім'я нізвідки).
                 { "Name", r->shiftId ? json(r->name) : json(nullptr) },
                 { "SubjectKeyId", r->shiftOpen ? json(kSubjectKeyId) : json(nullptr) },
                 { "FirstLocalNum", r->shiftOpen ? r->firstLocalNum : 0LL },
@@ -464,7 +478,7 @@ minihttp::Response PrroFsService::HandleCmd(const std::string& body, UnwrappedCm
             };
             if (q.contains("IncludeTaxObject") && q["IncludeTaxObject"].is_boolean() && q["IncludeTaxObject"].get<bool>())
                 j["TaxObject"] = TaxObjectJson(state_.Registrars());
-            return Json(200, j);
+            return CmdJson(uid, ts, j);
         }
 
         if (cmd == "Shifts") {
@@ -484,7 +498,7 @@ minihttp::Response PrroFsService::HandleCmd(const std::string& body, UnwrappedCm
                 arr.push_back(ShiftJson(s));
             }
             if (arr.empty()) return NoContent();
-            return Json(200, { { "UID", uid }, { "Shifts", arr } });
+            return CmdJson(uid, ts, { { "Shifts", arr } });
         }
 
         if (cmd == "LastShiftTotals") {
@@ -494,11 +508,10 @@ minihttp::Response PrroFsService::HandleCmd(const std::string& body, UnwrappedCm
             j.erase("ShiftId");
             j.erase("OpenShiftFiscalNum");
             j.erase("CloseShiftFiscalNum");
-            j["UID"]         = uid;
             j["ShiftState"]  = r->shiftOpen ? 1 : 0;
             j["ZRepPresent"] = r->zRepPresent;
             j["Totals"]      = r->shiftOpen ? TotalsJson(r->totals) : json(nullptr);   // [Опис] 1487
-            return Json(200, j);
+            return CmdJson(uid, ts, j);
         }
 
         if (cmd == "CheckExt" || cmd == "ZRepExt") {
@@ -506,17 +519,17 @@ minihttp::Response PrroFsService::HandleCmd(const std::string& body, UnwrappedCm
             long long type = -1;
             if (!IntField(q, "Type", type) || type < 0 || type > 3)
                 return ErrorResponse(kInvalidQueryParameter, "Непідтримуваний Type (0..3)");
-            json j = { { "UID", uid }, { "Data", nullptr }, { "ShiftId", nullptr }, { "ResultCode", 0 }, { "ResultText", "OK" } };
+            json j = { { "Data", nullptr }, { "ShiftId", nullptr }, { "ResultCode", 0 }, { "ResultText", "OK" } };
             if (!wantZ) j["CabinetUrl"] = "";
             const std::string reg = StrField(q, "RegistrarNumFiscal");
-            if (!state_.Find(reg)) { j["ResultCode"] = 4; j["ResultText"] = "ПРРО не зареєстрований"; return Json(200, j); }
+            if (!state_.Find(reg)) { j["ResultCode"] = 4; j["ResultText"] = "ПРРО не зареєстрований"; return CmdJson(uid, ts, j); }
             const StoredDoc* d = nullptr;
             const std::string numFiscal = StrField(q, "NumFiscal");
             long long numLocal = 0;
             if (!numFiscal.empty())                 d = state_.FindDocByFiscal(reg, numFiscal);
             else if (IntField(q, "NumLocal", numLocal)) d = state_.FindDoc(reg, numLocal);
             if (d && ((d->klass == DocClass::ZRep) != wantZ)) d = nullptr;   // чек не шукаємо як Z-звіт і навпаки
-            if (!d) { j["ResultCode"] = 5; j["ResultText"] = "Документ не зареєстрований на ПРРО"; return Json(200, j); }
+            if (!d) { j["ResultCode"] = 5; j["ResultText"] = "Документ не зареєстрований на ПРРО"; return CmdJson(uid, ts, j); }
             j["ShiftId"] = d->shiftId;
             std::string data;
             if (type == 1) data = d->originalXml;
@@ -529,7 +542,7 @@ minihttp::Response PrroFsService::HandleCmd(const std::string& body, UnwrappedCm
             }
             if (type == 3) data = Visualization(*d);
             j["Data"] = oracle::b64encode(data);
-            return Json(200, j);
+            return CmdJson(uid, ts, j);
         }
 
         return ErrorResponse(kInvalidQueryParameter, "Невідома команда: " + cmd);
@@ -599,7 +612,12 @@ minihttp::Response PrroFsService::HandleControl(const std::string& body) {
             bool any = false;
             long long v = 0;
             if (q.contains("dateSkewSeconds")) {
-                if (!IntField(q, "dateSkewSeconds", v)) return Json(400, { { "ok", false }, { "error", "dateSkewSeconds — ціле" } });
+                // Межа — 10 років у секундах (365*24*3600*10): захист від UB при
+                // static_cast<int> вхідного long long (переповнення int — не 400,
+                // а невизначена поведінка), а не реалістичний ліміт зсуву годинника.
+                constexpr long long kMaxDateSkewSeconds = 315360000LL;
+                if (!IntField(q, "dateSkewSeconds", v) || v < -kMaxDateSkewSeconds || v > kMaxDateSkewSeconds)
+                    return Json(400, { { "ok", false }, { "error", "dateSkewSeconds — ціле, |v| <= 315360000 (10 років)" } });
                 faults_.dateSkewSeconds = static_cast<int>(v);
                 any = true;
             }
