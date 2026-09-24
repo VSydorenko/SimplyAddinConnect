@@ -126,7 +126,7 @@ TCP-емулятор термінала), `tests/label_printer_selftest.cpp` (х
 бібліотеці ІІТ + підготовка його сховища довіри), `tests/support/LocalKeys.{h,cpp}` (читання
 `tests/data/local-keys.json` — особисті КЕП розробника поза git, зразок —
 `tests/data/local-keys.example.json`), `tests/provider_contract_selftest.cpp` (харнес L1.5 —
-контракт провайдера НКІ напряму через `LoadLibraryW`), `tests/scenarios/*.json`
+контракт провайдера НКІ напряму через `LoadLibraryW`), `tests/prro_fs_state_selftest.cpp` (харнес L-f1 — стан/нумерація/підсумки/збої імітації ДПС і диспозиції `MiniHttpServer`), `tests/prro_fs_emulator.cpp` + `tests/prro_fs_emulator_selftest.cpp` + `tests/support/{PrroFsService,FiscalServerState,FaultPlan,UapkiOracle,MiniHttpClient}.{h,cpp}` (імітація фіскального сервера ДПС зі станом, рівень L-f2; опис — `docs/integration-1c/uapki.md` §9.2), `tests/scenarios/*.json`
 (8 сценаріїв L1), `tests/data/` (тестовий контейнер `test-diia.p12`, сертифікати, CRL, еталони ЦЗО
 `czo/` — read-only вхід).
 
@@ -147,11 +147,13 @@ TCP-емулятор термінала), `tests/label_printer_selftest.cpp` (х
 | `provider_contract_selftest.exe` | L1.5 | ні (але без -WithUAPKI — SKIP, файлу провайдера немає) | контракт провайдера НКІ напряму через LoadLibraryW: ідемпотентний init для тієї самої конфігурації, відмова для іншої, облік посилань |
 | `native_host.exe` | L2/L3 | **так** | компонента `AddinUAPKIConnect` через DLL, e2e + крос-валідація ПРРО (кейс 5 потребує `PRRO_DOCS_DIR`; шукає `*.signed` РЕКУРСИВНО, при їх відсутності віддає **exit 3 = SKIP**, а не PASS) |
 | `uapki_fiscal_emulator.exe` | — (ручний) | **так** | HTTP-оракул ЕЦП (грає сервер ДПС/ЄВПЕЗ) для тесту UAPKI з реальної 1С: VERIFY вхідного CMS + підписана квитанція + еталони (`--self-test` — вбудовані перевірки без 1С) |
+| `prro_fs_state_selftest.exe` | L-f1 | ні | чиста логіка імітації фіскального сервера ДПС (стан, нумерація, підсумки, збої) + диспозиції `MiniHttpServer` (обрив, утримання, `Date`) |
+| `prro_fs_emulator.exe` | L-f2 (`--self-test`) + ручний | **так** | імітація фіскального сервера ДПС зі станом і керованими збоями для наскрізних тестів ПРРО; опис — `docs/integration-1c/uapki.md` §9.2 |
 | `iit_verify_x86.exe` | L4-iit | ні (**лише x86**) | незалежний арбітр підпису на нативній `EUSignCP.dll` АТ «ІІТ»: один файл → один рядок JSON, exit `0`=VALID / `1`=INVALID / `2`=помилка / `3`=SKIP (арбітр недоступний). Деталі — `docs/architecture/uapki.md` §8.4 |
 
 Цілі без UAPKI (`core`/`wire`/`ecr_*`, а також `iit_verify` — але той лише в x86) збираються
-завжди при `BUILD_TESTS=ON`, так само як `provider_contract_selftest` (крипто-ядро не лінкується,
-`cm-api.h` самодостатній); `uapki_selftest`/`uapki_fiscal_emulator`/`native_host` — лише разом
+завжди при `BUILD_TESTS=ON`, так само як `provider_contract_selftest` і `prro_fs_state_selftest` (крипто-ядро не лінкується,
+`cm-api.h` самодостатній); `uapki_selftest`/`uapki_fiscal_emulator`/`prro_fs_emulator`/`native_host` — лише разом
 з `-WithUAPKI` (без UAPKI тихо пропущені).
 `[SKIP]`-рядки (напр. `ComRoundtrip` без пари com0com) — НЕ FAIL: гейт дивиться лише exit-код 0.
 Виняток — `native_host` **кейс 5**: щоб відсутність вхідних еталонів не зараховувалась як покриття,
@@ -162,17 +164,17 @@ TCP-емулятор термінала), `tests/label_printer_selftest.cpp` (х
 `powershell -File run_tests.ps1 [x64|x86] [-NoUapki]` (оркестратор: L0 dumpbin-інваріанти →
 L0.5 core_selftest ядра → L0.6 wire_selftest device-ядра → L0.7 ecr_privatjson_selftest драйвера →
 L2-ecr ecr_native_host компоненти ECRPrivatJSON через DLL → L-p1 label_printer_selftest драйвера
-LabelPrinter → L-p3 label_native_host компоненти LabelPrinter через DLL → L1 selftest по
-сценаріях → L1.5 provider_contract_selftest → L2/L3 native_host → L4-iit арбітр ІІТ (негативний контроль + наш підпис + матриця
+LabelPrinter → L-p3 label_native_host компоненти LabelPrinter через DLL → L-f1 prro_fs_state_selftest імітації ДПС → L1 selftest по
+сценаріях → L1.5 provider_contract_selftest → L-f2 prro_fs_emulator --self-test → L2/L3 native_host → L4-iit арбітр ІІТ (негативний контроль + наш підпис + матриця
 вердиктів «наш двигун проти ІІТ» на корпусі ЦЗО та еталонах ДПС); підсумкова таблиця
-PASS/FAIL/SKIP/BLOCKED, ненульовий exit при провалі). L0.5, L0.6, L0.7, L2-ecr, L-p1 і L-p3
+PASS/FAIL/SKIP/BLOCKED, ненульовий exit при провалі). L0.5, L0.6, L0.7, L2-ecr, L-p1, L-p3 і L-f1
 проходять і без `-WithUAPKI`. L4-iit іде і з x64-прогону (`iit_verify_x86.exe` — окремий процес,
 WOW64); SKIP там означає, що exe не зібрано або арбітр не піднявся, а не «не та архітектура».
 
 **Режим без UAPKI (`-NoUapki`):** ганяє ядрові/ECR/LabelPrinter-рівні (L0.5 core + L0.6 wire +
-L0.7 ecr + L2-ecr ecr_native_host + L-p1 label_printer_selftest + L-p3 label_native_host) —
+L0.7 ecr + L2-ecr ecr_native_host + L-p1 label_printer_selftest + L-p3 label_native_host + L-f1 prro_fs_state_selftest) —
 збирає з `-DBUILD_TESTS=ON` **без** `-DBUILD_WITH_UAPKI=ON`; провайдер (L0.2), L1, L2/L3
-native_host і L4-iit → SKIP (не FAIL). `provider_contract_selftest.exe` (L1.5) збирається
+native_host, L-f2 і L4-iit → SKIP (не FAIL). `provider_contract_selftest.exe` (L1.5) збирається
 й запускається і в цьому режимі (крипто-ядро йому не потрібне), але без `-WithUAPKI` у
 `bin/Release` немає файлу провайдера `cm-pkcs12_*.dll` — сам `provider_contract_selftest.exe`
 ловить це (exit 3) і віддає **SKIP**, не FAIL; окремого гейту на `-NoUapki` в оркестраторі для
@@ -254,6 +256,7 @@ tests/              # core_selftest (L0.5) + wire_selftest (L0.6) + ecr_privatjs
                     #   label_printer_emulator (standalone EXE для 1С, +support/LabelEmulator) +
                     #   uapki_selftest (L1) + provider_contract_selftest (L1.5, контракт
                     #   провайдера НКІ напряму через LoadLibraryW) + native_host (L2/L3) +
+                    #   prro_fs_state_selftest (L-f1) + prro_fs_emulator (L-f2 + ручний, імітація ДПС) +
                     #   uapki_fiscal_emulator (— ручний, HTTP-оракул ЕЦП для тесту UAPKI з 1С,
                     #   +support/MiniHttpServer — власний HTTP/1.1-сервер) + scenarios/ + data/
 ExtDataProcessors/  # тестова зовнішня обробка 1С у форматі platform XML (Designer) —
