@@ -63,6 +63,28 @@ bool IntField(const json& q, const char* k, long long& out) {
 json Money(int64_t v) { return json(static_cast<double>(v) / 100.0); }
 json NullIfEmpty(const std::string& s) { return s.empty() ? json(nullptr) : json(s); }
 
+// Ім'я enum DocumentRequestResultCode (Опис АРІ ЄВПЕЗ, ~693-751) для ResultCode
+// CheckExt/ZRepExt. За замовчуванням віддаємо РЯДОК: у Описі значення ResultCode
+// стоїть у лапках (рядки 1251, 1325), на відміну від ShiftId (без лапок) —
+// [Опис]; legacy-код споживача порівнював результат з рядком `= "Ok"` —
+// [споживач]. Числова форма — режим resultCodeFormat=number (POST /control),
+// на бойовому ДПС жоден із варіантів не виміряно.
+const char* ResultCodeName(int code) {
+    switch (code) {
+        case 0: return "Ok";
+        case 1: return "OnlineDocumentAbsent";
+        case 2: return "OfflineNumberReserved";
+        case 3: return "OfflineNumberNotReserved";
+        case 4: return "TransactionsRegistrarNotRegistered";
+        case 5: return "DocumentAbsent";
+        default: return "Unknown";
+    }
+}
+
+json ResultCodeJson(int code, ResultCodeFormat f) {
+    return f == ResultCodeFormat::Number ? json(code) : json(std::string(ResultCodeName(code)));
+}
+
 std::string XmlEscape(const std::string& in) {
     std::string out;
     out.reserve(in.size());
@@ -519,17 +541,26 @@ minihttp::Response PrroFsService::HandleCmd(const std::string& body, UnwrappedCm
             long long type = -1;
             if (!IntField(q, "Type", type) || type < 0 || type > 3)
                 return ErrorResponse(kInvalidQueryParameter, "Непідтримуваний Type (0..3)");
-            json j = { { "Data", nullptr }, { "ShiftId", nullptr }, { "ResultCode", 0 }, { "ResultText", "OK" } };
+            json j = { { "Data", nullptr }, { "ShiftId", nullptr },
+                       { "ResultCode", ResultCodeJson(0, faults_.resultCodeFormat) }, { "ResultText", "OK" } };
             if (!wantZ) j["CabinetUrl"] = "";
             const std::string reg = StrField(q, "RegistrarNumFiscal");
-            if (!state_.Find(reg)) { j["ResultCode"] = 4; j["ResultText"] = "ПРРО не зареєстрований"; return CmdJson(uid, ts, j); }
+            if (!state_.Find(reg)) {
+                j["ResultCode"] = ResultCodeJson(4, faults_.resultCodeFormat);
+                j["ResultText"] = "ПРРО не зареєстрований";
+                return CmdJson(uid, ts, j);
+            }
             const StoredDoc* d = nullptr;
             const std::string numFiscal = StrField(q, "NumFiscal");
             long long numLocal = 0;
             if (!numFiscal.empty())                 d = state_.FindDocByFiscal(reg, numFiscal);
             else if (IntField(q, "NumLocal", numLocal)) d = state_.FindDoc(reg, numLocal);
             if (d && ((d->klass == DocClass::ZRep) != wantZ)) d = nullptr;   // чек не шукаємо як Z-звіт і навпаки
-            if (!d) { j["ResultCode"] = 5; j["ResultText"] = "Документ не зареєстрований на ПРРО"; return CmdJson(uid, ts, j); }
+            if (!d) {
+                j["ResultCode"] = ResultCodeJson(5, faults_.resultCodeFormat);
+                j["ResultText"] = "Документ не зареєстрований на ПРРО";
+                return CmdJson(uid, ts, j);
+            }
             j["ShiftId"] = d->shiftId;
             std::string data;
             if (type == 1) data = d->originalXml;
@@ -628,7 +659,14 @@ minihttp::Response PrroFsService::HandleControl(const std::string& body) {
                 else return Json(400, { { "ok", false }, { "error", "rejectFormat: text | ticket" } });
                 any = true;
             }
-            if (!any) return Json(400, { { "ok", false }, { "error", "set: dateSkewSeconds і/або rejectFormat" } });
+            if (q.contains("resultCodeFormat")) {
+                const std::string rcf = StrField(q, "resultCodeFormat");
+                if (rcf == "name")        faults_.resultCodeFormat = ResultCodeFormat::Name;
+                else if (rcf == "number") faults_.resultCodeFormat = ResultCodeFormat::Number;
+                else return Json(400, { { "ok", false }, { "error", "resultCodeFormat: name | number" } });
+                any = true;
+            }
+            if (!any) return Json(400, { { "ok", false }, { "error", "set: dateSkewSeconds і/або rejectFormat і/або resultCodeFormat" } });
             return Json(200, { { "ok", true } });
         }
 
@@ -658,7 +696,8 @@ minihttp::Response PrroFsService::StateJson() {
                            { "holdSeconds", a.second.holdSeconds } });
     return Json(200, { { "registrars", regs }, { "documents", docs }, { "faults", faults },
                        { "dateSkewSeconds", faults_.dateSkewSeconds },
-                       { "rejectFormat", faults_.rejectFormat == RejectFormat::Ticket ? "ticket" : "text" } });
+                       { "rejectFormat", faults_.rejectFormat == RejectFormat::Ticket ? "ticket" : "text" },
+                       { "resultCodeFormat", faults_.resultCodeFormat == ResultCodeFormat::Number ? "number" : "name" } });
 }
 
 }  // namespace prrofs

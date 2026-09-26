@@ -57,8 +57,9 @@ bool FaultPlan::Take(const std::string& kind, const std::function<std::string()>
 
 void FaultPlan::Clear() {
     armed_.clear();
-    dateSkewSeconds = 0;
-    rejectFormat    = RejectFormat::Text;
+    dateSkewSeconds  = 0;
+    rejectFormat     = RejectFormat::Text;
+    resultCodeFormat = ResultCodeFormat::Name;
 }
 
 }  // namespace prrofs
